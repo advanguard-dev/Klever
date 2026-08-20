@@ -124,7 +124,9 @@ function CommandStack({
             placeholder={title}
             className="w-full bg-transparent py-4 font-serif text-base focus-visible:outline-none"
           />
-          <Kbd>ESC</Kbd>
+          <span className="hidden sm:inline-flex">
+            <Kbd>ESC</Kbd>
+          </span>
         </div>
         <div className="max-h-80 overflow-y-auto py-2">
           <CommandList
@@ -171,7 +173,7 @@ function CommandList({
                 type="button"
                 onMouseEnter={() => onHover(idx)}
                 onClick={() => onRun(item)}
-                className={`flex w-full items-center justify-between gap-3 border-l-2 px-4 py-2 text-left font-serif text-sm ${
+                className={`flex w-full items-center justify-between gap-3 border-l-2 px-4 py-2 text-left font-serif text-sm max-md:py-3 ${
                   active ? "border-ink bg-paper-2 text-ink" : "border-transparent text-mute hover:bg-paper-2 hover:text-ink"
                 }`}
               >

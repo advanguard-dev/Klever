@@ -1,4 +1,5 @@
-import { assetPathFor, pickFile } from "@/lib/assets";
+import { assetKindFromPath } from "@/lib/assets";
+import { defaultFileDisplay, serializeFileMarkdown } from "@/lib/file-display";
 import { insertInEditor, insertWysiwygCommand } from "@/lib/editor-bridge";
 import { speechSupported, startTranscription } from "@/lib/speech";
 import { useApp } from "@/store";
@@ -30,13 +31,11 @@ function appendOrInsert(snippet: string) {
 }
 
 async function insertAsset(accept: string, kind: "image" | "audio" | "file") {
-  const file = await pickFile(accept);
-  if (!file) return;
-  const path = assetPathFor(file);
-  await useApp.getState().putBlob(file, path, file.type);
-  if (kind === "image") appendOrInsert(`![${file.name}](${path})\n`);
-  else if (kind === "audio") appendOrInsert(`[audio](${path})\n`);
-  else appendOrInsert(`[${file.name}](${path})\n`);
+  const path = await useApp.getState().linkLocalFile(accept);
+  if (!path) return;
+  const name = path.split("/").pop() ?? path;
+  const detected = kind === "file" ? assetKindFromPath(path) : kind;
+  appendOrInsert(`${serializeFileMarkdown({ src: path, name, kind: detected, display: defaultFileDisplay(detected) })}\n`);
 }
 
 export async function runCommand(cmd: InsertCommand) {

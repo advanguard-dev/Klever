@@ -616,7 +616,7 @@ export function BrainDump() {
                         </ul>
                       )}
                       {n.tags.length > 0 && (
-                        <p className="mt-2 font-mono text-[11px] text-faint">
+                        <p className="mt-2 font-mono text-[11px] text-tag/70">
                           {n.tags.map((t) => `#${t}`).join("  ")}
                         </p>
                       )}

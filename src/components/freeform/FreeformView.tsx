@@ -1,4 +1,5 @@
 import { BoardObject } from "@/components/freeform/BoardObject";
+import { exportBoardJson, exportBoardPng } from "@/components/freeform/board-export";
 import { useBoardHistory } from "@/components/freeform/board-history";
 import {
   BOARD_FONTS,
@@ -7,10 +8,15 @@ import {
   createMention,
   createMind,
   createPath,
+  createShape,
   createSticky,
   createTable,
   createText,
   DEFAULT_HIGHLIGHT_COLOR,
+  defaultTextAlign,
+  defaultTextVAlign,
+  fillPickerHex,
+  fillValue,
   findConnection,
   HIGHLIGHT_COLORS,
   HIGHLIGHTER_OPACITY,
@@ -26,19 +32,42 @@ import {
   pathBounds,
   PEN_WIDTHS,
   pointsToLocal,
-  resizeTableCells,
+  SHAPE_FILLS,
+  SHAPE_KINDS,
+  SHAPE_STROKE_WIDTHS,
   STICKY_COLORS,
   stickyContrastTextColor,
   STICKY_TEXT_SIZES,
+  STROKE_DASHES,
+  strokeDashArray,
   strokePickerHex,
   resolveStickyTextColor,
-  tablePixelSize,
   TEXT_COLORS,
   TEXT_SIZES,
   textColorClass,
   textColorHex,
 } from "@/components/freeform/board-model";
-import { GhostButton, MonoLabel, TextButton, ToolbarBtn } from "@/components/ui";
+import {
+  alignObjects,
+  applyResizeToObject,
+  boxesIntersect,
+  cloneSelection,
+  GRID,
+  marqueeBox,
+  PASTE_OFFSET,
+  resizeBox,
+  snapGroupMove,
+  snapResizeBox,
+  type AlignEdge,
+  type Box,
+  type Guide,
+  type ResizeHandle,
+} from "@/components/freeform/board-ops";
+import { ConfirmDialog, GhostButton, MonoLabel, TextButton, ToolbarBtn } from "@/components/ui";
+import { TitleBar } from "@/components/layout/TitleBar";
+import { useContextMenu } from "@/components/ContextMenu";
+import type { ContextMenuItem } from "@/lib/context-menus";
+import { openNote } from "@/components/editor/WikiPeek";
 import { cn } from "@/lib/cn";
 import { nid } from "@/lib/ids";
 import { plainSnippet } from "@/lib/parse";
@@ -46,16 +75,38 @@ import { useApp } from "@/store";
 import type {
   FreeformConnection,
   FreeformObject,
+  FreeformShapeKind,
   FreeformStickyColor,
+  FreeformStrokeDash,
   FreeformTool,
   PageFont,
+  TextAlign,
+  TextVAlign,
 } from "@/types";
 import {
   AtSign,
+  AlignCenter,
+  AlignCenterHorizontal,
+  AlignCenterVertical,
+  AlignEndHorizontal,
+  AlignEndVertical,
+  AlignLeft,
+  AlignRight,
+  AlignStartHorizontal,
+  AlignStartVertical,
+  AlignVerticalJustifyCenter,
+  AlignVerticalJustifyEnd,
+  AlignVerticalJustifyStart,
+  ArrowLeft,
   Bold,
+  BringToFront,
+  Check,
+  ChevronDown,
   Database,
+  Download,
   Eraser,
   File,
+  FileJson,
   FileText,
   Hand,
   Highlighter,
@@ -69,9 +120,16 @@ import {
   Pilcrow,
   Plus,
   Redo2,
+  SendToBack,
+  Shapes,
+  Square,
+  Circle,
+  Diamond,
+  Triangle,
   StickyNote,
   Strikethrough,
   Table2,
+  Trash2,
   Type,
   Undo2,
   Waypoints,
@@ -86,20 +144,25 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 
-const TOOLS: { id: FreeformTool; label: string; icon: typeof Type }[] = [
-  { id: "select", label: "Select", icon: MousePointer2 },
-  { id: "pan", label: "Pan", icon: Hand },
-  { id: "text", label: "Write", icon: Type },
-  { id: "draw", label: "Draw", icon: Pencil },
-  { id: "sticky", label: "Sticky", icon: StickyNote },
-  { id: "image", label: "Image", icon: ImageIcon },
-  { id: "link", label: "Link", icon: Link2 },
-  { id: "table", label: "Table", icon: Table2 },
-  { id: "mind", label: "Mind map", icon: Network },
-  { id: "mention", label: "Page @", icon: AtSign },
+const TOOLS: { id: FreeformTool; label: string; icon: typeof Type; shortcut: string }[] = [
+  { id: "select", label: "Select", icon: MousePointer2, shortcut: "V" },
+  { id: "pan", label: "Pan", icon: Hand, shortcut: "H" },
+  { id: "text", label: "Write", icon: Type, shortcut: "T" },
+  { id: "draw", label: "Draw", icon: Pencil, shortcut: "P" },
+  { id: "shape", label: "Shape", icon: Shapes, shortcut: "O" },
+  { id: "sticky", label: "Sticky", icon: StickyNote, shortcut: "S" },
+  { id: "image", label: "Image", icon: ImageIcon, shortcut: "I" },
+  { id: "link", label: "Link", icon: Link2, shortcut: "L" },
+  { id: "table", label: "Table", icon: Table2, shortcut: "B" },
+  { id: "mind", label: "Mind map", icon: Network, shortcut: "M" },
+  { id: "mention", label: "Page @", icon: AtSign, shortcut: "@" },
 ];
 
-const MODE_TOOLS = new Set<FreeformTool>(["select", "pan", "draw"]);
+const TOOL_BY_KEY: Record<string, FreeformTool> = Object.fromEntries(
+  TOOLS.map((t) => [t.shortcut.toLowerCase(), t.id]),
+) as Record<string, FreeformTool>;
+
+const MODE_TOOLS = new Set<FreeformTool>(["select", "pan", "draw", "shape"]);
 
 type VaultHit = {
   id: string;
@@ -121,21 +184,54 @@ const KIND_META: Record<
 type DragState =
   | { kind: "pan"; sx: number; sy: number; cx: number; cy: number }
   | {
+      kind: "pinch";
+      dist: number;
+      mx: number;
+      my: number;
+      cam: { x: number; y: number; zoom: number };
+    }
+  | {
       kind: "move";
       ids: string[];
       sx: number;
       sy: number;
       origins: Record<string, { x: number; y: number }>;
     }
+  | {
+      kind: "resize";
+      id: string;
+      handle: ResizeHandle;
+      sx: number;
+      sy: number;
+      origin: Box;
+      source: FreeformObject;
+    }
+  | { kind: "marquee"; x0: number; y0: number; x1: number; y1: number }
   | { kind: "draw"; points: { x: number; y: number }[] }
+  | { kind: "shape"; x0: number; y0: number; x1: number; y1: number }
   | { kind: "erase"; pushed: boolean }
   | null;
 
 const ZOOM_MIN = 0.25;
 const ZOOM_MAX = 2.5;
 
+function pinchOf(pointers: Map<number, { x: number; y: number }>) {
+  const pts = [...pointers.values()];
+  if (pts.length < 2) return null;
+  const [a, b] = pts;
+  return {
+    dist: Math.hypot(b.x - a.x, b.y - a.y) || 1,
+    mx: (a.x + b.x) / 2,
+    my: (a.y + b.y) / 2,
+  };
+}
+
 export function FreeformView() {
-  const board = useApp((s) => s.board);
+  const boards = useApp((s) => s.boards);
+  const board = useApp((s) => {
+    const id = s.view.kind === "freeform" ? s.view.id : undefined;
+    return s.boards.find((b) => b.id === id) ?? s.boards[0]!;
+  });
   const notes = useApp((s) => s.notes);
   const blobs = useApp((s) => s.blobs);
   const setBoard = useApp((s) => s.setBoard);
@@ -143,7 +239,37 @@ export function FreeformView() {
   const patchBoardObject = useApp((s) => s.patchBoardObject);
   const removeBoardObject = useApp((s) => s.removeBoardObject);
   const clearBoard = useApp((s) => s.clearBoard);
-  const putBlob = useApp((s) => s.putBlob);
+  const createBoard = useApp((s) => s.createBoard);
+  const deleteBoard = useApp((s) => s.deleteBoard);
+  const leaveBoard = useApp((s) => s.leaveBoard);
+  const linkLocalFile = useApp((s) => s.linkLocalFile);
+  const setView = useApp((s) => s.setView);
+  const { open } = useContextMenu();
+
+  const [draftTitle, setDraftTitle] = useState(board?.title ?? "Board");
+  const [boardMenu, setBoardMenu] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const boardMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setDraftTitle(board?.title ?? "Board");
+  }, [board?.id, board?.title]);
+
+  useEffect(() => {
+    if (!boardMenu) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!boardMenuRef.current?.contains(e.target as Node)) setBoardMenu(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setBoardMenu(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [boardMenu]);
 
   const objectsRef = useRef(board.objects);
   objectsRef.current = board.objects;
@@ -177,12 +303,28 @@ export function FreeformView() {
   const [highlighterColor, setHighlighterColor] = useState(DEFAULT_HIGHLIGHT_COLOR);
   const [penWidth, setPenWidth] = useState<number>(2.5);
   const [highlighterWidth, setHighlighterWidth] = useState<number>(18);
+  const [shapeKind, setShapeKind] = useState<FreeformShapeKind>("rect");
+  const [shapeFill, setShapeFill] = useState("paper");
+  const [shapeStroke, setShapeStroke] = useState("ink");
+  const [shapeWidth, setShapeWidth] = useState(2);
+  const [shapeDash, setShapeDash] = useState<FreeformStrokeDash>("solid");
+  const [draftShape, setDraftShape] = useState<{ x: number; y: number; w: number; h: number } | null>(
+    null,
+  );
   /** When set, next object click toggles a connector from this id. */
   const [connectFrom, setConnectFrom] = useState<string | null>(null);
+  const [guides, setGuides] = useState<Guide[]>([]);
+  const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const clipboardRef = useRef<{
+    objects: FreeformObject[];
+    connections: FreeformConnection[];
+  } | null>(null);
+  const pasteNRef = useRef(0);
 
   const viewportRef = useRef<HTMLDivElement>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const imagePlaceRef = useRef<{ x: number; y: number } | null>(null);
   const dragRef = useRef<DragState>(null);
+  const pointersRef = useRef(new Map<number, { x: number; y: number }>());
   const cameraRef = useRef(board.camera);
   const placeStackRef = useRef(0);
   const toolBeforeSpaceRef = useRef<FreeformTool>("select");
@@ -279,6 +421,84 @@ export function FreeformView() {
     [pushHistory, upsertBoardObject],
   );
 
+  const copySelection = useCallback(() => {
+    const ids = selectedRef.current;
+    if (!ids.length) return false;
+    const idSet = new Set(ids);
+    clipboardRef.current = {
+      objects: objectsRef.current.filter((o) => idSet.has(o.id)).map((o) => structuredClone(o)),
+      connections: connectionsRef.current.filter((c) => idSet.has(c.from) && idSet.has(c.to)),
+    };
+    pasteNRef.current = 0;
+    return true;
+  }, []);
+
+  const pasteClipboard = useCallback(
+    (asDuplicate = false) => {
+      const clip = clipboardRef.current;
+      if (!clip?.objects.length) return;
+      pasteNRef.current += 1;
+      const offset = PASTE_OFFSET * pasteNRef.current;
+      const cloned = cloneSelection(
+        clip.objects,
+        clip.connections,
+        clip.objects.map((o) => o.id),
+        offset,
+      );
+      let z = nextZ(objectsRef.current);
+      const objects = cloned.objects.map((o) => ({ ...o, z: z++ }));
+      withHistory(() => {
+        setBoard({
+          objects: [...objectsRef.current, ...objects],
+          connections: [...connectionsRef.current, ...cloned.connections],
+        });
+      });
+      setSelected(objects.map((o) => o.id));
+      setTool("select");
+      if (asDuplicate) pasteNRef.current = 0;
+    },
+    [setBoard, withHistory],
+  );
+
+  const duplicateSelection = useCallback(() => {
+    if (!copySelection()) return;
+    pasteClipboard(true);
+  }, [copySelection, pasteClipboard]);
+
+  const applyAlign = useCallback(
+    (edge: AlignEdge) => {
+      const ids = selectedRef.current;
+      if (ids.length < 2) return;
+      withHistory(() => {
+        setBoard({ objects: alignObjects(objectsRef.current, ids, edge) });
+      });
+    },
+    [setBoard, withHistory],
+  );
+
+  const bringFront = useCallback(() => {
+    const ids = selectedRef.current;
+    if (!ids.length) return;
+    let z = nextZ(objectsRef.current);
+    withHistory(() => {
+      setBoard({
+        objects: objectsRef.current.map((o) => (ids.includes(o.id) ? { ...o, z: z++ } : o)),
+      });
+    });
+  }, [setBoard, withHistory]);
+
+  const sendBack = useCallback(() => {
+    const ids = selectedRef.current;
+    if (!ids.length) return;
+    const min = objectsRef.current.reduce((m, o) => Math.min(m, o.z), 0);
+    let z = min - ids.length;
+    withHistory(() => {
+      setBoard({
+        objects: objectsRef.current.map((o) => (ids.includes(o.id) ? { ...o, z: z++ } : o)),
+      });
+    });
+  }, [setBoard, withHistory]);
+
   useEffect(() => {
     const inField = (t: EventTarget | null) =>
       !!(t as HTMLElement)?.closest?.("input,textarea,[contenteditable]");
@@ -301,6 +521,31 @@ export function FreeformView() {
         history.redo();
         return;
       }
+      if (mod && e.key.toLowerCase() === "c" && !inField(e.target)) {
+        e.preventDefault();
+        copySelection();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "v" && !inField(e.target)) {
+        e.preventDefault();
+        pasteClipboard();
+        return;
+      }
+      if (mod && e.key.toLowerCase() === "d" && !inField(e.target)) {
+        e.preventDefault();
+        duplicateSelection();
+        return;
+      }
+      if (!mod && !e.altKey && !inField(e.target) && !editing && !e.repeat) {
+        const next = TOOL_BY_KEY[e.key.toLowerCase()];
+        if (next) {
+          e.preventDefault();
+          setMentionPos(null);
+          setConnectFrom(null);
+          setTool(next);
+          return;
+        }
+      }
       if ((e.key === "Delete" || e.key === "Backspace") && selected.length && !editing) {
         if (inField(e.target)) return;
         withHistory(() => {
@@ -308,10 +553,33 @@ export function FreeformView() {
         });
         setSelected([]);
       }
+      if (
+        (e.key === "ArrowLeft" ||
+          e.key === "ArrowRight" ||
+          e.key === "ArrowUp" ||
+          e.key === "ArrowDown") &&
+        selected.length &&
+        !editing &&
+        !inField(e.target)
+      ) {
+        e.preventDefault();
+        const step = e.shiftKey ? GRID : 1;
+        const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+        const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+        withHistory(() => {
+          setBoard({
+            objects: objectsRef.current.map((o) =>
+              selected.includes(o.id) ? { ...o, x: o.x + dx, y: o.y + dy } : o,
+            ),
+          });
+        });
+      }
       if (e.key === "Escape") {
         setEditing(null);
         setMentionPos(null);
         setConnectFrom(null);
+        setGuides([]);
+        setMarquee(null);
         setTool("select");
       }
     };
@@ -326,7 +594,18 @@ export function FreeformView() {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
-  }, [editing, history, removeBoardObject, selected, tool, withHistory]);
+  }, [
+    copySelection,
+    duplicateSelection,
+    editing,
+    history,
+    pasteClipboard,
+    removeBoardObject,
+    selected,
+    setBoard,
+    tool,
+    withHistory,
+  ]);
 
   useEffect(() => {
     editHistoryRef.current = false;
@@ -519,8 +798,17 @@ export function FreeformView() {
       return;
     }
     if (activeTool === "image") {
-      (fileRef.current as HTMLInputElement & { __place?: { x: number; y: number } }).__place = world;
-      fileRef.current?.click();
+      imagePlaceRef.current = world;
+      void (async () => {
+        const path = await linkLocalFile("image/*");
+        if (!path) return;
+        const place = imagePlaceRef.current ?? nextPlacePos();
+        const name = path.split("/").pop() ?? path;
+        const obj = createImage(place.x, place.y, nextZ(objectsRef.current), path, name);
+        upsertWithHistory(obj);
+        setSelected([obj.id]);
+        setTool("select");
+      })();
       setTool("select");
     }
   };
@@ -549,7 +837,35 @@ export function FreeformView() {
     setSelected((s) => s.filter((x) => x !== hit.id));
   };
 
+  const startPinch = (pointerId: number) => {
+    const m = pinchOf(pointersRef.current);
+    if (!m) return false;
+    dragRef.current = {
+      kind: "pinch",
+      dist: m.dist,
+      mx: m.mx,
+      my: m.my,
+      cam: { ...cameraRef.current },
+    };
+    setMarquee(null);
+    setDraftPath(null);
+    setDraftShape(null);
+    setGuides([]);
+    try {
+      viewportRef.current?.setPointerCapture(pointerId);
+    } catch {
+      /* already captured */
+    }
+    return true;
+  };
+
   const onPointerDown = (e: ReactPointerEvent) => {
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size >= 2) {
+      e.preventDefault();
+      startPinch(e.pointerId);
+      return;
+    }
     if (e.button === 1 || e.button === 2 || tool === "pan" || spacePan) {
       if (e.button === 2) e.preventDefault();
       e.preventDefault();
@@ -571,15 +887,41 @@ export function FreeformView() {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       return;
     }
+    if (tool === "shape") {
+      const w = screenToWorld(e.clientX, e.clientY);
+      setSelected([]);
+      setEditing(null);
+      dragRef.current = { kind: "shape", x0: w.x, y0: w.y, x1: w.x, y1: w.y };
+      setDraftShape({ x: w.x, y: w.y, w: 0, h: 0 });
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      return;
+    }
     setSelected([]);
     setEditing(null);
     setMentionPos(null);
+    if (tool === "select" && e.button === 0) {
+      if (e.pointerType === "touch" || e.pointerType === "pen") {
+        const cam = cameraRef.current;
+        dragRef.current = { kind: "pan", sx: e.clientX, sy: e.clientY, cx: cam.x, cy: cam.y };
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        return;
+      }
+      const w = screenToWorld(e.clientX, e.clientY);
+      dragRef.current = { kind: "marquee", x0: w.x, y0: w.y, x1: w.x, y1: w.y };
+      setMarquee({ x: w.x, y: w.y, w: 0, h: 0 });
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    }
   };
 
   /** Select (arrow) tool — and any non-pan/draw mode — can move objects anytime. */
   const onObjectDragStart = (e: ReactPointerEvent, id: string) => {
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size >= 2) {
+      startPinch(e.pointerId);
+      return;
+    }
     if (tool === "pan" || spacePan) return;
-    if (tool === "draw") return;
+    if (tool === "draw" || tool === "shape") return;
     if (tool !== "select") setTool("select");
     const ids = selectedRef.current.includes(id) ? selectedRef.current : [id];
     const origins: Record<string, { x: number; y: number }> = {};
@@ -593,9 +935,52 @@ export function FreeformView() {
     (viewportRef.current as HTMLElement | null)?.setPointerCapture(e.pointerId);
   };
 
+  const onResizeStart = (e: ReactPointerEvent, id: string, handle: ResizeHandle) => {
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size >= 2) {
+      startPinch(e.pointerId);
+      return;
+    }
+    if (tool === "pan" || spacePan || tool === "draw" || tool === "shape") return;
+    const o = objectsRef.current.find((x) => x.id === id);
+    if (!o) return;
+    setTool("select");
+    setSelected([id]);
+    pushHistory();
+    const w = screenToWorld(e.clientX, e.clientY);
+    dragRef.current = {
+      kind: "resize",
+      id,
+      handle,
+      sx: w.x,
+      sy: w.y,
+      origin: { x: o.x, y: o.y, w: o.w, h: o.h },
+      source: structuredClone(o),
+    };
+    (viewportRef.current as HTMLElement | null)?.setPointerCapture(e.pointerId);
+  };
+
   const onPointerMove = (e: ReactPointerEvent) => {
+    if (pointersRef.current.has(e.pointerId)) {
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
     const drag = dragRef.current;
     if (!drag) return;
+    if (drag.kind === "pinch") {
+      const m = pinchOf(pointersRef.current);
+      const el = viewportRef.current;
+      if (!m || !el) return;
+      const rect = el.getBoundingClientRect();
+      const nextZoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, drag.cam.zoom * (m.dist / drag.dist)));
+      const wx = (drag.mx - rect.left - drag.cam.x) / drag.cam.zoom;
+      const wy = (drag.my - rect.top - drag.cam.y) / drag.cam.zoom;
+      applyCameraLive({
+        zoom: nextZoom,
+        x: m.mx - rect.left - wx * nextZoom,
+        y: m.my - rect.top - wy * nextZoom,
+      });
+      return;
+    }
     if (drag.kind === "pan") {
       const next = {
         ...cameraRef.current,
@@ -612,28 +997,96 @@ export function FreeformView() {
       setDraftPath(points);
       return;
     }
+    if (drag.kind === "shape") {
+      const w = screenToWorld(e.clientX, e.clientY);
+      drag.x1 = w.x;
+      drag.y1 = w.y;
+      setDraftShape(marqueeBox(drag.x0, drag.y0, drag.x1, drag.y1));
+      return;
+    }
     if (drag.kind === "erase") {
       const w = screenToWorld(e.clientX, e.clientY);
       eraseAt(w.x, w.y, drag);
       return;
     }
+    if (drag.kind === "marquee") {
+      const w = screenToWorld(e.clientX, e.clientY);
+      drag.x1 = w.x;
+      drag.y1 = w.y;
+      setMarquee(marqueeBox(drag.x0, drag.y0, drag.x1, drag.y1));
+      return;
+    }
     if (drag.kind === "move") {
       const w = screenToWorld(e.clientX, e.clientY);
-      const dx = w.x - drag.sx;
-      const dy = w.y - drag.sy;
+      const rawDx = w.x - drag.sx;
+      const rawDy = w.y - drag.sy;
+      const moving = drag.ids
+        .map((id) => {
+          const o = objectsRef.current.find((x) => x.id === id);
+          const origin = drag.origins[id];
+          if (!o || !origin) return null;
+          return { id, origin: { x: origin.x, y: origin.y, w: o.w, h: o.h } };
+        })
+        .filter((m): m is { id: string; origin: Box } => Boolean(m));
+      const others = objectsRef.current
+        .filter((o) => !drag.ids.includes(o.id))
+        .map((o) => ({ x: o.x, y: o.y, w: o.w, h: o.h }));
+      const snapped = snapGroupMove(moving, others, rawDx, rawDy, GRID);
+      setGuides(snapped.guides);
       for (const id of drag.ids) {
         const o = drag.origins[id];
         if (!o) continue;
-        patchBoardObject(id, { x: o.x + dx, y: o.y + dy } as Partial<FreeformObject>);
+        patchBoardObject(id, { x: o.x + snapped.dx, y: o.y + snapped.dy } as Partial<FreeformObject>);
       }
+      return;
+    }
+    if (drag.kind === "resize") {
+      const w = screenToWorld(e.clientX, e.clientY);
+      const box = resizeBox(drag.origin, drag.handle, w.x - drag.sx, w.y - drag.sy, e.shiftKey);
+      const others = objectsRef.current
+        .filter((o) => o.id !== drag.id)
+        .map((o) => ({ x: o.x, y: o.y, w: o.w, h: o.h }));
+      const snapped = snapResizeBox(box, others, GRID);
+      setGuides(snapped.guides);
+      patchBoardObject(drag.id, applyResizeToObject(drag.source, snapped.box));
     }
   };
 
-  const onPointerUp = () => {
+  const onPointerUp = (e: ReactPointerEvent) => {
+    pointersRef.current.delete(e.pointerId);
     const drag = dragRef.current;
+    if (drag?.kind === "pinch") {
+      if (pointersRef.current.size < 2) {
+        persistCamera(cameraRef.current);
+        dragRef.current = null;
+        const leftover = [...pointersRef.current.values()][0];
+        if (leftover) {
+          dragRef.current = {
+            kind: "pan",
+            sx: leftover.x,
+            sy: leftover.y,
+            cx: cameraRef.current.x,
+            cy: cameraRef.current.y,
+          };
+        }
+      }
+      return;
+    }
     dragRef.current = null;
+    setGuides([]);
     if (drag?.kind === "pan") {
       persistCamera(cameraRef.current);
+      return;
+    }
+    if (drag?.kind === "marquee") {
+      const box = marqueeBox(drag.x0, drag.y0, drag.x1, drag.y1);
+      setMarquee(null);
+      if (box.w < 4 && box.h < 4) return;
+      setSelected(
+        objectsRef.current
+          .filter((o) => boxesIntersect(box, { x: o.x, y: o.y, w: o.w, h: o.h }))
+          .map((o) => o.id),
+      );
       return;
     }
     if (drag?.kind === "draw" && drag.points.length > 1) {
@@ -650,7 +1103,26 @@ export function FreeformView() {
       setDraftPath(null);
       return;
     }
+    if (drag?.kind === "shape") {
+      const box = marqueeBox(drag.x0, drag.y0, drag.x1, drag.y1);
+      setDraftShape(null);
+      const w = Math.max(24, box.w);
+      const h = Math.max(24, box.h);
+      const obj = createShape(
+        box.w < 8 && box.h < 8 ? box.x - 80 : box.x,
+        box.w < 8 && box.h < 8 ? box.y - 50 : box.y,
+        box.w < 8 && box.h < 8 ? 160 : w,
+        box.w < 8 && box.h < 8 ? 100 : h,
+        nextZ(board.objects),
+        { shape: shapeKind, fill: shapeFill, stroke: shapeStroke, strokeWidth: shapeWidth, strokeDash: shapeDash },
+      );
+      upsertWithHistory(obj);
+      setSelected([obj.id]);
+      setEditing(obj.id);
+      return;
+    }
     setDraftPath(null);
+    setDraftShape(null);
   };
 
   const addMindChild = (parentId: string) => {
@@ -723,15 +1195,15 @@ export function FreeformView() {
     return o?.type === "mind" ? o : null;
   }, [board.objects, selected]);
 
+  const selectedShape = useMemo(() => {
+    if (selected.length !== 1) return null;
+    const o = board.objects.find((x) => x.id === selected[0]);
+    return o?.type === "shape" ? o : null;
+  }, [board.objects, selected]);
+
   const selectedAny = useMemo(() => {
     if (selected.length !== 1) return null;
     return board.objects.find((x) => x.id === selected[0]) ?? null;
-  }, [board.objects, selected]);
-
-  const selectedTable = useMemo(() => {
-    if (selected.length !== 1) return null;
-    const o = board.objects.find((x) => x.id === selected[0]);
-    return o?.type === "table" ? o : null;
   }, [board.objects, selected]);
 
   const cam = board.camera;
@@ -773,7 +1245,7 @@ export function FreeformView() {
   };
 
   const typographyStrip = (
-    obj: Extract<FreeformObject, { type: "text" | "sticky" | "mind" }>,
+    obj: Extract<FreeformObject, { type: "text" | "sticky" | "mind" | "shape" }>,
     opts: {
       sizeKey: "fontSize";
       colorKey: "color" | "textColor";
@@ -785,9 +1257,9 @@ export function FreeformView() {
     const color =
       opts.colorKey === "textColor"
         ? (obj.type === "sticky" ? obj.textColor : undefined) ?? "ink"
-        : (obj.type === "text" || obj.type === "mind" ? obj.color : undefined) ?? "ink";
+        : (obj.type === "text" || obj.type === "mind" || obj.type === "shape" ? obj.color : undefined) ?? "ink";
     const size =
-      obj.fontSize ?? (obj.type === "sticky" ? 14 : obj.type === "mind" ? 14 : 16);
+      obj.fontSize ?? (obj.type === "sticky" ? 14 : obj.type === "mind" || obj.type === "shape" ? 14 : 16);
     const pickerValue =
       opts.colorKey === "textColor" && obj.type === "sticky"
         ? resolveStickyTextColor(obj.textColor, obj.color).color
@@ -946,21 +1418,173 @@ export function FreeformView() {
             );
           })}
         </div>
+        <span className="hidden h-4 w-px bg-line sm:block" aria-hidden />
+        <div className="flex items-center gap-0.5">
+          {(
+            [
+              { id: "left" as const, label: "Align left", icon: AlignLeft },
+              { id: "center" as const, label: "Align center", icon: AlignCenter },
+              { id: "right" as const, label: "Align right", icon: AlignRight },
+            ] as const
+          ).map((a) => {
+            const Icon = a.icon;
+            const on = (obj.align ?? defaultTextAlign(obj.type)) === a.id;
+            return (
+              <ToolbarBtn
+                key={a.id}
+                label={a.label}
+                aria-label={a.label}
+                active={on}
+                onClick={() => applyTextPatch({ align: a.id as TextAlign })}
+              >
+                <Icon size={14} strokeWidth={1.5} />
+              </ToolbarBtn>
+            );
+          })}
+        </div>
+        <div className="flex items-center gap-0.5">
+          {(
+            [
+              { id: "top" as const, label: "Align top", icon: AlignVerticalJustifyStart },
+              { id: "middle" as const, label: "Align middle", icon: AlignVerticalJustifyCenter },
+              { id: "bottom" as const, label: "Align bottom", icon: AlignVerticalJustifyEnd },
+            ] as const
+          ).map((a) => {
+            const Icon = a.icon;
+            const on = (obj.valign ?? defaultTextVAlign(obj.type)) === a.id;
+            return (
+              <ToolbarBtn
+                key={a.id}
+                label={a.label}
+                aria-label={a.label}
+                active={on}
+                onClick={() => applyTextPatch({ valign: a.id as TextVAlign })}
+              >
+                <Icon size={14} strokeWidth={1.5} />
+              </ToolbarBtn>
+            );
+          })}
+        </div>
       </>
     );
   };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line px-4 py-3 md:px-6">
-        <div className="min-w-0">
-          <MonoLabel>Mind mapping</MonoLabel>
-          <h1 className="font-serif text-2xl italic tracking-tight text-ink md:text-3xl">Board</h1>
+      <TitleBar className="flex-wrap py-2 pt-[max(0.5rem,env(safe-area-inset-top))] md:py-3 md:pl-6 md:pr-6">
+        <div className="flex min-w-0 items-center gap-2">
+          <ToolbarBtn label="Vault" showLabel onClick={() => leaveBoard()}>
+            <ArrowLeft size={15} strokeWidth={1.4} />
+          </ToolbarBtn>
+          <span className="hidden h-5 w-px bg-line sm:block" aria-hidden />
+          <div className="relative min-w-0" ref={boardMenuRef}>
+            <div className="flex min-w-0 items-center rounded-xl border border-line bg-paper">
+              <input
+                value={draftTitle}
+                onChange={(e) => setDraftTitle(e.target.value)}
+                onBlur={() => {
+                  const next = draftTitle.trim() || "Board";
+                  setDraftTitle(next);
+                  if (next !== board.title) setBoard({ title: next });
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                  if (e.key === "Escape") {
+                    setDraftTitle(board.title);
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+                aria-label="Board name"
+                title="Rename this board"
+                className="min-w-[7rem] max-w-[14rem] truncate bg-transparent px-3 py-1.5 font-serif text-base italic tracking-tight text-ink outline-none placeholder:text-faint"
+              />
+              <button
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={boardMenu}
+                aria-label="Switch board"
+                title="Switch board"
+                className={cn(
+                  "inline-flex h-full items-center gap-1 border-l border-line px-2.5 py-1.5 font-serif text-sm text-mute transition-colors duration-150",
+                  "hover:bg-paper-2 hover:text-ink",
+                  boardMenu && "bg-paper-2 text-ink",
+                )}
+                onClick={() => setBoardMenu((o) => !o)}
+              >
+                <span className="hidden sm:inline">Boards</span>
+                <ChevronDown
+                  size={14}
+                  strokeWidth={1.4}
+                  className={cn("transition-transform duration-150", boardMenu && "rotate-180")}
+                  aria-hidden
+                />
+              </button>
+            </div>
+            {boardMenu && (
+              <div
+                role="menu"
+                className="absolute left-0 top-full z-40 mt-1 w-[min(16rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-line bg-paper py-1 shadow-[0_12px_40px_-18px_rgba(0,0,0,0.35)]"
+              >
+                <p className="px-3 pb-1 pt-2">
+                  <MonoLabel>Boards</MonoLabel>
+                </p>
+                {boards.map((b) => {
+                  const active = b.id === board.id;
+                  return (
+                    <div key={b.id} className="flex items-center gap-0.5 px-1">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className={cn(
+                          "flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left font-serif text-sm transition-colors",
+                          active ? "bg-paper-2 text-ink" : "text-mute hover:bg-paper-2 hover:text-ink",
+                        )}
+                        onClick={() => {
+                          setBoardMenu(false);
+                          setView({ kind: "freeform", id: b.id });
+                        }}
+                      >
+                        <span className="min-w-0 flex-1 truncate">{b.title}</span>
+                        {active && <Check size={14} strokeWidth={1.4} className="shrink-0" />}
+                      </button>
+                      {boards.length > 1 && (
+                        <button
+                          type="button"
+                          aria-label={`Delete ${b.title}`}
+                          className="rounded-lg p-1.5 text-faint hover:bg-paper-2 hover:text-ink"
+                          onClick={() => {
+                            deleteBoard(b.id);
+                            if (b.id === board.id) setBoardMenu(false);
+                          }}
+                        >
+                          <Trash2 size={13} strokeWidth={1.4} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+                <div className="my-1 border-t border-line" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left font-serif text-sm text-mute hover:bg-paper-2 hover:text-ink"
+                  onClick={() => {
+                    setBoardMenu(false);
+                    createBoard();
+                  }}
+                >
+                  <Plus size={14} strokeWidth={1.4} />
+                  New board
+                </button>
+              </div>
+            )}
+          </div>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-1">
           <ToolbarBtn
             label="Undo"
             aria-label="Undo"
+            shortcut="⌘Z"
             disabled={!history.canUndo}
             onClick={() => history.undo()}
           >
@@ -969,6 +1593,7 @@ export function FreeformView() {
           <ToolbarBtn
             label="Redo"
             aria-label="Redo"
+            shortcut="⌘⇧Z"
             disabled={!history.canRedo}
             onClick={() => history.redo()}
           >
@@ -982,6 +1607,7 @@ export function FreeformView() {
                 key={t.id}
                 label={t.label}
                 aria-label={t.label}
+                shortcut={t.shortcut}
                 active={tool === t.id}
                 onClick={() => onToolClick(t.id)}
               >
@@ -989,65 +1615,8 @@ export function FreeformView() {
               </ToolbarBtn>
             );
           })}
-          <span className="mx-1 hidden h-5 w-px bg-line sm:block" aria-hidden />
-          <div className="flex items-center gap-0.5 rounded-lg border border-line bg-paper px-0.5">
-            <ToolbarBtn
-              label="Zoom out"
-              aria-label="Zoom out"
-              onClick={() => {
-                const el = viewportRef.current;
-                if (!el) return;
-                const r = el.getBoundingClientRect();
-                zoomAt(r.left + r.width / 2, r.top + r.height / 2, cam.zoom * 0.92, true);
-              }}
-            >
-              <Minus size={14} strokeWidth={1.4} />
-            </ToolbarBtn>
-            <button
-              type="button"
-              title="Reset zoom to 100%"
-              className="min-w-[3.25rem] px-1 font-mono text-[11px] tabular-nums text-mute hover:text-ink"
-              onClick={() => {
-                const el = viewportRef.current;
-                if (!el) return;
-                const r = el.getBoundingClientRect();
-                zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1, true);
-              }}
-            >
-              {zoomPct}%
-            </button>
-            <ToolbarBtn
-              label="Zoom in"
-              aria-label="Zoom in"
-              onClick={() => {
-                const el = viewportRef.current;
-                if (!el) return;
-                const r = el.getBoundingClientRect();
-                zoomAt(r.left + r.width / 2, r.top + r.height / 2, cam.zoom * 1.08, true);
-              }}
-            >
-              <Plus size={14} strokeWidth={1.4} />
-            </ToolbarBtn>
-          </div>
-          <TextButton
-            type="button"
-            onClick={() => setBoard({ dotted: !board.dotted })}
-            aria-pressed={board.dotted}
-          >
-            Dots {board.dotted ? "on" : "off"}
-          </TextButton>
-          <GhostButton
-            type="button"
-            onClick={() => {
-              withHistory(() => clearBoard());
-              setSelected([]);
-            }}
-          >
-            <Eraser size={14} strokeWidth={1.4} />
-            Clear
-          </GhostButton>
         </div>
-      </div>
+      </TitleBar>
 
       {tool === "draw" && (
         <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-line px-4 py-2 md:px-6">
@@ -1136,192 +1705,117 @@ export function FreeformView() {
         </div>
       )}
 
-      {selectedAny && (
+      {tool === "shape" && (
         <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-line px-4 py-2 md:px-6">
-          <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Link</span>
-          <ToolbarBtn
-            label={connectFrom === selectedAny.id ? "Click target…" : "Connect"}
-            showLabel
-            active={connectFrom === selectedAny.id}
-            onClick={() => {
-              setTool("select");
-              setConnectFrom((cur) => (cur === selectedAny.id ? null : selectedAny.id));
-            }}
-          >
-            <Waypoints size={14} strokeWidth={1.4} />
-          </ToolbarBtn>
-          {connectFrom === selectedAny.id && (
-            <span className="font-serif text-sm text-mute">
-              Click another object to connect (or again to unlink). Esc cancels.
-            </span>
-          )}
-        </div>
-      )}
-
-      {selectedSticky && (
-        <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-line px-4 py-2 md:px-6">
-          <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Sticky</span>
+          <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Shape</span>
+          <div className="flex items-center gap-0.5">
+            {SHAPE_KINDS.map((k) => {
+              const Icon = { rect: Square, ellipse: Circle, diamond: Diamond, triangle: Triangle }[k.id];
+              return (
+                <ToolbarBtn
+                  key={k.id}
+                  label={k.label}
+                  active={shapeKind === k.id}
+                  onClick={() => setShapeKind(k.id)}
+                >
+                  <Icon size={14} strokeWidth={1.4} />
+                </ToolbarBtn>
+              );
+            })}
+          </div>
+          <span className="hidden h-4 w-px bg-line sm:block" aria-hidden />
+          <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Fill</span>
           <div className="flex items-center gap-1">
-            {STICKY_COLORS.map((c) => (
+            {SHAPE_FILLS.map((c) => (
               <button
                 key={c.id}
                 type="button"
                 title={c.label}
                 aria-label={c.label}
+                aria-pressed={shapeFill === c.id}
+                className={cn(
+                  "relative h-6 w-6 overflow-hidden rounded-md border border-line",
+                  c.swatch,
+                  shapeFill === c.id && "ring-2 ring-ink/25",
+                )}
+                onClick={() => setShapeFill(c.id)}
+              >
+                {c.id === "none" && (
+                  <span className="absolute inset-x-0 top-1/2 h-px -rotate-45 bg-ink/40" />
+                )}
+              </button>
+            ))}
+            <ColorPickerBtn value={fillPickerHex(shapeFill)} label="Custom fill" onChange={setShapeFill} />
+          </div>
+          <span className="hidden h-4 w-px bg-line sm:block" aria-hidden />
+          <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Stroke</span>
+          <div className="flex items-center gap-1">
+            {INK_COLORS.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                title={c.label}
+                aria-label={c.label}
+                aria-pressed={shapeStroke === c.id}
                 className={cn(
                   "h-6 w-6 rounded-md border border-line",
-                  c.bg,
-                  selectedSticky.color === c.id && "ring-2 ring-ink/25",
+                  c.swatch,
+                  shapeStroke === c.id && "ring-2 ring-ink/25",
                 )}
-                onClick={() => {
-                  setStickyColor(c.id);
-                  patchWithHistory(selectedSticky.id, {
-                    color: c.id,
-                    textColor: stickyContrastTextColor(c.id),
-                  } as Partial<FreeformObject>);
-                }}
+                onClick={() => setShapeStroke(c.id)}
               />
             ))}
-          </div>
-          <span className="hidden h-4 w-px bg-line sm:block" aria-hidden />
-          {typographyStrip(selectedSticky, {
-            sizeKey: "fontSize",
-            colorKey: "textColor",
-            sizes: STICKY_TEXT_SIZES,
-            showParagraph: true,
-          })}
-        </div>
-      )}
-
-      {selectedTextObj && (
-        <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-line px-4 py-2 md:px-6">
-          <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Text</span>
-          {typographyStrip(selectedTextObj, {
-            sizeKey: "fontSize",
-            colorKey: "color",
-            sizes: TEXT_SIZES,
-            showParagraph: true,
-          })}
-        </div>
-      )}
-
-      {selectedMind && (
-        <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-line px-4 py-2 md:px-6">
-          <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Mind</span>
-          {typographyStrip(selectedMind, {
-            sizeKey: "fontSize",
-            colorKey: "color",
-            sizes: MIND_TEXT_SIZES,
-            showParagraph: true,
-          })}
-        </div>
-      )}
-
-      {selectedTable && (
-        <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-line px-4 py-2 md:px-6">
-          <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Table</span>
-          <div className="flex items-center gap-1">
-            <span className="font-mono text-[10px] text-faint">Cols</span>
-            <ToolbarBtn
-              label="Fewer columns"
-              onClick={() => {
-                const cols = Math.max(1, selectedTable.cols - 1);
-                const cells = resizeTableCells(selectedTable.cells, cols, selectedTable.rows);
-                const size = tablePixelSize(cols, selectedTable.rows);
-                patchWithHistory(selectedTable.id, {
-                  cols,
-                  cells,
-                  w: size.w,
-                  h: size.h,
-                } as Partial<FreeformObject>);
-              }}
-            >
-              <Minus size={14} strokeWidth={1.4} />
-            </ToolbarBtn>
-            <span className="min-w-5 text-center font-mono text-[11px] tabular-nums text-mute">
-              {selectedTable.cols}
-            </span>
-            <ToolbarBtn
-              label="More columns"
-              onClick={() => {
-                const cols = Math.min(12, selectedTable.cols + 1);
-                const cells = resizeTableCells(selectedTable.cells, cols, selectedTable.rows);
-                const size = tablePixelSize(cols, selectedTable.rows);
-                patchWithHistory(selectedTable.id, {
-                  cols,
-                  cells,
-                  w: size.w,
-                  h: size.h,
-                } as Partial<FreeformObject>);
-              }}
-            >
-              <Plus size={14} strokeWidth={1.4} />
-            </ToolbarBtn>
+            <ColorPickerBtn value={shapeStroke} label="Custom stroke" onChange={setShapeStroke} />
           </div>
           <div className="flex items-center gap-1">
-            <span className="font-mono text-[10px] text-faint">Rows</span>
-            <ToolbarBtn
-              label="Fewer rows"
-              onClick={() => {
-                const rows = Math.max(1, selectedTable.rows - 1);
-                const cells = resizeTableCells(selectedTable.cells, selectedTable.cols, rows);
-                const size = tablePixelSize(selectedTable.cols, rows);
-                patchWithHistory(selectedTable.id, {
-                  rows,
-                  cells,
-                  w: size.w,
-                  h: size.h,
-                } as Partial<FreeformObject>);
-              }}
-            >
-              <Minus size={14} strokeWidth={1.4} />
-            </ToolbarBtn>
-            <span className="min-w-5 text-center font-mono text-[11px] tabular-nums text-mute">
-              {selectedTable.rows}
-            </span>
-            <ToolbarBtn
-              label="More rows"
-              onClick={() => {
-                const rows = Math.min(20, selectedTable.rows + 1);
-                const cells = resizeTableCells(selectedTable.cells, selectedTable.cols, rows);
-                const size = tablePixelSize(selectedTable.cols, rows);
-                patchWithHistory(selectedTable.id, {
-                  rows,
-                  cells,
-                  w: size.w,
-                  h: size.h,
-                } as Partial<FreeformObject>);
-              }}
-            >
-              <Plus size={14} strokeWidth={1.4} />
-            </ToolbarBtn>
+            {SHAPE_STROKE_WIDTHS.map((w) => (
+              <button
+                key={w}
+                type="button"
+                title={`${w}px`}
+                aria-label={`Stroke ${w}`}
+                aria-pressed={shapeWidth === w}
+                className={cn(
+                  "flex h-7 w-8 items-center justify-center rounded-md border border-line",
+                  shapeWidth === w ? "bg-paper-2 ring-1 ring-ink/20" : "hover:bg-paper-2",
+                )}
+                onClick={() => setShapeWidth(w)}
+              >
+                <span className="rounded-full bg-ink" style={{ width: 14, height: Math.max(1, w) }} />
+              </button>
+            ))}
           </div>
-          <span className="hidden h-4 w-px bg-line sm:block" aria-hidden />
-          <TextButton
-            type="button"
-            aria-pressed={!!selectedTable.headerRow}
-            onClick={() =>
-              patchWithHistory(selectedTable.id, {
-                headerRow: !selectedTable.headerRow,
-              } as Partial<FreeformObject>)
-            }
-          >
-            Header {selectedTable.headerRow ? "on" : "off"}
-          </TextButton>
+          <div className="flex items-center gap-1">
+            {STROKE_DASHES.map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                title={d.label}
+                aria-pressed={shapeDash === d.id}
+                className={cn(
+                  "h-7 rounded-md border border-line px-2 font-mono text-[10px] uppercase tracking-wide",
+                  shapeDash === d.id ? "bg-paper-2 text-ink ring-1 ring-ink/20" : "text-mute hover:bg-paper-2",
+                )}
+                onClick={() => setShapeDash(d.id)}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
       <div
         ref={viewportRef}
         className={cn(
-          "relative min-h-0 flex-1 overflow-hidden bg-paper",
+          "relative min-h-0 flex-1 touch-none overflow-hidden bg-paper",
           effectivePan
             ? "cursor-grab active:cursor-grabbing"
             : tool === "draw"
               ? inkTool === "eraser"
                 ? "cursor-cell"
                 : "cursor-crosshair"
-              : connectFrom
+              : tool === "shape" || connectFrom
                 ? "cursor-crosshair"
                 : "cursor-default",
         )}
@@ -1330,7 +1824,26 @@ export function FreeformView() {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onContextMenu={(e) => e.preventDefault()}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          const items: ContextMenuItem[] = [
+            {
+              id: "paste",
+              label: "Paste",
+              hint: "⌘V",
+              disabled: !clipboardRef.current?.objects.length,
+              onSelect: () => pasteClipboard(),
+            },
+          ];
+          if (selectedRef.current.length) {
+            items.unshift(
+              { id: "dup", label: "Duplicate", hint: "⌘D", onSelect: duplicateSelection },
+              { id: "copy", label: "Copy", hint: "⌘C", onSelect: () => copySelection() },
+              { type: "sep" },
+            );
+          }
+          open(e, items);
+        }}
       >
         <div
           data-board-dots
@@ -1381,6 +1894,61 @@ export function FreeformView() {
                 strokeLinejoin="round"
               />
             )}
+            {draftShape && draftShape.w + draftShape.h > 2 && (
+              <DraftShape
+                kind={shapeKind}
+                x={draftShape.x}
+                y={draftShape.y}
+                w={draftShape.w}
+                h={draftShape.h}
+                fill={shapeFill}
+                stroke={shapeStroke}
+                strokeWidth={shapeWidth}
+                strokeDash={shapeDash}
+              />
+            )}
+            {guides.map((g, i) =>
+              g.axis === "x" ? (
+                <line
+                  key={`gx-${i}-${g.pos}`}
+                  x1={g.pos}
+                  y1={-4000}
+                  x2={g.pos}
+                  y2={4000}
+                  stroke="currentColor"
+                  className="text-ink"
+                  strokeWidth={1}
+                  strokeOpacity={0.35}
+                />
+              ) : (
+                <line
+                  key={`gy-${i}-${g.pos}`}
+                  x1={-4000}
+                  y1={g.pos}
+                  x2={4000}
+                  y2={g.pos}
+                  stroke="currentColor"
+                  className="text-ink"
+                  strokeWidth={1}
+                  strokeOpacity={0.35}
+                />
+              ),
+            )}
+            {marquee && marquee.w + marquee.h > 2 && (
+              <rect
+                x={marquee.x}
+                y={marquee.y}
+                width={marquee.w}
+                height={marquee.h}
+                fill="currentColor"
+                className="text-ink"
+                fillOpacity={0.06}
+                stroke="currentColor"
+                strokeOpacity={0.4}
+                strokeDasharray="4 3"
+                strokeWidth={1}
+              />
+            )}
           </svg>
 
           {sorted.map((obj) => (
@@ -1389,13 +1957,46 @@ export function FreeformView() {
               obj={obj}
               selected={selected.includes(obj.id)}
               editing={editing === obj.id}
-              interactive={tool !== "draw" && !spacePan && tool !== "pan"}
+              interactive={tool !== "draw" && tool !== "shape" && !spacePan && tool !== "pan"}
               onSelect={selectOne}
               onEdit={setEditing}
               onDragStart={onObjectDragStart}
+              onResizeStart={onResizeStart}
               onRemove={(id) => {
                 removeWithHistory(id);
                 setSelected((s) => s.filter((x) => x !== id));
+              }}
+              onContextMenu={(e, obj) => {
+                if (!selectedRef.current.includes(obj.id)) {
+                  selectedRef.current = [obj.id];
+                  setSelected([obj.id]);
+                }
+                const note =
+                  obj.type === "mention" ? notes.find((n) => n.id === obj.noteId) : undefined;
+                const items: ContextMenuItem[] = [
+                  {
+                    id: "open",
+                    label: "Open page",
+                    hidden: !note,
+                    onSelect: () => note && openNote(note),
+                  },
+                  { id: "dup", label: "Duplicate", hint: "⌘D", onSelect: duplicateSelection },
+                  { id: "copy", label: "Copy", hint: "⌘C", onSelect: () => copySelection() },
+                  { type: "sep" },
+                  { id: "front", label: "Bring to front", onSelect: bringFront },
+                  { id: "back", label: "Send to back", onSelect: sendBack },
+                  { type: "sep" },
+                  {
+                    id: "delete",
+                    label: "Delete",
+                    danger: true,
+                    onSelect: () => {
+                      for (const id of [...selectedRef.current]) removeWithHistory(id);
+                      setSelected([]);
+                    },
+                  },
+                ];
+                open(e, items);
               }}
               onPatch={(id, patch) => {
                 const target = board.objects.find((o) => o.id === id);
@@ -1502,36 +2103,405 @@ export function FreeformView() {
             </div>
           )}
         </div>
-
-        <p className="pointer-events-none absolute bottom-3 left-4 max-w-[min(36rem,calc(100%-5rem))] font-mono text-[10px] leading-relaxed tracking-wide text-faint">
-          Space / middle-drag / hand to pan · Scroll pans · Pinch or ⌃/⌘+scroll zooms · Shift+scroll
-          pans · Select arrow drags objects · Delete removes · ⌘Z undo
-        </p>
-        <p className="pointer-events-none absolute bottom-3 right-4 font-mono text-[10px] tabular-nums tracking-wide text-faint">
-          {zoomPct}%
-        </p>
       </div>
 
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        className="hidden"
-        onChange={async (e) => {
-          const file = e.target.files?.[0];
-          e.target.value = "";
-          if (!file) return;
-          const place =
-            (fileRef.current as HTMLInputElement & { __place?: { x: number; y: number } }).__place ??
-            nextPlacePos();
-          const path = `assets/board/${nid()}-${file.name.replace(/\s+/g, "-")}`;
-          await putBlob(file, path, file.type);
-          const obj = createImage(place.x, place.y, nextZ(board.objects), path, file.name);
-          upsertWithHistory(obj);
-          setSelected([obj.id]);
-          setTool("select");
-        }}
-      />
+      <div className="flex max-h-[42vh] shrink-0 flex-col overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)] md:max-h-none md:overflow-visible md:pb-0">
+      {selected.length > 0 && (
+        <div className="flex shrink-0 flex-wrap items-center gap-3 border-t border-line px-4 py-2 md:px-6">
+          <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Arrange</span>
+          <ToolbarBtn label="Bring front" onClick={bringFront}>
+            <BringToFront size={14} strokeWidth={1.4} />
+          </ToolbarBtn>
+          <ToolbarBtn label="Send back" onClick={sendBack}>
+            <SendToBack size={14} strokeWidth={1.4} />
+          </ToolbarBtn>
+          {selected.length > 1 && (
+            <>
+              <span className="hidden h-4 w-px bg-line sm:block" aria-hidden />
+              <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Align</span>
+              {(
+                [
+                  { edge: "left" as const, label: "Align left", icon: AlignStartVertical },
+                  { edge: "center" as const, label: "Align center", icon: AlignCenterVertical },
+                  { edge: "right" as const, label: "Align right", icon: AlignEndVertical },
+                  { edge: "top" as const, label: "Align top", icon: AlignStartHorizontal },
+                  { edge: "middle" as const, label: "Align middle", icon: AlignCenterHorizontal },
+                  { edge: "bottom" as const, label: "Align bottom", icon: AlignEndHorizontal },
+                ] as const
+              ).map((a) => {
+                const Icon = a.icon;
+                return (
+                  <ToolbarBtn key={a.edge} label={a.label} onClick={() => applyAlign(a.edge)}>
+                    <Icon size={14} strokeWidth={1.4} />
+                  </ToolbarBtn>
+                );
+              })}
+            </>
+          )}
+          {selectedAny && (
+            <>
+              <span className="hidden h-4 w-px bg-line sm:block" aria-hidden />
+              <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Link</span>
+              <ToolbarBtn
+                label={connectFrom === selectedAny.id ? "Click target…" : "Connect"}
+                showLabel
+                active={connectFrom === selectedAny.id}
+                onClick={() => {
+                  setTool("select");
+                  setConnectFrom((cur) => (cur === selectedAny.id ? null : selectedAny.id));
+                }}
+              >
+                <Waypoints size={14} strokeWidth={1.4} />
+              </ToolbarBtn>
+              {connectFrom === selectedAny.id && (
+                <span className="font-serif text-sm text-mute">
+                  Click another object to connect (or again to unlink). Esc cancels.
+                </span>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {selectedSticky && (
+        <div className="flex shrink-0 flex-wrap items-center gap-3 border-t border-line px-4 py-2 md:px-6">
+          <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Sticky</span>
+          <div className="flex items-center gap-1">
+            {STICKY_COLORS.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                title={c.label}
+                aria-label={c.label}
+                className={cn(
+                  "h-6 w-6 rounded-md border border-line",
+                  c.bg,
+                  selectedSticky.color === c.id && "ring-2 ring-ink/25",
+                )}
+                onClick={() => {
+                  setStickyColor(c.id);
+                  patchWithHistory(selectedSticky.id, {
+                    color: c.id,
+                    textColor: stickyContrastTextColor(c.id),
+                  } as Partial<FreeformObject>);
+                }}
+              />
+            ))}
+          </div>
+          <span className="hidden h-4 w-px bg-line sm:block" aria-hidden />
+          {typographyStrip(selectedSticky, {
+            sizeKey: "fontSize",
+            colorKey: "textColor",
+            sizes: STICKY_TEXT_SIZES,
+            showParagraph: true,
+          })}
+        </div>
+      )}
+
+      {selectedTextObj && (
+        <div className="flex shrink-0 flex-wrap items-center gap-3 border-t border-line px-4 py-2 md:px-6">
+          <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Text</span>
+          {typographyStrip(selectedTextObj, {
+            sizeKey: "fontSize",
+            colorKey: "color",
+            sizes: TEXT_SIZES,
+            showParagraph: true,
+          })}
+        </div>
+      )}
+
+      {selectedMind && (
+        <div className="flex shrink-0 flex-wrap items-center gap-3 border-t border-line px-4 py-2 md:px-6">
+          <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Mind</span>
+          {typographyStrip(selectedMind, {
+            sizeKey: "fontSize",
+            colorKey: "color",
+            sizes: MIND_TEXT_SIZES,
+            showParagraph: true,
+          })}
+        </div>
+      )}
+
+      {selectedShape && (
+        <div className="flex shrink-0 flex-wrap items-center gap-3 border-t border-line px-4 py-2 md:px-6">
+          <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Shape</span>
+          <div className="flex items-center gap-0.5">
+            {SHAPE_KINDS.map((k) => {
+              const Icon = { rect: Square, ellipse: Circle, diamond: Diamond, triangle: Triangle }[k.id];
+              return (
+                <ToolbarBtn
+                  key={k.id}
+                  label={k.label}
+                  active={selectedShape.shape === k.id}
+                  onClick={() => {
+                    setShapeKind(k.id);
+                    patchWithHistory(selectedShape.id, { shape: k.id } as Partial<FreeformObject>);
+                  }}
+                >
+                  <Icon size={14} strokeWidth={1.4} />
+                </ToolbarBtn>
+              );
+            })}
+          </div>
+          <span className="hidden h-4 w-px bg-line sm:block" aria-hidden />
+          <div className="flex items-center gap-1">
+            {SHAPE_FILLS.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                title={c.label}
+                aria-label={c.label}
+                className={cn(
+                  "relative h-6 w-6 overflow-hidden rounded-md border border-line",
+                  c.swatch,
+                  selectedShape.fill === c.id && "ring-2 ring-ink/25",
+                )}
+                onClick={() => {
+                  setShapeFill(c.id);
+                  patchWithHistory(selectedShape.id, { fill: c.id } as Partial<FreeformObject>);
+                }}
+              >
+                {c.id === "none" && (
+                  <span className="absolute inset-x-0 top-1/2 h-px -rotate-45 bg-ink/40" />
+                )}
+              </button>
+            ))}
+            <ColorPickerBtn
+              value={fillPickerHex(selectedShape.fill)}
+              label="Custom fill"
+              onChange={(hex) => {
+                setShapeFill(hex);
+                patchWithHistory(selectedShape.id, { fill: hex } as Partial<FreeformObject>);
+              }}
+            />
+          </div>
+          <div className="flex items-center gap-1">
+            {INK_COLORS.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                title={c.label}
+                aria-label={c.label}
+                className={cn(
+                  "h-6 w-6 rounded-md border border-line",
+                  c.swatch,
+                  selectedShape.stroke === c.id && "ring-2 ring-ink/25",
+                )}
+                onClick={() => {
+                  setShapeStroke(c.id);
+                  patchWithHistory(selectedShape.id, { stroke: c.id } as Partial<FreeformObject>);
+                }}
+              />
+            ))}
+            <ColorPickerBtn
+              value={selectedShape.stroke}
+              label="Custom stroke"
+              onChange={(hex) => {
+                setShapeStroke(hex);
+                patchWithHistory(selectedShape.id, { stroke: hex } as Partial<FreeformObject>);
+              }}
+            />
+          </div>
+          <div className="flex items-center gap-1">
+            {SHAPE_STROKE_WIDTHS.map((w) => (
+              <button
+                key={w}
+                type="button"
+                title={`${w}px`}
+                className={cn(
+                  "flex h-7 w-8 items-center justify-center rounded-md border border-line",
+                  selectedShape.strokeWidth === w ? "bg-paper-2 ring-1 ring-ink/20" : "hover:bg-paper-2",
+                )}
+                onClick={() => {
+                  setShapeWidth(w);
+                  patchWithHistory(selectedShape.id, { strokeWidth: w } as Partial<FreeformObject>);
+                }}
+              >
+                <span className="rounded-full bg-ink" style={{ width: 14, height: Math.max(1, w) }} />
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-1">
+            {STROKE_DASHES.map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                title={d.label}
+                className={cn(
+                  "h-7 rounded-md border border-line px-2 font-mono text-[10px] uppercase tracking-wide",
+                  selectedShape.strokeDash === d.id
+                    ? "bg-paper-2 text-ink ring-1 ring-ink/20"
+                    : "text-mute hover:bg-paper-2",
+                )}
+                onClick={() => {
+                  setShapeDash(d.id);
+                  patchWithHistory(selectedShape.id, { strokeDash: d.id } as Partial<FreeformObject>);
+                }}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+          <span className="hidden h-4 w-px bg-line sm:block" aria-hidden />
+          {typographyStrip(selectedShape, {
+            sizeKey: "fontSize",
+            colorKey: "color",
+            sizes: STICKY_TEXT_SIZES,
+            showParagraph: true,
+          })}
+        </div>
+      )}
+      </div>
+
+      <div
+        className="flex shrink-0 flex-wrap items-center gap-2 border-t border-line px-4 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] md:px-6 md:pb-2"
+        aria-label="Board settings"
+      >
+        <MonoLabel>View</MonoLabel>
+        <div className="flex items-center gap-0.5 rounded-lg border border-line bg-paper px-0.5">
+          <ToolbarBtn
+            label="Zoom out"
+            aria-label="Zoom out"
+            onClick={() => {
+              const el = viewportRef.current;
+              if (!el) return;
+              const r = el.getBoundingClientRect();
+              zoomAt(r.left + r.width / 2, r.top + r.height / 2, cam.zoom * 0.92, true);
+            }}
+          >
+            <Minus size={14} strokeWidth={1.4} />
+          </ToolbarBtn>
+          <button
+            type="button"
+            title="Reset zoom to 100%"
+            className="min-w-[3.25rem] px-1 font-mono text-[11px] tabular-nums text-mute hover:text-ink"
+            onClick={() => {
+              const el = viewportRef.current;
+              if (!el) return;
+              const r = el.getBoundingClientRect();
+              zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1, true);
+            }}
+          >
+            {zoomPct}%
+          </button>
+          <ToolbarBtn
+            label="Zoom in"
+            aria-label="Zoom in"
+            onClick={() => {
+              const el = viewportRef.current;
+              if (!el) return;
+              const r = el.getBoundingClientRect();
+              zoomAt(r.left + r.width / 2, r.top + r.height / 2, cam.zoom * 1.08, true);
+            }}
+          >
+            <Plus size={14} strokeWidth={1.4} />
+          </ToolbarBtn>
+        </div>
+        <TextButton
+          type="button"
+          onClick={() => setBoard({ dotted: !board.dotted })}
+          aria-pressed={board.dotted}
+        >
+          Dots {board.dotted ? "on" : "off"}
+        </TextButton>
+        <div className="ml-auto flex flex-wrap items-center gap-1">
+          <GhostButton
+            type="button"
+            onClick={() => {
+              if (!board.objects.length && !(board.connections ?? []).length) return;
+              setConfirmClear(true);
+            }}
+          >
+            <Eraser size={14} strokeWidth={1.4} />
+            Clear
+          </GhostButton>
+          <ToolbarBtn label="Export PNG" onClick={() => void exportBoardPng(board, blobs)}>
+            <Download size={15} strokeWidth={1.4} />
+          </ToolbarBtn>
+          <ToolbarBtn label="Export JSON" onClick={() => exportBoardJson(board)}>
+            <FileJson size={15} strokeWidth={1.4} />
+          </ToolbarBtn>
+        </div>
+      </div>
+
+      {confirmClear && (
+        <ConfirmDialog
+          title="Clear this board?"
+          description="Every object and connection on this board is removed. You can undo with ⌘Z."
+          confirmLabel="Clear board"
+          onConfirm={() => {
+            withHistory(() => clearBoard());
+            setSelected([]);
+            setConfirmClear(false);
+          }}
+          onClose={() => setConfirmClear(false)}
+        />
+      )}
     </div>
+  );
+}
+
+function DraftShape({
+  kind,
+  x,
+  y,
+  w,
+  h,
+  fill,
+  stroke,
+  strokeWidth,
+  strokeDash,
+}: {
+  kind: FreeformShapeKind;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  fill: string;
+  stroke: string;
+  strokeWidth: number;
+  strokeDash: FreeformStrokeDash;
+}) {
+  const pad = strokeWidth / 2;
+  const fillPaint = fillValue(fill);
+  const strokePaint = inkStrokeValue(stroke);
+  const dash = strokeDashArray(strokeDash);
+  const common = {
+    fill: fillPaint === "transparent" ? "none" : fillPaint,
+    fillOpacity: fillPaint === "transparent" ? 0.08 : 0.55,
+    stroke: strokePaint,
+    strokeWidth,
+    strokeDasharray: dash,
+    strokeOpacity: 0.85,
+  };
+  if (kind === "ellipse") {
+    return (
+      <ellipse
+        cx={x + w / 2}
+        cy={y + h / 2}
+        rx={Math.max(0, w / 2 - pad)}
+        ry={Math.max(0, h / 2 - pad)}
+        {...common}
+      />
+    );
+  }
+  if (kind === "diamond") {
+    return (
+      <polygon
+        points={`${x + w / 2},${y + pad} ${x + w - pad},${y + h / 2} ${x + w / 2},${y + h - pad} ${x + pad},${y + h / 2}`}
+        {...common}
+      />
+    );
+  }
+  if (kind === "triangle") {
+    return (
+      <polygon
+        points={`${x + w / 2},${y + pad} ${x + w - pad},${y + h - pad} ${x + pad},${y + h - pad}`}
+        {...common}
+      />
+    );
+  }
+  return (
+    <rect x={x + pad} y={y + pad} width={Math.max(0, w - strokeWidth)} height={Math.max(0, h - strokeWidth)} {...common} />
   );
 }

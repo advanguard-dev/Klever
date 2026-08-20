@@ -2,9 +2,11 @@ import { GhostButton, MonoLabel, Overlay, Panel, SolidButton, TextButton } from 
 import {
   blobUrl,
   cropToBlob,
+  extFromName,
   originalPath,
   resolveAssetSrc,
 } from "@/lib/assets";
+import { nid } from "@/lib/ids";
 import { useApp } from "@/store";
 import { useEffect, useRef, useState } from "react";
 
@@ -14,6 +16,7 @@ export function ImageBlock({
   width,
   onWidth,
   onCaption,
+  onReplaceSrc,
   readOnly,
 }: {
   src: string;
@@ -21,17 +24,26 @@ export function ImageBlock({
   width?: number;
   onWidth?: (width: number) => void;
   onCaption?: (caption: string) => void;
+  /** Point markdown at a derived crop so the original file stays untouched. */
+  onReplaceSrc?: (next: string) => void;
   /** Hide crop / resize chrome (Read mode). */
   readOnly?: boolean;
 }) {
   const blobs = useApp((s) => s.blobs);
   const putBlob = useApp((s) => s.putBlob);
+  const ensureBlob = useApp((s) => s.ensureBlob);
   const url = resolveAssetSrc(src, blobs);
+  const hasData = Boolean(blobs[src.replace(/^\.\//, "")]?.data?.byteLength ?? blobs[src]?.data?.byteLength);
   const [zoom, setZoom] = useState(false);
   const [crop, setCrop] = useState(false);
   const [fit, setFit] = useState<"contain" | "actual">("contain");
   const dragging = useRef<{ startX: number; startW: number } | null>(null);
   const editable = !readOnly;
+
+  useEffect(() => {
+    if (!src || hasData) return;
+    void ensureBlob(src.replace(/^\.\//, ""));
+  }, [src, hasData, ensureBlob]);
 
   const w = width ?? 640;
 
@@ -115,10 +127,17 @@ export function ImageBlock({
           onClose={() => setCrop(false)}
           onApply={async (blob) => {
             const rec = useApp.getState().blobs[src];
-            if (rec && !useApp.getState().blobs[originalPath(src)]) {
-              await putBlob(new Blob([rec.data], { type: rec.mime }), originalPath(src), rec.mime);
+            const linked = Boolean(rec?.external || rec?.handle);
+            if (linked) {
+              const dest = `assets/${nid()}.${extFromName(src, blob.type)}`;
+              await putBlob(blob, dest, blob.type);
+              onReplaceSrc?.(dest);
+            } else {
+              if (rec && !useApp.getState().blobs[originalPath(src)]) {
+                await putBlob(new Blob([rec.data], { type: rec.mime }), originalPath(src), rec.mime);
+              }
+              await putBlob(blob, src, blob.type);
             }
-            await putBlob(blob, src, blob.type);
             setCrop(false);
           }}
         />

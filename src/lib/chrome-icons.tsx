@@ -172,6 +172,19 @@ export {
   PAGE_ICONS,
 } from "@/lib/page-icons";
 
+export function accentKind(type: PropType): "tag" | "prop" | "smart" {
+  if (type === "tags") return "tag";
+  if (type === "formula" || type === "rollup") return "smart";
+  return "prop";
+}
+
+export function accentIconClass(type: PropType) {
+  const kind = accentKind(type);
+  if (kind === "tag") return "shrink-0 text-tag/80";
+  if (kind === "smart") return "shrink-0 text-smart/80";
+  return "shrink-0 text-prop/75";
+}
+
 export const PROP_ICONS: Record<PropType, LucideIcon> = {
   text: Type,
   number: Hash,

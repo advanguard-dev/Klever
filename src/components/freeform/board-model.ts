@@ -1,10 +1,15 @@
 import { cn } from "@/lib/cn";
 import { nid } from "@/lib/ids";
+import { PAGE_FONTS } from "@/lib/page-fonts";
 import type {
   FreeformConnection,
   FreeformObject,
+  FreeformShapeKind,
   FreeformStickyColor,
+  FreeformStrokeDash,
   PageFont,
+  TextAlign,
+  TextVAlign,
 } from "@/types";
 
 export const STICKY_COLORS: {
@@ -31,12 +36,8 @@ export const TEXT_COLORS: { id: string; label: string; className: string; hex: s
   { id: "slate", label: "Slate", className: "text-[#3d4550] dark:text-[#a8b0bc]", hex: "#3d4550" },
 ];
 
-/** Klever page fonts — Instrument Sans / Serif / IBM Plex Mono. */
-export const BOARD_FONTS: { id: PageFont; label: string; className: string }[] = [
-  { id: "sans", label: "Sans", className: "font-sans" },
-  { id: "serif", label: "Serif", className: "font-serif" },
-  { id: "mono", label: "Mono", className: "font-mono" },
-];
+/** @deprecated use PAGE_FONTS */
+export const BOARD_FONTS = PAGE_FONTS;
 
 export type InkTool = "pen" | "highlighter" | "eraser";
 
@@ -70,6 +71,27 @@ export const PEN_WIDTHS = [1.5, 2.5, 4] as const;
 export const HIGHLIGHTER_WIDTHS = [12, 18, 24] as const;
 export const DEFAULT_HIGHLIGHT_COLOR = "hl-yellow";
 export const HIGHLIGHTER_OPACITY = 0.35;
+
+export const SHAPE_KINDS: { id: FreeformShapeKind; label: string }[] = [
+  { id: "rect", label: "Rectangle" },
+  { id: "ellipse", label: "Ellipse" },
+  { id: "diamond", label: "Diamond" },
+  { id: "triangle", label: "Triangle" },
+];
+
+/** Fill presets for shapes — sticky papers plus transparent. */
+export const SHAPE_FILLS: { id: string; label: string; swatch: string; hex: string }[] = [
+  { id: "none", label: "None", swatch: "bg-paper", hex: "transparent" },
+  ...STICKY_COLORS.map((c) => ({ id: c.id, label: c.label, swatch: c.bg, hex: c.hex })),
+];
+
+export const STROKE_DASHES: { id: FreeformStrokeDash; label: string }[] = [
+  { id: "solid", label: "Solid" },
+  { id: "dashed", label: "Dashed" },
+  { id: "dotted", label: "Dotted" },
+];
+
+export const SHAPE_STROKE_WIDTHS = [1, 2, 3, 4, 6] as const;
 
 export function stickyClass(color: FreeformStickyColor) {
   return STICKY_COLORS.find((c) => c.id === color)?.bg ?? "bg-[#f0e2c4]";
@@ -151,6 +173,28 @@ export function boardEmphasisClass(opts: {
   return cn(opts.bold && "font-bold", opts.italic && "italic", opts.strike && "line-through");
 }
 
+export function defaultTextAlign(type: "text" | "sticky" | "mind" | "shape"): TextAlign {
+  return type === "mind" || type === "shape" ? "center" : "left";
+}
+
+export function defaultTextVAlign(type: "text" | "sticky" | "mind" | "shape"): TextVAlign {
+  return type === "mind" || type === "shape" ? "middle" : "top";
+}
+
+export function textAlignClass(align?: TextAlign, type?: "text" | "sticky" | "mind" | "shape") {
+  const a = align ?? (type ? defaultTextAlign(type) : "left");
+  if (a === "center") return "text-center";
+  if (a === "right") return "text-right";
+  return "text-left";
+}
+
+export function textVAlignClass(valign?: TextVAlign, type?: "text" | "sticky" | "mind" | "shape") {
+  const v = valign ?? (type ? defaultTextVAlign(type) : "top");
+  if (v === "middle") return "justify-center";
+  if (v === "bottom") return "justify-end";
+  return "justify-start";
+}
+
 export function inkStrokeValue(id?: string) {
   if (!id || id === "currentColor") return "var(--color-ink)";
   return (
@@ -168,6 +212,66 @@ export function strokePickerHex(id?: string): string {
   if (known) return known.hex;
   if (/^#[0-9a-fA-F]{6}$/.test(id)) return id;
   return "#1b1a16";
+}
+
+export function fillValue(fill?: string) {
+  if (!fill || fill === "none" || fill === "transparent") return "transparent";
+  if (/^#[0-9a-fA-F]{6}$/.test(fill)) return fill;
+  const sticky = STICKY_COLORS.find((c) => c.id === fill);
+  if (sticky) return sticky.hex;
+  return inkStrokeValue(fill);
+}
+
+export function fillPickerHex(fill?: string): string {
+  if (!fill || fill === "none") return "#ffffff";
+  const preset = SHAPE_FILLS.find((c) => c.id === fill);
+  if (preset && preset.id !== "none") return preset.hex;
+  if (/^#[0-9a-fA-F]{6}$/.test(fill)) return fill;
+  return "#ffffff";
+}
+
+export function strokeDashArray(dash?: FreeformStrokeDash): string | undefined {
+  if (dash === "dashed") return "8 4";
+  if (dash === "dotted") return "2 3";
+  return undefined;
+}
+
+export type ShapeStyle = {
+  shape?: FreeformShapeKind;
+  fill?: string;
+  stroke?: string;
+  strokeWidth?: number;
+  strokeDash?: FreeformStrokeDash;
+};
+
+export function createShape(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  z: number,
+  style: ShapeStyle = {},
+): FreeformObject {
+  return {
+    id: nid(),
+    type: "shape",
+    x,
+    y,
+    w,
+    h,
+    z,
+    shape: style.shape ?? "rect",
+    fill: style.fill ?? "paper",
+    stroke: style.stroke ?? "ink",
+    strokeWidth: style.strokeWidth ?? 2,
+    strokeDash: style.strokeDash ?? "solid",
+    text: "",
+    fontSize: 14,
+    color: "ink",
+    fontFamily: "serif",
+    align: "center",
+    valign: "middle",
+  };
 }
 
 export function nextZ(objects: FreeformObject[]) {

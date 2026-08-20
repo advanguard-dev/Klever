@@ -1,4 +1,6 @@
 import { GhostButton, IconButton, Kbd, MonoLabel, TextButton } from "@/components/ui";
+import { useContextMenu } from "@/components/ContextMenu";
+import { boardMenuItems, folderMenuItems, noteMenuItems, tagMenuItems } from "@/lib/context-menus";
 import { cn } from "@/lib/cn";
 import {
   ChromeIcon,
@@ -12,6 +14,8 @@ import {
   treeNoteIcon,
 } from "@/lib/chrome-icons";
 import { buildVaultTree, ensureFolderPaths, folderAncestors, noteFolder, type VaultFolder } from "@/lib/folders";
+import { dropNoteNearNote, dropNoteToFolder } from "@/lib/drop-files";
+import { folderDropHighlight, hasFileTransfer, KLEVER_NOTE_DRAG, noteDragId } from "@/lib/dnd";
 import { slugify } from "@/lib/ids";
 import { defaultWorkspaceTools } from "@/lib/workspaces";
 import { searchNotes, searchSnippet } from "@/lib/search";
@@ -61,10 +65,14 @@ export function Sidebar() {
   const starred = useApp((s) => s.starred);
   const toggleStar = useApp((s) => s.toggleStar);
   const createPage = useApp((s) => s.createPage);
+  const importDroppedFiles = useApp((s) => s.importDroppedFiles);
+  const boards = useApp((s) => s.boards);
+  const createBoard = useApp((s) => s.createBoard);
   const workspaces = useApp((s) => s.workspaces);
   const activeWorkspaceId = useApp((s) => s.activeWorkspaceId);
   const switchWorkspace = useApp((s) => s.switchWorkspace);
   const openWorkspaceSetup = useApp((s) => s.openWorkspaceSetup);
+  const { open } = useContextMenu();
 
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
   const tools = activeWorkspace?.tools ?? defaultWorkspaceTools();
@@ -267,7 +275,7 @@ export function Sidebar() {
       </div>
 
       <div className="px-3">
-        <label className="flex items-center gap-2 rounded-xl border border-line bg-paper px-2 py-1">
+        <label className="flex min-h-11 items-center gap-2 rounded-xl border border-line bg-paper px-2 py-1 md:min-h-0">
           <Search size={13} strokeWidth={1.4} className="text-mute" />
           <input
             value={query}
@@ -288,12 +296,14 @@ export function Sidebar() {
           Today
         </GhostButton>
         <TextButton
-          className="ml-auto h-8"
+          className="ml-auto h-8 max-md:h-11"
           onClick={() => setCommandOpen(true)}
           aria-label="Command palette"
         >
           <Command size={13} strokeWidth={1.4} />
-          <Kbd>⌘K</Kbd>
+          <span className="hidden md:inline-flex">
+            <Kbd>⌘K</Kbd>
+          </span>
         </TextButton>
       </div>
 
@@ -310,6 +320,7 @@ export function Sidebar() {
                   starred={starred.includes(n.id)}
                   onStar={() => toggleStar(n.id)}
                   onClick={() => openNoteNav(n)}
+                  onContextMenu={(e) => open(e, noteMenuItems(n))}
                 />
                 {query.trim() && searchSnippet(n.body, query) && (
                   <p className="px-8 pb-2 font-mono text-[10px] leading-4 text-faint">
@@ -335,6 +346,7 @@ export function Sidebar() {
                     starred
                     onStar={() => toggleStar(n.id)}
                     onClick={() => openNoteNav(n)}
+                    onContextMenu={(e) => open(e, noteMenuItems(n))}
                   />
                 ))}
               </Section>
@@ -352,6 +364,7 @@ export function Sidebar() {
                     starred={starred.includes(n.id)}
                     onStar={() => toggleStar(n.id)}
                     onClick={() => openNoteNav(n)}
+                    onContextMenu={(e) => open(e, noteMenuItems(n))}
                   />
                 ))}
               </Section>
@@ -400,6 +413,19 @@ export function Sidebar() {
                   />
                 </form>
               )}
+              <div
+                onDragOver={(e) => {
+                  if (!hasFileTransfer(e) && !e.dataTransfer.types.includes(KLEVER_NOTE_DRAG)) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = e.dataTransfer.types.includes(KLEVER_NOTE_DRAG) ? "move" : "copy";
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const dragged = noteDragId(e);
+                  if (dragged) dropNoteToFolder(dragged, "");
+                  else if (e.dataTransfer.files.length) void importDroppedFiles([...e.dataTransfer.files]);
+                }}
+              >
               <FolderBranch
                 folder={tree}
                 depth={0}
@@ -410,7 +436,9 @@ export function Sidebar() {
                 onStar={toggleStar}
                 onOpen={openNoteNav}
                 onCreate={(folder) => createPage({ folder: folder || undefined, title: "Untitled" })}
+                importDroppedFiles={importDroppedFiles}
               />
+              </div>
             </Section>
             <Section
               label="Databases"
@@ -430,6 +458,33 @@ export function Sidebar() {
                 />
               ))}
             </Section>
+            {tools.board && (
+              <Section
+                label="Boards"
+                icon={LayoutDashboard}
+                headerAction={
+                  <button
+                    type="button"
+                    aria-label="New board"
+                    className="text-faint hover:text-ink"
+                    onClick={() => createBoard()}
+                  >
+                    <Plus size={13} strokeWidth={1.4} />
+                  </button>
+                }
+              >
+                {boards.map((b) => (
+                  <Row
+                    key={b.id}
+                    label={b.title}
+                    lucide={LayoutDashboard}
+                    active={view.kind === "freeform" && view.id === b.id}
+                    onClick={() => setView({ kind: "freeform", id: b.id })}
+                    onContextMenu={(e) => open(e, boardMenuItems(b.id, b.title))}
+                  />
+                ))}
+              </Section>
+            )}
             <Section label="Tags">
               {tags.map((t) => (
                 <Row
@@ -437,6 +492,7 @@ export function Sidebar() {
                   label={`#${t}`}
                   lucide={Hash}
                   mono
+                  tone="tag"
                   active={view.kind === "tag" && view.tag === t}
                   onClick={() => {
                     setView({ kind: "tag", tag: t });
@@ -444,6 +500,7 @@ export function Sidebar() {
                       useApp.setState({ sidebarOpen: false });
                     }
                   }}
+                  onContextMenu={(e) => open(e, tagMenuItems(t))}
                 />
               ))}
             </Section>
@@ -465,19 +522,6 @@ export function Sidebar() {
                   active={view.kind === "calendar"}
                   onClick={() => {
                     setView({ kind: "calendar" });
-                    if (window.matchMedia("(max-width: 767px)").matches) {
-                      useApp.setState({ sidebarOpen: false });
-                    }
-                  }}
-                />
-              )}
-              {tools.board && (
-                <Row
-                  label="Board"
-                  lucide={LayoutDashboard}
-                  active={view.kind === "freeform"}
-                  onClick={() => {
-                    setView({ kind: "freeform" });
                     if (window.matchMedia("(max-width: 767px)").matches) {
                       useApp.setState({ sidebarOpen: false });
                     }
@@ -515,6 +559,7 @@ function FolderBranch({
   onStar,
   onOpen,
   onCreate,
+  importDroppedFiles,
 }: {
   folder: VaultFolder;
   depth: number;
@@ -525,12 +570,36 @@ function FolderBranch({
   onStar: (id: string) => void;
   onOpen: (n: Note) => void;
   onCreate: (folder: string) => void;
+  importDroppedFiles: (files: File[], opts?: { folder?: string }) => Promise<void>;
 }) {
+  const { open: openMenu } = useContextMenu();
+  const [overFolder, setOverFolder] = useState<string | null>(null);
+
+  const folderDropProps = (folderPath: string) => ({
+    onDragOver: (e: React.DragEvent) => {
+      if (!hasFileTransfer(e) && !e.dataTransfer.types.includes(KLEVER_NOTE_DRAG)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setOverFolder(folderPath);
+      e.dataTransfer.dropEffect = e.dataTransfer.types.includes(KLEVER_NOTE_DRAG) ? "move" : "copy";
+    },
+    onDragLeave: () => setOverFolder((cur) => (cur === folderPath ? null : cur)),
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setOverFolder(null);
+      const dragged = noteDragId(e);
+      if (dragged) dropNoteToFolder(dragged, folderPath);
+      else if (e.dataTransfer.files.length) void importDroppedFiles([...e.dataTransfer.files], { folder: folderPath });
+    },
+  });
+
   return (
     <>
       {folder.notes.map((n) => (
         <Row
           key={n.id}
+          noteId={n.id}
           label={n.title}
           icon={n.icon}
           kind={n.type}
@@ -539,17 +608,26 @@ function FolderBranch({
           starred={starred.includes(n.id)}
           onStar={() => onStar(n.id)}
           onClick={() => onOpen(n)}
+          onContextMenu={(e) => openMenu(e, noteMenuItems(n))}
+          onNoteDrop={(draggedId) => dropNoteNearNote(draggedId, n)}
         />
       ))}
       {folder.folders.map((child) => {
         const open = openFolders.has(child.path);
         return (
           <div key={child.path}>
-            <div className="group/folder flex items-center">
+            <div
+              className="group/folder flex items-center"
+              onContextMenu={(e) => openMenu(e, folderMenuItems(child.path))}
+              {...folderDropProps(child.path)}
+            >
               <button
                 type="button"
                 onClick={() => onToggle(child.path)}
-                className="flex min-w-0 flex-1 items-center gap-1 rounded-lg px-2 py-1.5 text-left font-serif text-sm text-mute transition-colors duration-150 hover:bg-paper-2 hover:text-ink"
+                className={cn(
+                  "flex min-w-0 flex-1 items-center gap-1 rounded-lg px-2 py-1.5 text-left font-serif text-sm text-mute transition-colors duration-150 hover:bg-paper-2 hover:text-ink",
+                  overFolder === child.path && folderDropHighlight(true),
+                )}
                 style={{ paddingLeft: 8 + depth * 12 }}
               >
                 <ChevronRight
@@ -580,6 +658,7 @@ function FolderBranch({
                 onStar={onStar}
                 onOpen={onOpen}
                 onCreate={onCreate}
+                importDroppedFiles={importDroppedFiles}
               />
             )}
           </div>
@@ -606,6 +685,7 @@ function DatabaseBranch({
 }) {
   const children = notes.filter((n) => n.parent === db.id);
   const [open, setOpen] = useState(() => children.some((c) => c.id === activeId));
+  const { open: openMenu } = useContextMenu();
   useEffect(() => {
     if (notes.some((n) => n.parent === db.id && n.id === activeId)) setOpen(true);
   }, [activeId, db.id, notes]);
@@ -636,6 +716,7 @@ function DatabaseBranch({
             starred={starred.includes(db.id)}
             onStar={() => onStar(db.id)}
             onClick={() => onOpen(db)}
+            onContextMenu={(e) => openMenu(e, noteMenuItems(db))}
           />
         </div>
       </div>
@@ -651,6 +732,7 @@ function DatabaseBranch({
             starred={starred.includes(n.id)}
             onStar={() => onStar(n.id)}
             onClick={() => onOpen(n)}
+            onContextMenu={(e) => openMenu(e, noteMenuItems(n))}
           />
         ))}
     </div>
@@ -715,10 +797,14 @@ function Row({
   lucide,
   active,
   onClick,
+  onContextMenu,
   mono,
+  tone,
   starred,
   onStar,
   depth = 0,
+  noteId,
+  onNoteDrop,
 }: {
   label: string;
   icon?: string;
@@ -726,27 +812,61 @@ function Row({
   lucide?: typeof FileText;
   active?: boolean;
   onClick: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
   mono?: boolean;
+  tone?: "tag";
   starred?: boolean;
   onStar?: () => void;
   depth?: number;
+  noteId?: string;
+  onNoteDrop?: (draggedId: string) => void;
 }) {
   const Fallback = lucide ?? (kind ? noteKindIcon(kind) : FileText);
   const treeIcon = treeNoteIcon(icon, kind);
+  const [dropOver, setDropOver] = useState(false);
   return (
-    <div className="group/row flex items-center">
+    <div
+      className={cn("group/row flex items-center", dropOver && "rounded-lg bg-smart/10 ring-1 ring-smart/25")}
+      onContextMenu={onContextMenu}
+      draggable={Boolean(noteId)}
+      onDragStart={(e) => {
+        if (!noteId) return;
+        e.dataTransfer.setData(KLEVER_NOTE_DRAG, noteId);
+        e.dataTransfer.effectAllowed = "move";
+      }}
+      onDragOver={(e) => {
+        if (!onNoteDrop || !e.dataTransfer.types.includes(KLEVER_NOTE_DRAG)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setDropOver(true);
+        e.dataTransfer.dropEffect = "move";
+      }}
+      onDragLeave={() => setDropOver(false)}
+      onDrop={(e) => {
+        if (!onNoteDrop) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setDropOver(false);
+        const dragged = noteDragId(e);
+        if (dragged && dragged !== noteId) onNoteDrop(dragged);
+      }}
+    >
       <button
         type="button"
         onClick={onClick}
         style={{ paddingLeft: 8 + depth * 12 }}
         className={cn(
           "flex min-w-0 flex-1 items-center gap-2 rounded-lg py-1.5 pr-1 text-left font-serif text-sm transition-colors duration-150",
-          active ? "bg-paper-2 text-ink" : "text-mute hover:bg-paper-2 hover:text-ink",
+          active ? "bg-paper-2 text-ink" : tone === "tag" ? "text-tag/80 hover:bg-paper-2 hover:text-tag" : "text-mute hover:bg-paper-2 hover:text-ink",
           mono && "font-mono text-[12px]",
         )}
       >
-        <span className="flex w-4 shrink-0 items-center justify-center text-center text-xs text-faint">
-          <NoteIcon icon={treeIcon} fallback={Fallback} />
+        <span className="flex w-4 shrink-0 items-center justify-center text-center text-xs">
+          <NoteIcon
+            icon={treeIcon}
+            fallback={Fallback}
+            className={tone === "tag" ? "shrink-0 text-tag/75" : "shrink-0 text-faint"}
+          />
         </span>
         <span className="truncate">{label}</span>
       </button>

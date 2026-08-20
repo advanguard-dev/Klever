@@ -8,7 +8,10 @@ import "@fontsource/instrument-sans/600.css";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import { App } from "@/App";
+import { applyElectronPlatformClass } from "@/lib/electron";
 import "@/index.css";
+
+applyElectronPlatformClass();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

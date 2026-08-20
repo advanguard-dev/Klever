@@ -4,10 +4,14 @@ import { PlusMenu } from "@/components/insert/PlusMenu";
 import { CommandPalette } from "@/components/command/CommandPalette";
 import { DatabasePage } from "@/components/db/DatabasePage";
 import { NotePage } from "@/components/editor/NotePage";
+import { ReadingView } from "@/components/editor/ReadingView";
 import { FreeformView } from "@/components/freeform/FreeformView";
 import { GraphView } from "@/components/graph/GraphView";
+import { PageTabs } from "@/components/layout/PageTabs";
 import { RightRail, TagPage } from "@/components/layout/RightRail";
 import { Sidebar } from "@/components/layout/Sidebar";
+import { FileDropZone } from "@/components/layout/FileDropZone";
+import { TitleBar } from "@/components/layout/TitleBar";
 import { WorkspaceSetup } from "@/components/layout/WorkspaceSetup";
 import { Alert, EmptyState, Kbd, Segmented, Toggle, ToolbarBtn } from "@/components/ui";
 import { defaultWorkspaceTools } from "@/lib/workspaces";
@@ -21,6 +25,7 @@ import {
   NotebookPen,
   PanelLeft,
   PanelRight,
+  Search,
   Settings,
   Sparkles,
   Users,
@@ -37,6 +42,7 @@ export function AppShell() {
   const setView = useApp((s) => s.setView);
   const setDumpOpen = useApp((s) => s.setDumpOpen);
   const setSettingsOpen = useApp((s) => s.setSettingsOpen);
+  const setCommandOpen = useApp((s) => s.setCommandOpen);
   const createDaily = useApp((s) => s.createDaily);
   const importMarkdown = useApp((s) => s.importMarkdown);
   const error = useApp((s) => s.error);
@@ -66,9 +72,51 @@ export function AppShell() {
       ? notes.find((n) => n.id === view.id)
       : undefined;
 
+  if (view.kind === "note" && mode === "read" && note) {
+    return (
+      <div className="flex h-dvh flex-col bg-paper text-ink">
+        <ReadingView note={note} />
+        {error && (
+          <Alert
+            className="fixed bottom-12 left-1/2 z-50 w-[min(28rem,calc(100%-2rem))] -translate-x-1/2 font-mono text-xs"
+            onDismiss={() => setError(null)}
+          >
+            {error}
+          </Alert>
+        )}
+        <CommandPalette />
+        <PlusMenu />
+        <BrainDump />
+        <AiSettings />
+        <WorkspaceSetup />
+      </div>
+    );
+  }
+
+  if (view.kind === "freeform" && tools.board) {
+    return (
+      <div className="flex h-dvh flex-col bg-paper text-ink">
+        <FreeformView key={view.id ?? "board"} />
+        {error && (
+          <Alert
+            className="fixed bottom-12 left-1/2 z-50 w-[min(28rem,calc(100%-2rem))] -translate-x-1/2 font-mono text-xs"
+            onDismiss={() => setError(null)}
+          >
+            {error}
+          </Alert>
+        )}
+        <CommandPalette />
+        <PlusMenu />
+        <BrainDump />
+        <AiSettings />
+        <WorkspaceSetup />
+      </div>
+    );
+  }
+
   return (
-    <div className="flex h-screen flex-col bg-paper text-ink">
-      <header className="flex h-14 shrink-0 items-center gap-3 overflow-x-auto border-b border-line px-4">
+    <div className="flex h-dvh flex-col bg-paper text-ink">
+      <TitleBar>
         {!sidebarOpen && (
           <ToolbarBtn label="Sidebar" aria-label="Open sidebar" onClick={toggleSidebar}>
             <PanelLeft size={15} strokeWidth={1.4} />
@@ -77,17 +125,33 @@ export function AppShell() {
         {view.kind === "note" && (
           <Segmented
             aria-label="Editor mode"
+            size="sm"
             value={mode}
             onChange={(m) => setMode(m)}
             options={EDITOR_MODES.map((m) => ({
               value: m,
               label: EDITOR_MODE_LABEL[m],
               icon: MODE_ICONS[m],
+              iconOnly: m === "markdown",
             }))}
           />
         )}
-        <div className="ml-auto flex items-center gap-1">
-          <ToolbarBtn label="Today" aria-label="Today's note" title="Today · ⌘⇧T" onClick={() => createDaily()}>
+        <div className="ml-auto flex items-center gap-0.5 md:gap-1">
+          <ToolbarBtn
+            label="Search"
+            aria-label="Search"
+            title="Search · ⌘K"
+            onClick={() => setCommandOpen(true)}
+          >
+            <Search size={15} strokeWidth={1.4} />
+          </ToolbarBtn>
+          <ToolbarBtn
+            label="Today"
+            aria-label="Today's note"
+            title="Today · ⌘⇧T"
+            className="hidden md:inline-flex"
+            onClick={() => createDaily()}
+          >
             <NotebookPen size={15} strokeWidth={1.4} />
           </ToolbarBtn>
           {tools.calendar && (
@@ -95,6 +159,7 @@ export function AppShell() {
               label="Calendar"
               aria-label="Calendar"
               showLabel
+              className="hidden md:inline-flex"
               active={view.kind === "calendar"}
               onClick={() => setView({ kind: "calendar" })}
             >
@@ -106,13 +171,14 @@ export function AppShell() {
               label="Board"
               aria-label="Board"
               showLabel
+              className="hidden md:inline-flex"
               active={view.kind === "freeform"}
               onClick={() => setView({ kind: "freeform" })}
             >
               <LayoutDashboard size={15} strokeWidth={1.4} />
             </ToolbarBtn>
           )}
-          <span className="mx-1 hidden h-5 w-px bg-line sm:block" aria-hidden />
+          <span className="mx-1 hidden h-5 w-px bg-line md:block" aria-hidden />
           {tools.brainDump && (
             <ToolbarBtn label="Dump" aria-label="Brain dump" onClick={() => setDumpOpen(true)}>
               <Sparkles size={15} strokeWidth={1.4} />
@@ -122,6 +188,7 @@ export function AppShell() {
             label="Import MD"
             aria-label="Import markdown"
             title="Import markdown"
+            className="hidden md:inline-flex"
             onClick={() => void importMarkdown()}
           >
             <FileUp size={15} strokeWidth={1.4} />
@@ -129,24 +196,25 @@ export function AppShell() {
           <ToolbarBtn label="Settings" aria-label="AI settings" onClick={() => setSettingsOpen(true)}>
             <Settings size={15} strokeWidth={1.4} />
           </ToolbarBtn>
-          <span className="mx-2 inline-flex">
+          <span className="mx-2 hidden md:inline-flex">
             <Toggle
               checked={theme === "dark"}
               onChange={(on) => setTheme(on ? "dark" : "light")}
               label="Dark"
             />
           </span>
-          <ToolbarBtn
-            label="Context"
-            aria-label={propsOpen ? "Hide context" : "Show context"}
-            active={propsOpen}
-            onClick={toggleProps}
-            className="hidden md:inline-flex"
-          >
-            <PanelRight size={15} strokeWidth={1.4} />
-          </ToolbarBtn>
+          {(view.kind === "note" || view.kind === "database") && (
+            <ToolbarBtn
+              label="Context"
+              aria-label={propsOpen ? "Hide context" : "Show context"}
+              active={propsOpen}
+              onClick={toggleProps}
+            >
+              <PanelRight size={15} strokeWidth={1.4} />
+            </ToolbarBtn>
+          )}
         </div>
-      </header>
+      </TitleBar>
 
       <div className="relative flex min-h-0 flex-1">
         {sidebarOpen && (
@@ -160,18 +228,23 @@ export function AppShell() {
             <Sidebar />
           </>
         )}
-        <main
+        <FileDropZone
           className={`relative min-h-0 min-w-0 flex-1 ${
             view.kind === "freeform" || view.kind === "graph" ? "overflow-hidden" : "overflow-y-auto"
           }`}
+          attachToNoteId={view.kind === "note" ? view.id : undefined}
         >
+          {(view.kind === "note" || view.kind === "database") && (
+            <div className="sticky top-0 z-20 bg-paper">
+              <PageTabs />
+            </div>
+          )}
           {view.kind === "note" && note && <NotePage key={note.id} note={note} />}
           {view.kind === "database" && note && (
             <DatabasePage key={note.id} note={note} viewId={view.viewId} />
           )}
           {view.kind === "graph" && tools.graph && <GraphView />}
           {view.kind === "calendar" && tools.calendar && <GlobalCalendar />}
-          {view.kind === "freeform" && tools.board && <FreeformView />}
           {view.kind === "tag" && <TagPage tag={view.tag} />}
           {(view.kind === "note" || view.kind === "database") && !note && (
             <EmptyState
@@ -179,11 +252,11 @@ export function AppShell() {
               description="It was deleted or is not in this vault."
             />
           )}
-        </main>
+        </FileDropZone>
         <RightRail />
       </div>
 
-      <footer className="flex h-9 shrink-0 items-center justify-between border-t border-line px-4">
+      <footer className="hidden h-9 shrink-0 items-center justify-between border-t border-line px-4 pb-[env(safe-area-inset-bottom)] md:flex md:pb-0">
         <span className="inline-flex items-center gap-2 font-mono text-[10px] tracking-wide text-mute">
           {notes.length} files · markdown · local
           {peers.length > 0 && (

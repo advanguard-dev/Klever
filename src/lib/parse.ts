@@ -181,11 +181,25 @@ export function wikiToHtmlSpans(md: string) {
   );
 }
 
+/** File extension is the source of truth — `.md` pages must not become databases because of frontmatter. */
+export function noteKindFromPath(path: string): "page" | "database" {
+  return path.endsWith(".database.md") ? "database" : "page";
+}
+
+/** Coerce in-memory notes before save/load so .md files stay pages. */
+export function normalizeNote(note: Note): Note {
+  const type = note.path.endsWith(".database.md") ? "database" : "page";
+  return {
+    ...note,
+    type,
+    views: type === "database" ? note.views : undefined,
+  };
+}
+
 export function fileToNote(path: string, raw: string): Note {
   const { data, body } = parseMarkdown(raw);
   const titleFromPath = path.replace(/\.database\.md$|\.md$/i, "").split("/").at(-1) || "Untitled";
-  const isDb =
-    data.type === "database" || path.endsWith(".database.md") || Array.isArray(data.schema);
+  const type = noteKindFromPath(path);
   const nestedProps =
     data.props && typeof data.props === "object" && !Array.isArray(data.props)
       ? (data.props as Record<string, unknown>)
@@ -198,12 +212,12 @@ export function fileToNote(path: string, raw: string): Note {
     ...new Set([...asTags(data.tags), ...asTags(props.tags), ...extractInlineTags(body)]),
   ];
   delete props.tags;
-  return {
+  return normalizeNote({
     id: asString(data.id) || path,
     path,
     title: asString(data.title) || titleFromPath,
     body,
-    type: isDb ? "database" : "page",
+    type,
     icon: asString(data.icon),
     cover: asString(data.cover),
     font: data.font === "serif" || data.font === "mono" || data.font === "sans" ? data.font : undefined,
@@ -214,11 +228,11 @@ export function fileToNote(path: string, raw: string): Note {
     parent: asString(data.parent),
     props,
     schema: Array.isArray(data.schema) ? (data.schema as SchemaProp[]) : undefined,
-    views: Array.isArray(data.views) ? (data.views as DbView[]) : undefined,
+    views: type === "database" && Array.isArray(data.views) ? (data.views as DbView[]) : undefined,
     comments: Array.isArray(data.comments) ? (data.comments as NoteComment[]) : undefined,
     created: asString(data.created) || new Date().toISOString(),
     updated: asString(data.updated) || new Date().toISOString(),
-  };
+  });
 }
 
 function cleanFm(note: Note): Record<string, unknown> {
@@ -237,12 +251,15 @@ function cleanFm(note: Note): Record<string, unknown> {
   if (note.template) fm.template = true;
   if (note.tags.length) fm.tags = note.tags;
   if (note.parent) fm.parent = note.parent;
-  if (note.schema) fm.schema = note.schema;
-  if (note.views) fm.views = note.views;
-  if (note.comments?.length) fm.comments = note.comments;
-  for (const [k, v] of Object.entries(note.props)) {
+  const normalized = normalizeNote(note);
+  if (normalized.schema?.length) fm.schema = normalized.schema;
+  if (normalized.type === "database" && normalized.views) fm.views = normalized.views;
+  if (normalized.comments?.length) fm.comments = normalized.comments;
+  for (const [k, v] of Object.entries(normalized.props)) {
+    if (FM_KEYS.has(k)) continue;
     if (v !== undefined && v !== null && v !== "") fm[k] = v;
   }
+  fm.type = normalized.type;
   return fm;
 }
 

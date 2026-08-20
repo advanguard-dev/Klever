@@ -1,26 +1,36 @@
 import { SlashStack } from "@/components/insert/PlusMenu";
 import { openNote } from "@/components/editor/WikiPeek";
+import { useContextMenu } from "@/components/ContextMenu";
+import type { ContextMenuItem } from "@/lib/context-menus";
 import { Panel } from "@/components/ui";
 import { NoteLabel } from "@/lib/chrome-icons";
+import { copyFromTipTap, cutFromTipTap, pasteIntoTipTap } from "@/lib/clipboard-editing";
 import { filterCommands, slashCommands } from "@/lib/commands";
 import { registerWysiwyg } from "@/lib/editor-bridge";
-import { htmlToMd, mdToHtml } from "@/lib/markdown-io";
 import { resolveAssetSrc } from "@/lib/assets";
+import { htmlToMd, mdToHtml } from "@/lib/markdown-io";
 import { resolveLink } from "@/lib/parse";
 import { runCommand } from "@/lib/run-command";
 import { useApp } from "@/store";
+import { VaultFile } from "@/lib/vault-file-ext";
+import { WordFont } from "@/lib/word-font-ext";
 import { WikiLink } from "@/lib/wiki-ext";
+import { PAGE_FONTS } from "@/lib/page-fonts";
+import type { PageFont } from "@/types";
 import type { InsertCommand, Note } from "@/types";
 import Image from "@tiptap/extension-image";
+import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
 import { TableKit } from "@tiptap/extension-table";
 import TaskItem from "@tiptap/extension-task-item";
 import TaskList from "@tiptap/extension-task-list";
+import { Fragment } from "@tiptap/pm/model";
+import type { EditorView } from "@tiptap/pm/view";
 import { BubbleMenu } from "@tiptap/react/menus";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { Bold, Heading2, Italic, Link2, Plus, Strikethrough } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Bold, GripVertical, Heading2, Italic, Link2, Plus, Strikethrough } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 
 const AssetImage = Image.extend({
   addNodeView() {
@@ -94,17 +104,23 @@ export function BlockEditor({
 }) {
   const notes = useApp((s) => s.notes);
   const setPlusOpen = useApp((s) => s.setPlusOpen);
+  const { open } = useContextMenu();
   const [slash, setSlash] = useState<{ query: string } | null>(null);
   const [wiki, setWiki] = useState<{ query: string; embed: boolean } | null>(null);
   const [slashI, setSlashI] = useState(0);
   const [wikiI, setWikiI] = useState(0);
-  const [gutter, setGutter] = useState<{ top: number } | null>(null);
   const slashRef = useRef(slash);
   const slashIRef = useRef(slashI);
   const wikiRef = useRef(wiki);
   const wikiIRef = useRef(wikiI);
   const editorRef = useRef<Editor | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const gutterDomRef = useRef<HTMLElement | null>(null);
+  const [gutter, setGutter] = useState<{ top: number; dom: HTMLElement } | null>(null);
+  const gutterStateRef = useRef(gutter);
+  gutterStateRef.current = gutter;
+  const [dropLine, setDropLine] = useState<number | null>(null);
+  const dragRef = useRef<{ from: number; size: number } | null>(null);
   const lastEmitted = useRef(markdown);
   const syncingRef = useRef(false);
   const onChangeRef = useRef(onChange);
@@ -130,10 +146,24 @@ export function BlockEditor({
         StarterKit.configure({
           heading: { levels: [1, 2, 3] },
           link: false,
+          dropcursor: { color: "var(--color-ink)", width: 2 },
         }),
         WikiLink,
+        WordFont,
+        Link.configure({
+          openOnClick: false,
+          autolink: false,
+          HTMLAttributes: { rel: "noreferrer noopener" },
+          isAllowedUri: (url, ctx) => {
+            if (!url) return false;
+            if (ctx.defaultValidate(url)) return true;
+            if (url.startsWith("./") || url.startsWith("/")) return true;
+            return !/^[a-z][a-z0-9+.-]*:/i.test(url);
+          },
+        }),
         Placeholder.configure({ placeholder: "Type / for blocks, [[ to link" }),
         AssetImage.configure({ inline: false }),
+        VaultFile,
         TaskList,
         TaskItem.configure({ nested: true }),
         TableKit.configure({ table: { resizable: false } }),
@@ -145,19 +175,45 @@ export function BlockEditor({
           class: "prose-klever tiptap min-h-[50vh]",
         },
         handleClick: (_view, _pos, event) => {
-          const el = (event.target as HTMLElement | null)?.closest("[data-wiki]") as HTMLElement | null;
-          if (!el) return false;
-          const target = el.getAttribute("data-wiki");
-          if (!target) return false;
-          const hit = resolveLink(target, useApp.getState().notes);
-          if (hit) openNote(hit);
-          else {
-            const id = useApp.getState().createPage({ title: target });
-            useApp.getState().setView({ kind: "note", id });
+          const wikiEl = (event.target as HTMLElement | null)?.closest("[data-wiki]") as HTMLElement | null;
+          if (wikiEl) {
+            const target = wikiEl.getAttribute("data-wiki");
+            if (!target) return false;
+            const hit = resolveLink(target, useApp.getState().notes);
+            if (hit) openNote(hit);
+            else {
+              const id = useApp.getState().createPage({ title: target });
+              useApp.getState().setView({ kind: "note", id });
+            }
+            return true;
           }
-          return true;
+          const a = (event.target as HTMLElement | null)?.closest("a");
+          if (a) {
+            const href = a.getAttribute("href") ?? "";
+            if (!href) return false;
+            const blobs = useApp.getState().blobs;
+            const path = href.replace(/^\.\//, "");
+            if (blobs[path] || blobs[href]) {
+              void import("@/lib/open-local-file").then(({ openLocalFile }) =>
+                openLocalFile(path, blobs[path] ?? blobs[href]),
+              );
+              return true;
+            }
+            if (/^https?:/i.test(href)) {
+              window.open(href, "_blank", "noreferrer");
+              return true;
+            }
+          }
+          return false;
         },
         handleKeyDown: (_view, event) => {
+          if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+            const ed = editorRef.current;
+            if (ed && moveBlock(ed, event.key === "ArrowDown" ? 1 : -1)) {
+              event.preventDefault();
+              return true;
+            }
+          }
           if (wikiRef.current) {
             if (event.key === "ArrowDown") {
               event.preventDefault();
@@ -212,25 +268,6 @@ export function BlockEditor({
           }
           return false;
         },
-        handleDOMEvents: {
-          mouseover: (view, event) => {
-            const target = event.target as HTMLElement | null;
-            if (!target || !wrapRef.current) return false;
-            const block = target.closest(".ProseMirror > *") as HTMLElement | null;
-            if (!block || !view.dom.contains(block)) {
-              setGutter(null);
-              return false;
-            }
-            const wrapRect = wrapRef.current.getBoundingClientRect();
-            const blockRect = block.getBoundingClientRect();
-            setGutter({ top: blockRect.top - wrapRect.top + wrapRef.current.scrollTop });
-            return false;
-          },
-          mouseleave: () => {
-            setGutter(null);
-            return false;
-          },
-        },
       },
       onUpdate: ({ editor: ed }) => {
         if (syncingRef.current) return;
@@ -282,6 +319,13 @@ export function BlockEditor({
     }
   };
 
+  // htmlToMd always ends with a single newline — avoid resetting the editor on that alone.
+  const mdMatches = (a: string, b: string) => {
+    if (a === b) return true;
+    const norm = (s: string) => (s.trim() ? `${s.trim()}\n` : "");
+    return norm(a) === norm(b);
+  };
+
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
     applyMarkdown(editor, markdown);
@@ -291,38 +335,160 @@ export function BlockEditor({
     }
     setSlash(null);
     setWiki(null);
-    setGutter(null);
   }, [editor, noteId]);
 
   // Apply external body changes (writing tools, remote sync). Skip when it matches what we emitted.
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
-    if (markdown === lastEmitted.current) return;
+    if (mdMatches(markdown, lastEmitted.current)) return;
     applyMarkdown(editor, markdown);
   }, [editor, markdown]);
 
   useEffect(() => setSlashI(0), [slash?.query]);
   useEffect(() => setWikiI(0), [wiki?.query]);
 
+  const placeGutter = (block: HTMLElement | null) => {
+    const wrap = wrapRef.current;
+    if (gutterDomRef.current && gutterDomRef.current !== block) {
+      gutterDomRef.current.classList.remove("klever-block-hover");
+    }
+    gutterDomRef.current = block;
+    if (!wrap || !block) {
+      setGutter(null);
+      return;
+    }
+    block.classList.add("klever-block-hover");
+    const wr = wrap.getBoundingClientRect();
+    const br = block.getBoundingClientRect();
+    setGutter({ top: br.top - wr.top + wrap.scrollTop, dom: block });
+  };
+
+  const onWrapMouseMove = (e: ReactMouseEvent) => {
+    if (dragRef.current) return;
+    const t = e.target as HTMLElement;
+    if (t.closest("[data-block-gutter]")) return;
+    const ed = editorRef.current;
+    if (!ed) return;
+    const block = closestBlock(t, ed.view.dom);
+    placeGutter(block);
+  };
+
+  const endDrag = () => {
+    const wrap = wrapRef.current;
+    wrap?.classList.remove("klever-editor-dragging");
+    gutterDomRef.current?.classList.remove("klever-block-dragging");
+    dragRef.current = null;
+    setDropLine(null);
+  };
+
+  useEffect(() => {
+    if (!editable || !editor) return;
+
+    const onDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      const t = e.target as HTMLElement | null;
+      const handle = t?.closest("[data-block-gutter]") as HTMLElement | null;
+      if (!handle) return;
+      if (t?.closest("[data-block-insert]")) return;
+      const ed = editorRef.current;
+      const wrap = wrapRef.current;
+      if (!ed || !wrap) return;
+      const block = gutterStateRef.current?.dom ?? gutterDomRef.current;
+      const range =
+        (block ? blockRangeFromDom(ed.view, block) : null) ??
+        dropAnchor(ed.view, wrap, handle.getBoundingClientRect().top + 8);
+      if (!range) return;
+      const from = range.from;
+      const $from = ed.state.doc.resolve(from);
+      const node = $from.nodeAfter;
+      if (!node) return;
+      e.preventDefault();
+      e.stopPropagation();
+      dragRef.current = { from, size: node.nodeSize };
+      block?.classList.add("klever-block-dragging");
+      wrap.classList.add("klever-editor-dragging");
+      const pointerId = e.pointerId;
+
+      const onMove = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId || !dragRef.current) return;
+        const drop = dropAnchor(ed.view, wrap, ev.clientY);
+        setDropLine(drop?.line ?? null);
+      };
+      const onUp = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
+        window.removeEventListener("pointermove", onMove, true);
+        window.removeEventListener("pointerup", onUp, true);
+        window.removeEventListener("pointercancel", onUp, true);
+        const drag = dragRef.current;
+        const drop = dropAnchor(ed.view, wrap, ev.clientY);
+        endDrag();
+        if (!drag || !drop) return;
+        relocateBlock(ed, drag.from, drag.size, drop.dest);
+      };
+      window.addEventListener("pointermove", onMove, true);
+      window.addEventListener("pointerup", onUp, true);
+      window.addEventListener("pointercancel", onUp, true);
+    };
+
+    window.addEventListener("pointerdown", onDown, true);
+    return () => window.removeEventListener("pointerdown", onDown, true);
+  }, [editable, editor]);
+
   if (!editor) return <p className="text-mute">Loading editor…</p>;
 
   return (
-    <div ref={wrapRef} className="relative outline-none">
+    <div
+      ref={wrapRef}
+      className="relative outline-none md:-ml-8 md:pl-8"
+      onContextMenu={(e) => {
+        if (!editable) return;
+        const coords = editor.view.posAtCoords({ left: e.clientX, top: e.clientY });
+        if (coords) editor.chain().focus().setTextSelection(coords.pos).run();
+        open(e, blockMenuItems(editor, () => setPlusOpen(true, "editor")));
+      }}
+      onMouseMove={onWrapMouseMove}
+      onMouseLeave={(e) => {
+        if (dragRef.current) return;
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        gutterDomRef.current?.classList.remove("klever-block-hover");
+        gutterDomRef.current = null;
+        setGutter(null);
+      }}
+    >
       {editable && gutter && (
-        <button
-          type="button"
-          aria-label="Insert block"
-          title="Insert"
-          className="absolute left-0 z-10 -ml-8 flex h-6 w-6 items-center justify-center rounded-lg text-faint transition-colors duration-150 hover:bg-paper-2 hover:text-ink"
-          style={{ top: gutter.top }}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => {
-            editor.chain().focus().run();
-            setPlusOpen(true, "editor");
-          }}
+        <div
+          data-block-gutter
+          className="absolute left-0 z-10 hidden h-6 w-8 touch-none items-center md:flex [&_svg]:pointer-events-none"
+          style={{ top: gutter.top + 2, cursor: "grab" }}
         >
-          <Plus size={14} strokeWidth={1.4} />
-        </button>
+          <button
+            type="button"
+            data-block-insert
+            aria-label="Insert block"
+            title="Insert"
+            className="flex h-6 w-4 items-center justify-center rounded-md text-mute hover:bg-paper-2 hover:text-ink"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => {
+              editor.chain().focus().run();
+              setPlusOpen(true, "editor");
+            }}
+          >
+            <Plus size={13} strokeWidth={1.4} />
+          </button>
+          <span
+            aria-label="Drag to move block"
+            title="Drag to move"
+            className="flex h-6 w-4 items-center justify-center rounded-md text-mute hover:bg-paper-2 hover:text-ink"
+          >
+            <GripVertical size={14} strokeWidth={1.4} />
+          </span>
+        </div>
+      )}
+      {editable && dropLine != null && (
+        <div
+          className="pointer-events-none absolute left-0 right-0 z-20 h-0.5 rounded-full bg-ink md:left-8"
+          style={{ top: dropLine }}
+        />
       )}
       {editable && (
         <BubbleMenu
@@ -372,6 +538,22 @@ export function BlockEditor({
             >
               <Link2 size={13} strokeWidth={1.4} />
             </MarkBtn>
+            <span className="mx-0.5 w-px self-stretch bg-line" aria-hidden />
+            {PAGE_FONTS.map((f) => (
+              <FontBtn
+                key={f.id}
+                label={f.label}
+                className={f.className}
+                active={editor.isActive("wordFont", { font: f.id })}
+                onClick={() => {
+                  if (editor.isActive("wordFont", { font: f.id })) {
+                    editor.chain().focus().unsetMark("wordFont").run();
+                  } else {
+                    editor.chain().focus().setMark("wordFont", { font: f.id as PageFont }).run();
+                  }
+                }}
+              />
+            ))}
           </div>
         </BubbleMenu>
       )}
@@ -441,6 +623,236 @@ export function BlockEditor({
         </Panel>
       )}
     </div>
+  );
+}
+
+function currentBlock(editor: Editor) {
+  const { $from } = editor.state.selection;
+  for (let depth = $from.depth; depth > 0; depth--) {
+    const parent = $from.node(depth - 1);
+    if (parent.type.spec.tableRole) continue;
+    const node = $from.node(depth);
+    if (node.isBlock) return { pos: $from.before(depth), node };
+  }
+  return null;
+}
+
+function duplicateBlock(editor: Editor) {
+  const b = currentBlock(editor);
+  if (!b) return;
+  editor.commands.insertContentAt(b.pos + b.node.nodeSize, b.node.toJSON());
+}
+
+function deleteBlock(editor: Editor) {
+  const b = currentBlock(editor);
+  if (!b) return;
+  editor.chain().focus().deleteRange({ from: b.pos, to: b.pos + b.node.nodeSize }).run();
+}
+
+function blockMenuItems(editor: Editor, insert: () => void): ContextMenuItem[] {
+  const hasSel = !editor.state.selection.empty;
+  return [
+    {
+      id: "cut",
+      label: "Cut",
+      hint: "⌘X",
+      disabled: !hasSel,
+      onSelect: () => void cutFromTipTap(editor),
+    },
+    {
+      id: "copy",
+      label: "Copy",
+      hint: "⌘C",
+      disabled: !hasSel,
+      onSelect: () => void copyFromTipTap(editor),
+    },
+    {
+      id: "paste",
+      label: "Paste",
+      hint: "⌘V",
+      onSelect: () => void pasteIntoTipTap(editor),
+    },
+    { type: "sep" },
+    { id: "dup", label: "Duplicate block", onSelect: () => duplicateBlock(editor) },
+    { id: "up", label: "Move up", hint: "⌥↑", onSelect: () => moveBlock(editor, -1) },
+    { id: "down", label: "Move down", hint: "⌥↓", onSelect: () => moveBlock(editor, 1) },
+    { type: "sep" },
+    { id: "p", label: "Turn into paragraph", onSelect: () => editor.chain().focus().setParagraph().run() },
+    { id: "h1", label: "Turn into heading 1", onSelect: () => applyCommand(editor, "h1") },
+    { id: "h2", label: "Turn into heading 2", onSelect: () => applyCommand(editor, "h2") },
+    { id: "bullet", label: "Turn into list", onSelect: () => applyCommand(editor, "bullet") },
+    { id: "quote", label: "Turn into quote", onSelect: () => applyCommand(editor, "quote") },
+    { type: "sep" },
+    { id: "insert", label: "Insert…", onSelect: insert },
+    {
+      id: "delete",
+      label: "Delete block",
+      danger: true,
+      onSelect: () => deleteBlock(editor),
+    },
+  ];
+}
+
+/** Swap the current block with its neighbor (Craft-style ⌥↑ / ⌥↓). */
+function moveBlock(editor: Editor, dir: -1 | 1) {
+  const { state } = editor;
+  const $from = state.selection.$from;
+  for (let depth = $from.depth; depth > 0; depth--) {
+    const parent = $from.node(depth - 1);
+    if (parent.type.spec.tableRole) continue;
+    const idx = $from.index(depth - 1);
+    const swap = idx + dir;
+    if (swap < 0 || swap >= parent.childCount) continue;
+    const current = parent.child(idx);
+    const other = parent.child(swap);
+    const currentPos = $from.before(depth);
+    const fromPos = dir > 0 ? currentPos : currentPos - other.nodeSize;
+    const toPos = dir > 0 ? currentPos + current.nodeSize + other.nodeSize : currentPos + current.nodeSize;
+    const first = dir > 0 ? other : current;
+    const second = dir > 0 ? current : other;
+    const tr = state.tr.replaceWith(fromPos, toPos, Fragment.from([first, second]));
+    editor.view.dispatch(tr.scrollIntoView());
+    return true;
+  }
+  return false;
+}
+
+function closestBlock(target: HTMLElement | null, viewDom: HTMLElement): HTMLElement | null {
+  if (!target || !viewDom.contains(target)) return null;
+  const li = target.closest("li");
+  if (li instanceof HTMLElement && viewDom.contains(li)) return li;
+  const top = target.closest(".ProseMirror > *");
+  if (top instanceof HTMLElement && viewDom.contains(top)) return top;
+  return null;
+}
+
+function blockRangeFromDom(view: EditorView, dom: HTMLElement) {
+  const fromPos = (pos: number) => {
+    const $pos = view.state.doc.resolve(pos);
+    for (let d = $pos.depth; d > 0; d--) {
+      const node = $pos.node(d);
+      const parent = $pos.node(d - 1);
+      if (
+        parent.type.name === "doc" ||
+        node.type.name === "listItem" ||
+        node.type.name === "taskItem"
+      ) {
+        const from = $pos.before(d);
+        return { from, size: node.nodeSize, node };
+      }
+    }
+    return null;
+  };
+  try {
+    const found = fromPos(view.posAtDOM(dom, 0));
+    if (found) return found;
+  } catch {
+    /* fall through */
+  }
+  const r = dom.getBoundingClientRect();
+  const hit = view.posAtCoords({ left: r.left + Math.min(24, r.width / 2), top: r.top + 8 });
+  return hit ? fromPos(hit.pos) : null;
+}
+
+/** Drop target from Y. Prefer the DOM block (so list items win over the whole list). */
+function dropAnchor(
+  view: EditorView,
+  wrap: HTMLElement,
+  clientY: number,
+): { dest: number; line: number; from: number; size: number } | null {
+  const wr = wrap.getBoundingClientRect();
+  const lineOf = (top: number, bottom: number, from: number, size: number) => {
+    const before = clientY < (top + bottom) / 2;
+    return {
+      dest: before ? from : from + size,
+      line: (before ? top : bottom) - wr.top + wrap.scrollTop,
+      from,
+      size,
+    };
+  };
+  const box = view.dom.getBoundingClientRect();
+  const x = Math.min(box.left + 48, box.right - 8);
+  const y = Math.max(box.top + 2, Math.min(clientY, box.bottom - 2));
+  const el = document.elementFromPoint(x, y) as HTMLElement | null;
+  const block = closestBlock(el, view.dom);
+  if (block) {
+    const range = blockRangeFromDom(view, block);
+    if (range) {
+      const r = block.getBoundingClientRect();
+      return lineOf(r.top, r.bottom, range.from, range.size);
+    }
+  }
+  const hit = view.posAtCoords({ left: x, top: y });
+  if (!hit) return null;
+  const $pos = view.state.doc.resolve(hit.pos);
+  let found: { from: number; size: number } | null = null;
+  for (let d = $pos.depth; d > 0; d--) {
+    const node = $pos.node(d);
+    if (node.type.name === "listItem" || node.type.name === "taskItem") {
+      found = { from: $pos.before(d), size: node.nodeSize };
+      break;
+    }
+  }
+  if (!found) {
+    for (let d = $pos.depth; d > 0; d--) {
+      if ($pos.node(d - 1).type.name === "doc") {
+        const node = $pos.node(d);
+        found = { from: $pos.before(d), size: node.nodeSize };
+        break;
+      }
+    }
+  }
+  if (!found) return null;
+  let top = y;
+  let bottom = y;
+  try {
+    top = view.coordsAtPos(Math.min(found.from + 1, view.state.doc.content.size)).top;
+    bottom = view.coordsAtPos(Math.max(found.from + 1, found.from + found.size - 1)).bottom;
+  } catch {
+    /* keep y */
+  }
+  return lineOf(top, bottom, found.from, found.size);
+}
+
+function relocateBlock(editor: Editor, from: number, _size: number, dest: number) {
+  const $from = editor.state.doc.resolve(from);
+  const node = $from.nodeAfter;
+  if (!node) return;
+  const sz = node.nodeSize;
+  if (dest >= from && dest <= from + sz) return;
+  const insertAt = dest < from ? dest : dest - sz;
+  const tr = editor.state.tr.delete(from, from + sz);
+  if (insertAt < 0 || insertAt > tr.doc.content.size) return;
+  const $ins = tr.doc.resolve(insertAt);
+  if (!$ins.parent.canReplaceWith($ins.index(), $ins.index(), node.type)) return;
+  tr.insert(insertAt, node);
+  editor.view.dispatch(tr.scrollIntoView());
+}
+
+function FontBtn({
+  label,
+  className,
+  active,
+  onClick,
+}: {
+  label: string;
+  className: string;
+  active?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={`Font ${label}`}
+      title={label}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onClick}
+      className={`inline-flex h-8 min-w-8 items-center justify-center px-1.5 text-[11px] ${className} ${
+        active ? "bg-paper-2 text-ink ring-1 ring-ink/15" : "text-mute hover:bg-paper-2 hover:text-ink"
+      }`}
+    >
+      {label}
+    </button>
   );
 }
 

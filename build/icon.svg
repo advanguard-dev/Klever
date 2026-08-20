@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Klever">
+  <defs>
+    <linearGradient id="paper" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f7f4ee" />
+      <stop offset="100%" stop-color="#ebe8e0" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#paper)" />
+  <path
+    d="M148 132h118c58 0 94 32 94 84 0 38-20 66-54 78l72 96h-78l-64-86h-88v86H148V132zm118 132c28 0 44-14 44-36s-16-36-44-36h-58v72h58z"
+    fill="#1b1a16"
+  />
+  <path d="M332 132l48 36-28 38 36 48-48 36-36-48-38 36-48-36 36-48-36-48 48-36 38 36z" fill="#1b1a16" opacity="0" />
+</svg>

@@ -5,6 +5,7 @@ import {
   useEffect,
   useId,
   useRef,
+  useState,
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type InputHTMLAttributes,
@@ -25,7 +26,7 @@ export function IconButton({
     <button
       type="button"
       className={cn(
-        "inline-flex h-8 w-8 items-center justify-center rounded-md text-mute transition-colors duration-150 ease-out",
+        "inline-flex h-8 w-8 max-md:h-11 max-md:w-11 items-center justify-center rounded-md text-mute transition-colors duration-150 ease-out",
         "hover:bg-paper-2 hover:text-ink active:bg-paper-2 active:text-ink",
         focusRing,
         "disabled:cursor-not-allowed disabled:opacity-40",
@@ -44,34 +45,79 @@ export function ToolbarBtn({
   children,
   title,
   showLabel,
+  shortcut,
+  onMouseEnter,
+  onMouseLeave,
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   active?: boolean;
   label: string;
   /** Show the label next to the icon (not only sr-only). */
   showLabel?: boolean;
+  /** Keyboard shortcut; after 1.5s hover, shown for 2s. */
+  shortcut?: string;
 }) {
+  const [hint, setHint] = useState(false);
+  const showTimer = useRef<number>(0);
+  const hideTimer = useRef<number>(0);
+
+  const clearHint = () => {
+    window.clearTimeout(showTimer.current);
+    window.clearTimeout(hideTimer.current);
+    setHint(false);
+  };
+
+  useEffect(() => () => {
+    window.clearTimeout(showTimer.current);
+    window.clearTimeout(hideTimer.current);
+  }, []);
+
   return (
-    <button
-      type="button"
-      title={title ?? label}
-      className={cn(
-        "inline-flex h-8 items-center gap-1.5 rounded-lg px-2 font-serif text-sm text-mute transition-colors duration-150 ease-out",
-        "hover:bg-paper-2 hover:text-ink active:bg-paper-2",
-        focusRing,
-        "disabled:cursor-not-allowed disabled:opacity-40",
-        active && "bg-paper-2 text-ink",
-        className,
+    <span className="relative inline-flex">
+      <button
+        type="button"
+        title={shortcut ? undefined : (title ?? label)}
+        aria-keyshortcuts={shortcut}
+        className={cn(
+          "inline-flex h-8 max-md:h-11 max-md:min-w-11 items-center justify-center gap-1.5 rounded-lg px-2 font-serif text-sm text-mute transition-colors duration-150 ease-out",
+          "hover:bg-paper-2 hover:text-ink active:bg-paper-2",
+          focusRing,
+          "disabled:cursor-not-allowed disabled:opacity-40",
+          active && "bg-paper-2 text-ink",
+          className,
+        )}
+        {...props}
+        onMouseEnter={(e) => {
+          onMouseEnter?.(e);
+          if (!shortcut) return;
+          clearHint();
+          showTimer.current = window.setTimeout(() => {
+            setHint(true);
+            hideTimer.current = window.setTimeout(() => setHint(false), 2000);
+          }, 1500);
+        }}
+        onMouseLeave={(e) => {
+          onMouseLeave?.(e);
+          if (shortcut) clearHint();
+        }}
+      >
+        {children}
+        {showLabel ? (
+          <span className="hidden whitespace-nowrap sm:inline">{label}</span>
+        ) : (
+          <span className="sr-only">{label}</span>
+        )}
+      </button>
+      {hint && shortcut && (
+        <span
+          role="tooltip"
+          className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 flex -translate-x-1/2 items-center gap-1.5 rounded-lg border border-line bg-paper px-2 py-1 shadow-[0_12px_40px_-18px_rgba(0,0,0,0.35)]"
+        >
+          <span className="whitespace-nowrap font-serif text-xs text-ink">{label}</span>
+          <Kbd>{shortcut}</Kbd>
+        </span>
       )}
-      {...props}
-    >
-      {children}
-      {showLabel ? (
-        <span className="hidden whitespace-nowrap sm:inline">{label}</span>
-      ) : (
-        <span className="sr-only">{label}</span>
-      )}
-    </button>
+    </span>
   );
 }
 
@@ -171,7 +217,7 @@ export function Segmented<T extends string>({
 }: {
   value: T;
   onChange: (value: T) => void;
-  options: { value: T; label: string; icon?: LucideIcon }[];
+  options: { value: T; label: string; icon?: LucideIcon; iconOnly?: boolean }[];
   size?: "sm" | "md";
   "aria-label"?: string;
 }) {
@@ -190,16 +236,18 @@ export function Segmented<T extends string>({
             type="button"
             role="tab"
             aria-selected={on}
+            aria-label={o.label}
             onClick={() => onChange(o.value)}
             className={cn(
               "inline-flex items-center gap-1.5 rounded-lg font-serif text-ink transition-colors duration-150 ease-out",
               focusRing,
-              size === "sm" ? "px-2 py-1 text-xs" : "px-3 py-1.5 text-sm",
+              size === "sm" ? "px-2 py-1 text-xs max-md:min-h-11 max-md:px-2.5 max-md:py-0 max-md:text-sm" : "px-3 py-1.5 text-sm max-md:min-h-11",
               on ? "bg-paper-2 text-ink" : "text-mute hover:bg-paper-2/70 hover:text-ink",
             )}
+            title={o.label}
           >
             {Icon && <Icon size={size === "sm" ? 12 : 13} strokeWidth={1.4} aria-hidden />}
-            {o.label}
+            {o.iconOnly ? <span className="sr-only">{o.label}</span> : o.label}
           </button>
         );
       })}
@@ -247,17 +295,35 @@ export function Toggle({
 export function Chip({
   className,
   selected,
+  tone,
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { selected?: boolean }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  selected?: boolean;
+  tone?: "tag" | "prop" | "smart";
+}) {
+  const tones = {
+    tag: selected
+      ? "border-tag/30 bg-tag/[0.09] text-tag"
+      : "border-tag/18 text-tag/80 hover:border-tag/35 hover:bg-tag/[0.06] hover:text-tag",
+    prop: selected
+      ? "border-prop/28 bg-prop/[0.08] text-prop"
+      : "border-prop/16 text-mute hover:border-prop/30 hover:bg-prop/[0.05] hover:text-prop",
+    smart: selected
+      ? "border-smart/28 bg-smart/[0.09] text-smart"
+      : "border-smart/18 text-smart/80 hover:border-smart/32 hover:bg-smart/[0.06] hover:text-smart",
+  } as const;
+
   return (
     <button
       type="button"
       className={cn(
         "rounded-full border px-2.5 py-0.5 font-serif text-xs transition-colors duration-150 ease-out",
         focusRing,
-        selected
-          ? "border-ink bg-paper-2 text-ink"
-          : "border-line text-mute hover:border-ink/30 hover:text-ink",
+        tone
+          ? tones[tone]
+          : selected
+            ? "border-ink bg-paper-2 text-ink"
+            : "border-line text-mute hover:border-ink/30 hover:text-ink",
         className,
       )}
       {...props}
@@ -369,7 +435,7 @@ export function Overlay({
       className="fixed inset-0 z-40 overflow-y-auto overscroll-contain bg-ink/20 motion-safe:animate-blotter"
       role="presentation"
     >
-      <div className="flex min-h-full items-start justify-center px-4 py-8">
+      <div className="flex min-h-full items-end justify-center px-0 pt-10 sm:items-start sm:px-4 sm:py-8">
         <button
           type="button"
           aria-label="Close"
@@ -379,7 +445,7 @@ export function Overlay({
         />
         <div
           ref={panelRef}
-          className="relative z-10 w-full max-w-xl font-serif motion-safe:animate-sheet"
+          className="relative z-10 w-full max-w-xl pb-[env(safe-area-inset-bottom)] font-serif motion-safe:animate-sheet max-sm:[&>*]:rounded-b-none max-sm:[&>*]:rounded-t-2xl sm:pb-0"
           role="dialog"
           aria-modal="true"
           aria-labelledby={labelId}
@@ -470,7 +536,7 @@ export function EmptyState({
   className?: string;
 }) {
   return (
-    <div className={cn("flex flex-col items-start gap-3 px-8 py-20", className)}>
+    <div className={cn("flex flex-col items-start gap-3 px-4 py-16 md:px-8 md:py-20", className)}>
       <p className="font-serif text-2xl italic tracking-tight">{title}</p>
       {description && <p className="max-w-md text-sm leading-relaxed text-mute">{description}</p>}
       {action}

@@ -1,7 +1,9 @@
 import { MarkdownPreview } from "@/components/editor/MarkdownPreview";
 import { WikiPeek } from "@/components/editor/WikiPeek";
 import { EmptyState, IconButton, MonoLabel, TextArea, TextButton } from "@/components/ui";
+import { useContextMenu } from "@/components/ContextMenu";
 import { ChromeIcon, NoteLabel } from "@/lib/chrome-icons";
+import { noteMenuItems, tagMenuItems } from "@/lib/context-menus";
 import { backlinks, relationsTo, unlinkedMentions } from "@/lib/graph";
 import { extractOutline, extractWikilinks, resolveLink, scrollToHeading } from "@/lib/parse";
 import { useApp } from "@/store";
@@ -18,7 +20,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 export function RightRail() {
   const view = useApp((s) => s.view);
@@ -30,6 +32,7 @@ export function RightRail() {
   const addComment = useApp((s) => s.addComment);
   const resolveComment = useApp((s) => s.resolveComment);
   const removeComment = useApp((s) => s.removeComment);
+  const { open } = useContextMenu();
 
   const id = view.kind === "note" || view.kind === "database" ? view.id : null;
   const note = id ? notes.find((n) => n.id === id) ?? null : null;
@@ -73,13 +76,36 @@ export function RightRail() {
     };
   }, [note?.id, note?.body]);
 
+  const prevNoteId = useRef(id);
+  useEffect(() => {
+    if (prevNoteId.current === id) return;
+    prevNoteId.current = id;
+    if (window.matchMedia("(max-width: 767px)").matches) {
+      useApp.setState({ propsOpen: false });
+    }
+  }, [id]);
+
+  const frame = (children: React.ReactNode) => (
+    <>
+      <button
+        type="button"
+        aria-label="Close context"
+        className="absolute inset-0 z-30 bg-ink/15 lg:hidden"
+        onClick={toggleProps}
+      />
+      <aside className="absolute inset-y-0 right-0 z-40 flex h-full w-[min(100%,20rem)] shrink-0 flex-col overflow-y-auto border-l border-line bg-paper p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] lg:static lg:w-64">
+        {children}
+      </aside>
+    </>
+  );
+
   if (!propsOpen) return null;
   if (!note) {
-    return (
-      <aside className="hidden w-64 shrink-0 border-l border-line p-5 lg:block">
+    return frame(
+      <>
         <MonoLabel>Context</MonoLabel>
         <p className="mt-4 text-sm text-mute">Open a note for outline, links, and comments.</p>
-      </aside>
+      </>,
     );
   }
 
@@ -112,8 +138,8 @@ export function RightRail() {
   const outline = extractOutline(outlineSource);
   const here = peers.filter((p) => p.noteId === note.id);
 
-  return (
-    <aside className="hidden w-64 shrink-0 overflow-y-auto border-l border-line p-5 lg:block">
+  return frame(
+    <>
       <div className="flex items-center justify-between">
         <MonoLabel>Context</MonoLabel>
         <TextButton className="h-7 px-2 py-0 text-xs" onClick={toggleProps}>
@@ -171,6 +197,7 @@ export function RightRail() {
               type="button"
               className="block truncate py-0.5 text-left font-serif text-sm text-mute hover:bg-paper-2 hover:text-ink"
               onClick={() => setView({ kind: "note", id: n.id })}
+              onContextMenu={(e) => open(e, noteMenuItems(n))}
             >
               {n.title}
             </button>
@@ -187,6 +214,7 @@ export function RightRail() {
               type="button"
               className="block truncate py-0.5 text-left font-serif text-sm text-mute hover:bg-paper-2 hover:text-ink"
               onClick={() => setView({ kind: "note", id: n.id })}
+              onContextMenu={(e) => open(e, noteMenuItems(n))}
             >
               {n.title}
             </button>
@@ -216,7 +244,7 @@ export function RightRail() {
           setView(hit.type === "database" ? { kind: "database", id: hit.id } : { kind: "note", id: hit.id });
         }}
       />
-    </aside>
+    </>,
   );
 }
 
@@ -388,11 +416,18 @@ function CommentItem({
 export function TagPage({ tag }: { tag: string }) {
   const notes = useApp((s) => s.notes);
   const setView = useApp((s) => s.setView);
+  const { open } = useContextMenu();
   const hits = useMemo(() => notes.filter((n) => n.tags.includes(tag)), [notes, tag]);
   return (
-    <div className="mx-auto max-w-[720px] px-8 py-12">
+    <div
+      className="mx-auto max-w-[720px] px-4 py-10 md:px-8 md:py-12"
+      onContextMenu={(e) => {
+        if ((e.target as HTMLElement).closest("li, button")) return;
+        open(e, tagMenuItems(tag));
+      }}
+    >
       <MonoLabel>Tag</MonoLabel>
-      <h1 className="mt-3 font-serif text-4xl italic tracking-tight">#{tag}</h1>
+      <h1 className="mt-3 font-serif text-4xl italic tracking-tight text-tag">#{tag}</h1>
       {hits.length === 0 ? (
         <EmptyState
           className="px-0 py-8"
@@ -409,6 +444,7 @@ export function TagPage({ tag }: { tag: string }) {
               onClick={() =>
                 setView(n.type === "database" ? { kind: "database", id: n.id } : { kind: "note", id: n.id })
               }
+              onContextMenu={(e) => open(e, noteMenuItems(n))}
             >
               <NoteLabel note={n} size={22} />
             </button>

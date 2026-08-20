@@ -117,6 +117,9 @@ export interface DbView {
 }
 
 export type PageFont = "sans" | "serif" | "mono";
+
+export type TextAlign = "left" | "center" | "right";
+export type TextVAlign = "top" | "middle" | "bottom";
 export type PageWidth = "s" | "m" | "l";
 export type EditorMode = "wysiwyg" | "markdown" | "read";
 
@@ -177,7 +180,7 @@ export type AppView =
   | { kind: "database"; id: string; viewId?: string }
   | { kind: "graph" }
   | { kind: "calendar" }
-  | { kind: "freeform" }
+  | { kind: "freeform"; id?: string }
   | { kind: "tag"; tag: string };
 
 export type InsertContext = "sidebar" | "editor" | "database";
@@ -200,6 +203,12 @@ export interface AiSettings {
   endpoint: string;
   model: string;
   apiKey: string;
+  /** Override system prompt for writing tools. */
+  writingSystemPrompt?: string;
+  /** Per-tool instruction overrides (id → instruction). */
+  writingPrompts?: Record<string, string>;
+  /** Last custom one-off prompt in the note editor. */
+  lastCustomPrompt?: string;
 }
 
 /** Per-workspace AI preference: remote uses Gemini settings; local uses heuristics / on-device only. */
@@ -254,9 +263,14 @@ export type FreeformTool =
   | "link"
   | "table"
   | "mind"
-  | "mention";
+  | "mention"
+  | "shape";
 
 export type FreeformStickyColor = "amber" | "sage" | "rose" | "sky" | "paper";
+
+export type FreeformShapeKind = "rect" | "ellipse" | "diamond" | "triangle";
+
+export type FreeformStrokeDash = "solid" | "dashed" | "dotted";
 
 export interface FreeformCamera {
   x: number;
@@ -287,6 +301,8 @@ export type FreeformObject =
       italic?: boolean;
       /** Strikethrough (barré). */
       strike?: boolean;
+      align?: TextAlign;
+      valign?: TextVAlign;
     })
   | (FreeformObjectBase & {
       type: "sticky";
@@ -301,6 +317,8 @@ export type FreeformObject =
       bold?: boolean;
       italic?: boolean;
       strike?: boolean;
+      align?: TextAlign;
+      valign?: TextVAlign;
     })
   | (FreeformObjectBase & {
       type: "path";
@@ -332,6 +350,8 @@ export type FreeformObject =
       bold?: boolean;
       italic?: boolean;
       strike?: boolean;
+      align?: TextAlign;
+      valign?: TextVAlign;
     })
   | (FreeformObjectBase & {
       type: "mention";
@@ -339,9 +359,27 @@ export type FreeformObject =
       noteId: string;
       title: string;
       kind?: "page" | "database" | "file";
+    })
+  | (FreeformObjectBase & {
+      type: "shape";
+      shape: FreeformShapeKind;
+      /** Named sticky id, ink id, `none`, or #hex. */
+      fill: string;
+      stroke: string;
+      strokeWidth: number;
+      strokeDash: FreeformStrokeDash;
+      text: string;
+      fontSize?: number;
+      color?: string;
+      fontFamily?: PageFont;
+      bold?: boolean;
+      italic?: boolean;
+      strike?: boolean;
+      align?: TextAlign;
+      valign?: TextVAlign;
     });
 
-/** Vault-wide freeform board — not a markdown page. */
+/** Vault freeform board — not a markdown page. Multiple boards per workspace. */
 export interface FreeformConnection {
   id: string;
   from: string;
@@ -375,6 +413,12 @@ export interface GraphEdge {
 export interface BlobRecord {
   mime: string;
   data: ArrayBuffer;
+  /** Outside the vault folder — never write a copy into the vault. */
+  external?: boolean;
+  /** Absolute path on disk — open the original file in place. */
+  localPath?: string;
+  /** Live disk/cloud handle so Klever can re-read instead of owning a copy. */
+  handle?: FileSystemFileHandle;
 }
 
 export interface ImageRef {

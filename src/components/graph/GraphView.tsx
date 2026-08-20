@@ -1,4 +1,6 @@
 import { EmptyState, MonoLabel, Segmented, Toggle } from "@/components/ui";
+import { useContextMenu } from "@/components/ContextMenu";
+import { noteMenuItems, tagMenuItems } from "@/lib/context-menus";
 import { buildGraph } from "@/lib/graph";
 import { useApp } from "@/store";
 import type { GraphEdge, GraphNode } from "@/types";
@@ -17,6 +19,7 @@ type SimNode = GraphNode & SimulationNodeDatum;
 export function GraphView() {
   const notes = useApp((s) => s.notes);
   const setView = useApp((s) => s.setView);
+  const { open } = useContextMenu();
   const { nodes, edges } = useMemo(() => buildGraph(notes), [notes]);
   const wrap = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
@@ -122,11 +125,11 @@ export function GraphView() {
   }, [filteredEdges, hover]);
 
   return (
-    <div className="flex h-[calc(100dvh-3.5rem-2.25rem)] min-h-[28rem] flex-col">
-      <div className="flex flex-wrap items-center gap-4 px-8 py-6">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex flex-wrap items-center gap-4 px-4 py-5 md:px-8 md:py-6">
         <div>
           <MonoLabel>Graph</MonoLabel>
-          <h1 className="mt-1 font-serif text-3xl italic tracking-tight">Atlas</h1>
+          <h1 className="mt-1 font-serif text-2xl italic tracking-tight md:text-3xl">Atlas</h1>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-3">
           <Segmented
@@ -157,7 +160,7 @@ export function GraphView() {
             const dim = hover && !neighbor.has(a.id) && !neighbor.has(b.id);
             // text-line is a border token (~paper) — invisible as stroke. Use ink/mute instead.
             const strokeClass =
-              e.kind === "tag" ? "text-faint" : e.kind === "relation" ? "text-mute" : "text-ink";
+              e.kind === "tag" ? "text-tag" : e.kind === "relation" ? "text-mute" : "text-ink";
             return (
               <line
                 key={`${e.kind}:${edgeId(e.source)}->${edgeId(e.target)}:${i}`}
@@ -190,14 +193,22 @@ export function GraphView() {
                   else if (n.kind === "database") setView({ kind: "database", id: n.id });
                   else setView({ kind: "note", id: n.id });
                 }}
+                onContextMenu={(e) => {
+                  if (n.kind === "tag") open(e, tagMenuItems(n.title.replace(/^#/, "")));
+                  else {
+                    const note = notes.find((x) => x.id === n.id);
+                    if (note) open(e, noteMenuItems(note));
+                  }
+                }}
               >
-                <circle r={r} className="fill-ink" />
+                <circle r={Math.max(14, r + 8)} className="fill-transparent" />
+                <circle r={r} className={n.kind === "tag" ? "fill-tag" : "fill-ink"} />
                 <text
                   y={n.kind === "tag" ? 16 : 18}
                   textAnchor="middle"
                   className={
                     n.kind === "tag"
-                      ? "fill-mute font-mono text-[9px]"
+                      ? "fill-tag font-mono text-[9px]"
                       : "fill-ink font-sans text-[12px]"
                   }
                 >

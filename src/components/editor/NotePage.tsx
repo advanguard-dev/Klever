@@ -5,14 +5,18 @@ import { MarkdownPreview } from "@/components/editor/MarkdownPreview";
 import { PropertyManager, schemaTarget } from "@/components/db/PropertyManager";
 import { PropInput } from "@/components/editor/PropInput";
 import { SlashStack } from "@/components/insert/PlusMenu";
-import { Chip, ConfirmDialog, GhostButton, MenuTrigger, MonoLabel, Panel, Segmented, TextButton, Toggle, ToolbarBtn } from "@/components/ui";
-import { ChromeIcon, ICON_LG, NoteIcon, noteKindIcon, PROP_ICONS } from "@/lib/chrome-icons";
-import { extractImages, setImageWidth } from "@/lib/assets";
+import { Chip, ConfirmDialog, MonoLabel, Panel, Segmented, TextButton, Toggle, ToolbarBtn } from "@/components/ui";
+import { useContextMenu } from "@/components/ContextMenu";
+import { copyFromCodeMirror, cutFromCodeMirror, pasteIntoCodeMirror } from "@/lib/clipboard-editing";
+import { noteMenuItems, tagMenuItems } from "@/lib/context-menus";
+import { ChromeIcon, ICON_LG, NoteIcon, accentIconClass, noteKindIcon, PROP_ICONS } from "@/lib/chrome-icons";
+import { extractImages, replaceImageSrc, setImageWidth } from "@/lib/assets";
 import { cn } from "@/lib/cn";
 import { filterCommands, slashCommands } from "@/lib/commands";
 import { registerEditorInsert, setSlashRange } from "@/lib/editor-bridge";
 import { slugify } from "@/lib/ids";
 import { runCommand } from "@/lib/run-command";
+import { registerBeforeFlush } from "@/lib/save-hooks";
 import { useApp } from "@/store";
 import type { Note, PageFont, PageWidth } from "@/types";
 import { markdown } from "@codemirror/lang-markdown";
@@ -20,10 +24,10 @@ import { autocompletion, type CompletionContext } from "@codemirror/autocomplete
 import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
-import { ChevronRight, Loader2, Mic, Plus, Settings2, Sparkles, Star, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Mic, Plus, Star, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { startTranscription, speechSupported } from "@/lib/speech";
-import { rewrite, WRITING_TOOLS } from "@/lib/ai";
+import { WritingToolsBar } from "@/components/editor/WritingToolsBar";
 import { defaultWorkspaceTools } from "@/lib/workspaces";
 
 const cmTheme = EditorView.theme({
@@ -48,7 +52,6 @@ export function NotePage({ note }: { note: Note }) {
   const patchNote = useApp((s) => s.patchNote);
   const deleteNote = useApp((s) => s.deleteNote);
   const upsertNote = useApp((s) => s.upsertNote);
-  const ai = useApp((s) => s.ai);
   const workspaces = useApp((s) => s.workspaces);
   const activeWorkspaceId = useApp((s) => s.activeWorkspaceId);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
@@ -60,6 +63,7 @@ export function NotePage({ note }: { note: Note }) {
   const setPlusOpen = useApp((s) => s.setPlusOpen);
   const starred = useApp((s) => s.starred);
   const toggleStar = useApp((s) => s.toggleStar);
+  const openTabs = useApp((s) => s.openTabs);
   const [body, setBody] = useState(note.body);
   const [baseline, setBaseline] = useState(note.body);
   const [seenId, setSeenId] = useState(note.id);
@@ -77,6 +81,7 @@ export function NotePage({ note }: { note: Note }) {
   const [pageOpen, setPageOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(false);
   const [coverHover, setCoverHover] = useState(false);
+  const { open } = useContextMenu();
   const [draftTitle, setDraftTitle] = useState(note.title);
   const [titleSeenId, setTitleSeenId] = useState(note.id);
   if (note.id !== titleSeenId) {
@@ -94,6 +99,12 @@ export function NotePage({ note }: { note: Note }) {
   const bodyUserRef = useRef("");
   const bodySpeechRef = useRef("");
   const skipBodySpeechRef = useRef(false);
+  const bodyRef = useRef(body);
+  const baselineRef = useRef(baseline);
+  const draftTitleRef = useRef(draftTitle);
+  bodyRef.current = body;
+  baselineRef.current = baseline;
+  draftTitleRef.current = draftTitle;
   const viewRef = useRef<EditorView | null>(null);
   const slashRef = useRef(slash);
   const slashIRef = useRef(slashI);
@@ -129,6 +140,34 @@ export function NotePage({ note }: { note: Note }) {
     }, 220);
     return () => window.clearTimeout(t);
   }, [body, note.body, note.id, patchNote]);
+
+  useEffect(() => {
+    const noteId = note.id;
+    const noteTitle = note.title;
+    const notePath = note.path;
+    const noteType = note.type;
+    const commitPending = () => {
+      const pendingBody = bodyRef.current;
+      const pendingBaseline = baselineRef.current;
+      if (pendingBody !== pendingBaseline) {
+        patchNote(noteId, { body: pendingBody });
+      }
+      const pendingTitle = draftTitleRef.current;
+      if (pendingTitle !== noteTitle) {
+        const current = useApp.getState().notes.find((n) => n.id === noteId);
+        if (!current) return;
+        const folder = notePath.includes("/") ? notePath.split("/").slice(0, -1).join("/") : "";
+        const nextPath = `${folder ? folder + "/" : ""}${slugify(pendingTitle || "untitled")}${
+          noteType === "database" ? ".database.md" : ".md"
+        }`;
+        upsertNote(
+          { ...current, title: pendingTitle, path: nextPath, body: pendingBody },
+          { renameFrom: notePath },
+        );
+      }
+    };
+    return registerBeforeFlush(commitPending);
+  }, [note.id, note.title, note.path, note.type, patchNote, upsertNote]);
 
   useEffect(() => {
     registerEditorInsert((snippet, replace) => {
@@ -247,48 +286,6 @@ export function NotePage({ note }: { note: Note }) {
     [],
   );
 
-  const applyTool = async (id: string) => {
-    const tool = WRITING_TOOLS.find((t) => t.id === id);
-    if (!tool || busy) return;
-    const view = viewRef.current;
-    const selected = view
-      ? view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to)
-      : "";
-    const source = selected || body;
-    if (!source.trim()) {
-      setError("Select text or write something before using a writing tool.");
-      return;
-    }
-    if (aiMode === "local") {
-      setError("This workspace uses local AI — switch to remote AI in workspace settings for writing tools.");
-      return;
-    }
-    if (!tools.writingTools) {
-      setError("Writing tools are turned off for this workspace.");
-      return;
-    }
-    if (!ai.apiKey.trim()) {
-      setError("Add a Gemini API key in Settings to use AI writing tools.");
-      return;
-    }
-    setBusy(tool.label);
-    setError(null);
-    try {
-      const next = await rewrite(ai, source, tool.instruction);
-      if (selected && view) {
-        const { from, to } = view.state.selection.main;
-        view.dispatch({ changes: { from, to, insert: next } });
-        setBody(view.state.doc.toString());
-      } else {
-        setBody(next);
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Writing tool failed");
-    } finally {
-      setBusy(null);
-    }
-  };
-
   const toggleMic = () => {
     if (listening) {
       recRef.current?.stop();
@@ -329,17 +326,18 @@ export function NotePage({ note }: { note: Note }) {
 
   const images = extractImages(body);
   const isRead = mode === "read";
+  const pageWidth = note.width ?? "l";
   const width = isRead
-    ? note.width === "s"
+    ? pageWidth === "s"
       ? "max-w-[60ch]"
-      : note.width === "l"
-        ? "max-w-[75ch]"
-        : "max-w-[68ch]"
-    : note.width === "s"
+      : pageWidth === "m"
+        ? "max-w-[68ch]"
+        : "max-w-[75ch]"
+    : pageWidth === "s"
       ? "max-w-[560px]"
-      : note.width === "l"
-        ? "max-w-5xl"
-        : "max-w-[720px]";
+      : pageWidth === "m"
+        ? "max-w-[720px]"
+        : "max-w-5xl";
   const font = isRead
     ? "font-serif"
     : note.font === "serif"
@@ -349,7 +347,14 @@ export function NotePage({ note }: { note: Note }) {
         : "font-sans";
 
   return (
-    <article className={cn("min-h-full group/page", isRead && "reading-mode")}>
+    <article
+      className={cn("min-h-full group/page", isRead && "reading-mode")}
+      onContextMenu={(e) => {
+        const t = e.target as HTMLElement;
+        if (t.closest("input, textarea, [contenteditable], .cm-editor, .ProseMirror, button")) return;
+        open(e, noteMenuItems(note));
+      }}
+    >
       <div
         className="relative"
         onMouseEnter={() => !isRead && setCoverHover(true)}
@@ -365,10 +370,11 @@ export function NotePage({ note }: { note: Note }) {
             aria-hidden
           />
         ) : (
-          !isRead && (
+          !isRead &&
+          openTabs.length < 2 && (
             <div
               className={cn(
-                "flex h-10 items-end px-8 transition-opacity duration-150",
+                "flex h-10 items-end px-4 transition-opacity duration-150 md:px-8",
                 coverHover ? "opacity-100" : "opacity-0",
               )}
             >
@@ -382,12 +388,13 @@ export function NotePage({ note }: { note: Note }) {
 
       <div
         className={cn(
-          "mx-auto px-8 pb-32",
+          "mx-auto px-4 pb-32 md:px-6 lg:px-8",
           note.cover ? (isRead ? "pt-10" : "pt-8") : isRead ? "pt-10" : "pt-4",
           width,
           isRead && "motion-safe:animate-sheet",
         )}
       >
+        {(note.parent || !isRead) && (
         <div
           className={cn(
             "mb-2 flex flex-wrap items-center gap-1 text-[11px] text-mute",
@@ -407,43 +414,109 @@ export function NotePage({ note }: { note: Note }) {
               <span className="truncate text-faint">{note.title || "Untitled"}</span>
             </>
           ) : (
-            <MonoLabel>{isRead ? "Reading" : note.template ? "Template" : "Page"}</MonoLabel>
+            !isRead && <MonoLabel>{note.template ? "Template" : "Page"}</MonoLabel>
           )}
-          <span className="ml-auto flex flex-wrap items-center gap-1">
-            <ToolbarBtn
-              label={starred.includes(note.id) ? "Starred" : "Star"}
-              aria-label={starred.includes(note.id) ? "Unstar" : "Star"}
-              active={starred.includes(note.id)}
-              onClick={() => toggleStar(note.id)}
-            >
-              <Star
-                size={15}
-                strokeWidth={1.4}
-                fill={starred.includes(note.id) ? "currentColor" : "none"}
-              />
-            </ToolbarBtn>
-            {!isRead && (
-              <>
-                <ToolbarBtn label="Insert" aria-label="Insert" onClick={() => setPlusOpen(true, "editor")}>
-                  <Plus size={15} strokeWidth={1.4} />
+          {!isRead && (
+            <span className="relative ml-auto flex flex-wrap items-center gap-1">
+              <span className="relative">
+                <ToolbarBtn
+                  label="Display settings"
+                  aria-label="Display settings"
+                  aria-expanded={pageOpen}
+                  active={pageOpen}
+                  onClick={() => setPageOpen((o) => !o)}
+                >
+                  <ChevronDown size={15} strokeWidth={1.4} />
                 </ToolbarBtn>
-                {speechSupported() && (
-                  <ToolbarBtn
-                    label={listening ? "Listening" : "Transcribe"}
-                    aria-label="Transcribe"
-                    active={listening}
-                    onClick={toggleMic}
-                  >
-                    <Mic size={15} strokeWidth={1.4} />
-                  </ToolbarBtn>
+                {pageOpen && (
+                  <Panel className="absolute right-0 top-full z-30 mt-1 w-[min(20rem,calc(100vw-2rem))] px-3 py-3 shadow-[0_16px_40px_-18px_rgba(0,0,0,0.28)] md:right-full md:top-0 md:mt-0 md:mr-2">
+                    <div className="mb-2">
+                      <MonoLabel>Display</MonoLabel>
+                    </div>
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <MonoLabel>Font</MonoLabel>
+                        <Segmented<PageFont>
+                          size="sm"
+                          aria-label="Page font"
+                          value={note.font ?? "sans"}
+                          onChange={(f) => patchNote(note.id, { font: f })}
+                          options={[
+                            { value: "sans", label: "Sans" },
+                            { value: "serif", label: "Serif" },
+                            { value: "mono", label: "Mono" },
+                          ]}
+                        />
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <MonoLabel>Width</MonoLabel>
+                        <Segmented<PageWidth>
+                          size="sm"
+                          aria-label="Page width"
+                          value={note.width ?? "l"}
+                          onChange={(w) => patchNote(note.id, { width: w })}
+                          options={[
+                            { value: "s", label: "Narrow" },
+                            { value: "m", label: "Medium" },
+                            { value: "l", label: "Wide" },
+                          ]}
+                        />
+                      </div>
+                      <Toggle
+                        checked={Boolean(note.smallText)}
+                        onChange={(on) => patchNote(note.id, { smallText: on })}
+                        label="Small text"
+                      />
+                      <label className="inline-flex items-center gap-2 font-serif text-sm text-mute">
+                        Cover
+                        <input
+                          type="color"
+                          className="h-7 w-8 cursor-pointer rounded-lg border border-line bg-paper p-0.5"
+                          value={toHex(note.cover)}
+                          onChange={(e) => patchNote(note.id, { cover: e.target.value })}
+                        />
+                      </label>
+                      {note.cover && (
+                        <TextButton onClick={() => patchNote(note.id, { cover: undefined })}>
+                          Remove cover
+                        </TextButton>
+                      )}
+                    </div>
+                  </Panel>
                 )}
-                <ToolbarBtn label="Delete" aria-label="Delete note" onClick={() => setPendingDelete(true)}>
-                  <Trash2 size={15} strokeWidth={1.4} />
+              </span>
+              <ToolbarBtn
+                label={starred.includes(note.id) ? "Starred" : "Star"}
+                aria-label={starred.includes(note.id) ? "Unstar" : "Star"}
+                active={starred.includes(note.id)}
+                onClick={() => toggleStar(note.id)}
+              >
+                <Star
+                  size={15}
+                  strokeWidth={1.4}
+                  fill={starred.includes(note.id) ? "currentColor" : "none"}
+                />
+              </ToolbarBtn>
+              <ToolbarBtn label="Insert" aria-label="Insert" onClick={() => setPlusOpen(true, "editor")}>
+                <Plus size={15} strokeWidth={1.4} />
+              </ToolbarBtn>
+              {speechSupported() && (
+                <ToolbarBtn
+                  label={listening ? "Listening" : "Transcribe"}
+                  aria-label="Transcribe"
+                  active={listening}
+                  onClick={toggleMic}
+                >
+                  <Mic size={15} strokeWidth={1.4} />
                 </ToolbarBtn>
-              </>
-            )}
-          </span>
+              )}
+              <ToolbarBtn label="Delete" aria-label="Delete note" onClick={() => setPendingDelete(true)}>
+                <Trash2 size={15} strokeWidth={1.4} />
+              </ToolbarBtn>
+            </span>
+          )}
         </div>
+        )}
 
         <div className={cn("mb-3", isRead && "mb-5")}>
           {isRead ? (
@@ -468,7 +541,7 @@ export function NotePage({ note }: { note: Note }) {
         </div>
 
         {isRead ? (
-          <h1 className="w-full font-serif text-[2.5rem] leading-[1.15] tracking-tight text-ink md:text-[2.75rem]">
+          <h1 className="w-full font-serif text-[2rem] leading-[1.15] tracking-tight text-ink md:text-[2.75rem]">
             {note.title || "Untitled"}
           </h1>
         ) : (
@@ -497,7 +570,7 @@ export function NotePage({ note }: { note: Note }) {
                 (e.target as HTMLInputElement).blur();
               }
             }}
-            className="w-full bg-transparent font-sans text-4xl leading-tight tracking-tight text-ink placeholder:text-faint focus-visible:outline-none"
+            className="w-full bg-transparent font-sans text-3xl leading-tight tracking-tight text-ink placeholder:text-faint focus-visible:outline-none md:text-4xl"
             placeholder="Untitled"
           />
         )}
@@ -509,7 +582,9 @@ export function NotePage({ note }: { note: Note }) {
                 <Chip
                   key={t}
                   selected
+                  tone="tag"
                   onClick={() => setView({ kind: "tag", tag: t })}
+                  onContextMenu={(e) => open(e, tagMenuItems(t, { noteId: note.id }))}
                   className="font-mono"
                 >
                   #{t}
@@ -519,66 +594,6 @@ export function NotePage({ note }: { note: Note }) {
           )
         ) : (
           <PropertyStrip note={note} onManage={() => setManageProps(true)} />
-        )}
-
-        {!isRead && (
-          <div className="mt-4">
-            <MenuTrigger open={pageOpen} onClick={() => setPageOpen((o) => !o)}>
-              <Settings2 size={13} strokeWidth={1.4} />
-              Page style
-            </MenuTrigger>
-            {pageOpen && (
-              <Panel className="mt-2 flex flex-wrap items-center gap-4 px-3 py-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <MonoLabel>Font</MonoLabel>
-                  <Segmented<PageFont>
-                    size="sm"
-                    aria-label="Page font"
-                    value={note.font ?? "sans"}
-                    onChange={(f) => patchNote(note.id, { font: f })}
-                    options={[
-                      { value: "sans", label: "Sans" },
-                      { value: "serif", label: "Serif" },
-                      { value: "mono", label: "Mono" },
-                    ]}
-                  />
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <MonoLabel>Width</MonoLabel>
-                  <Segmented<PageWidth>
-                    size="sm"
-                    aria-label="Page width"
-                    value={note.width ?? "m"}
-                    onChange={(w) => patchNote(note.id, { width: w })}
-                    options={[
-                      { value: "s", label: "Narrow" },
-                      { value: "m", label: "Medium" },
-                      { value: "l", label: "Wide" },
-                    ]}
-                  />
-                </div>
-                <Toggle
-                  checked={Boolean(note.smallText)}
-                  onChange={(on) => patchNote(note.id, { smallText: on })}
-                  label="Small text"
-                />
-                <label className="inline-flex items-center gap-2 font-serif text-sm text-mute">
-                  Cover
-                  <input
-                    type="color"
-                    className="h-7 w-8 cursor-pointer rounded-lg border border-line bg-paper p-0.5"
-                    value={toHex(note.cover)}
-                    onChange={(e) => patchNote(note.id, { cover: e.target.value })}
-                  />
-                </label>
-                {note.cover && (
-                  <TextButton onClick={() => patchNote(note.id, { cover: undefined })}>
-                    Remove cover
-                  </TextButton>
-                )}
-              </Panel>
-            )}
-          </div>
         )}
 
         <div
@@ -600,6 +615,49 @@ export function NotePage({ note }: { note: Note }) {
           ) : (
             <>
               <p className="mb-3 font-mono text-[10px] text-faint">Type / for blocks · [[ to link</p>
+              <div
+                onContextMenu={(e) =>
+                  open(e, [
+                    {
+                      id: "cut",
+                      label: "Cut",
+                      hint: "⌘X",
+                      disabled: !viewRef.current || viewRef.current.state.selection.main.empty,
+                      onSelect: () => {
+                        const view = viewRef.current;
+                        if (!view) return;
+                        void cutFromCodeMirror(view).then((ok) => {
+                          if (ok) setBody(view.state.doc.toString());
+                        });
+                      },
+                    },
+                    {
+                      id: "copy",
+                      label: "Copy",
+                      hint: "⌘C",
+                      disabled: !viewRef.current || viewRef.current.state.selection.main.empty,
+                      onSelect: () => {
+                        const view = viewRef.current;
+                        if (view) void copyFromCodeMirror(view);
+                      },
+                    },
+                    {
+                      id: "paste",
+                      label: "Paste",
+                      hint: "⌘V",
+                      onSelect: () => {
+                        const view = viewRef.current;
+                        if (!view) return;
+                        void pasteIntoCodeMirror(view).then((ok) => {
+                          if (ok) setBody(view.state.doc.toString());
+                        });
+                      },
+                    },
+                    { type: "sep" },
+                    ...noteMenuItems(note),
+                  ])
+                }
+              >
               <CodeMirror
                 value={body}
                 height="auto"
@@ -610,6 +668,7 @@ export function NotePage({ note }: { note: Note }) {
                   viewRef.current = view;
                 }}
               />
+              </div>
               {slash && (
                 <SlashStack
                   query={slash.query}
@@ -632,6 +691,7 @@ export function NotePage({ note }: { note: Note }) {
                       caption={img.caption}
                       width={img.width}
                       onWidth={(w) => setBody(setImageWidth(body, img.src, w))}
+                      onReplaceSrc={(next) => setBody(replaceImageSrc(body, img.src, next))}
                     />
                   ))}
                 </div>
@@ -641,32 +701,14 @@ export function NotePage({ note }: { note: Note }) {
         </div>
 
         {!isRead && writingEnabled && (
-          <div
-            className="mt-10 flex flex-wrap items-center gap-2 border-t border-line pt-4"
-            aria-busy={Boolean(busy)}
-          >
-            {busy ? (
-              <Loader2 size={13} strokeWidth={1.6} className="animate-spin text-faint" aria-hidden />
-            ) : (
-              <Sparkles size={13} strokeWidth={1.4} className="text-faint" aria-hidden />
-            )}
-            {busy && (
-              <span className="font-mono text-[11px] text-mute" role="status">
-                {busy} with Gemini…
-              </span>
-            )}
-            {WRITING_TOOLS.map((t) => (
-              <GhostButton
-                key={t.id}
-                className="border-0 px-2 py-1 text-[12px] text-mute"
-                disabled={Boolean(busy)}
-                aria-pressed={busy === t.label}
-                onClick={() => void applyTool(t.id)}
-              >
-                {busy === t.label ? `${t.label}…` : t.label}
-              </GhostButton>
-            ))}
-          </div>
+          <WritingToolsBar
+            body={body}
+            busy={busy}
+            setBusy={setBusy}
+            setBody={setBody}
+            setError={setError}
+            viewRef={viewRef}
+          />
         )}
       </div>
       {manageProps && <PropertyManager note={note} onClose={() => setManageProps(false)} />}
@@ -699,6 +741,7 @@ function PropertyStrip({ note, onManage }: { note: Note; onManage: () => void })
   const notes = useApp((s) => s.notes);
   const patchNote = useApp((s) => s.patchNote);
   const setView = useApp((s) => s.setView);
+  const { open } = useContextMenu();
   const target = schemaTarget(note, notes);
   const schema = (target.schema ?? []).filter((s) => !s.hidden);
 
@@ -709,7 +752,9 @@ function PropertyStrip({ note, onManage }: { note: Note; onManage: () => void })
             <Chip
               key={t}
               selected
+              tone="tag"
               onClick={() => setView({ kind: "tag", tag: t })}
+              onContextMenu={(e) => open(e, tagMenuItems(t, { noteId: note.id }))}
               className="font-mono"
             >
               #{t}
@@ -717,7 +762,7 @@ function PropertyStrip({ note, onManage }: { note: Note; onManage: () => void })
         ))}
         <input
           placeholder="add tag"
-          className="w-24 bg-transparent font-mono text-[11px] text-mute placeholder:text-faint focus-visible:outline-none"
+          className="w-24 bg-transparent font-mono text-[11px] text-tag/70 placeholder:text-tag/35 focus-visible:outline-none"
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               const v = e.currentTarget.value.replace(/^#/, "").trim();
@@ -726,7 +771,7 @@ function PropertyStrip({ note, onManage }: { note: Note; onManage: () => void })
             }
           }}
         />
-        <TextButton onClick={onManage}>
+        <TextButton onClick={onManage} className="text-prop/80 hover:text-prop">
           <Plus size={13} strokeWidth={1.4} />
           property
         </TextButton>
@@ -734,7 +779,7 @@ function PropertyStrip({ note, onManage }: { note: Note; onManage: () => void })
       {schema.map((s) => (
         <div key={s.key} className="grid grid-cols-[140px_1fr] items-center gap-3 py-0.5">
           <span className="flex min-w-0 items-center gap-1.5">
-            <ChromeIcon icon={PROP_ICONS[s.type]} />
+            <ChromeIcon icon={PROP_ICONS[s.type]} className={accentIconClass(s.type)} />
             <MonoLabel>{s.name}</MonoLabel>
           </span>
           <PropInput

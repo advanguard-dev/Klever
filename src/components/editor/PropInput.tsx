@@ -1,10 +1,12 @@
 import { Chip, Select, Toggle } from "@/components/ui";
-import { assetPathFor, pickFile } from "@/lib/assets";
 import { ChromeIcon, PROP_ICONS } from "@/lib/chrome-icons";
 import { cellValue, displayValue } from "@/lib/compute";
+import { resolveAssetSrc } from "@/lib/assets";
+import { normalizePropUrl } from "@/lib/prop-url";
 import { resolveLink } from "@/lib/parse";
 import { useApp } from "@/store";
 import type { Note, SchemaProp } from "@/types";
+import { ExternalLink } from "lucide-react";
 
 export function PropInput({
   note,
@@ -24,7 +26,7 @@ export function PropInput({
   const notes = useApp((s) => s.notes);
   const patchNote = useApp((s) => s.patchNote);
   const setView = useApp((s) => s.setView);
-  const putBlob = useApp((s) => s.putBlob);
+  const linkLocalFile = useApp((s) => s.linkLocalFile);
   const parent = note.parent ? notes.find((n) => n.id === note.parent) : undefined;
   const fieldSpec = spec ?? parent?.schema?.find((s) => s.key === field);
   const value = note.props[field];
@@ -32,9 +34,10 @@ export function PropInput({
   if (fieldSpec?.type === "formula" || fieldSpec?.type === "rollup" || type === "formula" || type === "rollup") {
     const shown = fieldSpec ? cellValue(note, fieldSpec, notes) : undefined;
     return (
-      <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-mute">
+      <span className="inline-flex items-center gap-1.5 rounded-md bg-smart/[0.08] px-1.5 py-0.5 font-mono text-[11px] text-smart">
         <ChromeIcon
           icon={PROP_ICONS[fieldSpec?.type === "rollup" || type === "rollup" ? "rollup" : "formula"]}
+          className="shrink-0 text-smart/80"
         />
         {displayValue(shown)}
       </span>
@@ -53,7 +56,7 @@ export function PropInput({
         {(options ?? []).map((o) => {
           const on = current === o;
           return (
-            <Chip key={o} selected={on} onClick={() => setVal(on ? undefined : o)} className="font-mono">
+            <Chip key={o} selected={on} tone="prop" onClick={() => setVal(on ? undefined : o)} className="font-mono">
               {o}
             </Chip>
           );
@@ -79,6 +82,7 @@ export function PropInput({
             <Chip
               key={o}
               selected={on}
+              tone={type === "tags" ? "tag" : "prop"}
               className="font-mono"
               onClick={() => setVal(on ? selected.filter((x) => x !== o) : [...selected, o])}
             >
@@ -162,28 +166,43 @@ export function PropInput({
   }
   if (type === "files") {
     const paths = Array.isArray(value) ? value.map(String) : [];
+    const fileBlobs = useApp.getState().blobs;
     return (
       <div className="flex flex-wrap items-center gap-2">
-        {paths.map((p) => (
-          <span key={p} className="font-mono text-[11px] text-mute">
-            {p.split("/").pop()}
-            <button
-              type="button"
-              className="ml-1 text-faint hover:text-ink"
-              onClick={() => setVal(paths.filter((x) => x !== p))}
-            >
-              ×
-            </button>
-          </span>
-        ))}
+        {paths.map((p) => {
+          const href = resolveAssetSrc(p, fileBlobs);
+          const openable = href && (href.startsWith("http") || href.startsWith("blob:") || href.startsWith("file:"));
+          return (
+            <span key={p} className="inline-flex items-center gap-1 font-mono text-[11px] text-mute">
+              {openable ? (
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-smart hover:underline"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {p.split("/").pop()}
+                </a>
+              ) : (
+                p.split("/").pop()
+              )}
+              <button
+                type="button"
+                className="text-faint hover:text-ink"
+                onClick={() => setVal(paths.filter((x) => x !== p))}
+              >
+                ×
+              </button>
+            </span>
+          );
+        })}
         <button
           type="button"
           className="font-serif text-[11px] text-mute hover:text-ink"
           onClick={() => {
-            void pickFile("*/*").then(async (file) => {
-              if (!file) return;
-              const path = assetPathFor(file);
-              await putBlob(file, path, file.type);
+            void linkLocalFile("*/*").then((path) => {
+              if (!path) return;
               setVal([...paths, path]);
             });
           }}
@@ -192,6 +211,57 @@ export function PropInput({
         </button>
       </div>
     );
+  }
+  if (type === "url") {
+    const raw = String(value ?? "");
+    const href = normalizePropUrl(raw);
+    return (
+      <div className="flex min-w-0 items-center gap-2">
+        <input
+          value={raw}
+          placeholder="https://…"
+          onChange={(e) => setVal(e.target.value || undefined)}
+          className="min-w-0 flex-1 bg-transparent py-1 text-sm focus-visible:outline-none"
+        />
+        {href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open link"
+            className="shrink-0 text-smart hover:text-ink"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <ExternalLink size={14} strokeWidth={1.5} />
+          </a>
+        ) : null}
+      </div>
+    );
+  }
+  if (type === "text") {
+    const raw = String(value ?? "");
+    const href = normalizePropUrl(raw);
+    if (href && raw.trim()) {
+      return (
+        <div className="flex min-w-0 items-center gap-2">
+          <input
+            value={raw}
+            onChange={(e) => setVal(e.target.value || undefined)}
+            className="min-w-0 flex-1 bg-transparent py-1 text-sm focus-visible:outline-none"
+          />
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open link"
+            className="shrink-0 text-smart hover:text-ink"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <ExternalLink size={14} strokeWidth={1.5} />
+          </a>
+        </div>
+      );
+    }
   }
   return (
     <input

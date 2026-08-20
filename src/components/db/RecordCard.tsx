@@ -1,6 +1,6 @@
 import { firstImageSrc, isImagePath, resolveAssetSrc } from "@/lib/assets";
-import { NoteIcon } from "@/lib/chrome-icons";
-import { cellValue, displayValue } from "@/lib/compute";
+import { accentKind, NoteIcon } from "@/lib/chrome-icons";
+import { PropValue } from "@/components/editor/PropValue";
 import { snippet } from "@/lib/views";
 import { useApp } from "@/store";
 import type { BlobRecord, CardSize, CoverSource, Note, SchemaProp } from "@/types";
@@ -13,6 +13,7 @@ export function RecordCard({
   size = "m",
   snippet: showSnippet,
   onOpen,
+  onContextMenu,
 }: {
   row: Note;
   schema: SchemaProp[];
@@ -20,17 +21,25 @@ export function RecordCard({
   size?: CardSize;
   snippet?: boolean;
   onOpen: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }) {
   const blobs = useApp((s) => s.blobs);
-  const notes = useApp((s) => s.notes);
   const coverSrc = coverSource(row, cover);
   const h = size === "s" ? "h-16" : size === "l" ? "h-40" : "h-24";
 
   return (
-    <button
-      type="button"
-      className="block w-full rounded-2xl border border-line text-left transition-colors duration-150 hover:bg-paper-2"
+    <div
+      role="button"
+      tabIndex={0}
+      className="block w-full cursor-pointer rounded-2xl border border-line text-left transition-colors duration-150 hover:bg-paper-2"
       onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      onContextMenu={onContextMenu}
     >
       {cover !== "none" && (
         <Cover vis={coverSrc} className={h} blobs={blobs} />
@@ -48,18 +57,26 @@ export function RecordCard({
         </div>
         {schema.length > 0 && (
           <div className="mt-3 space-y-1 font-mono text-[10px] text-mute">
-            {schema.map((s) => (
-              <div key={s.key}>
-                {s.name}: {displayValue(cellValue(row, s, notes))}
-              </div>
-            ))}
+            {schema.map((s) => {
+              const kind = accentKind(s.type);
+              return (
+                <div
+                  key={s.key}
+                  className={
+                    kind === "smart" ? "text-smart/80" : kind === "tag" ? "text-tag/80" : undefined
+                  }
+                >
+                  {s.name}: <PropValue note={row} spec={s} />
+                </div>
+              );
+            })}
           </div>
         )}
         {showSnippet && snippet(row.body) && (
           <p className="mt-3 line-clamp-3 text-sm text-mute">{snippet(row.body)}</p>
         )}
       </div>
-    </button>
+    </div>
   );
 }
 

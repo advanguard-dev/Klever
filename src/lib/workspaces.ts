@@ -7,7 +7,7 @@ export const WORKSPACE_TOOL_OPTIONS: {
   hint: string;
 }[] = [
   { id: "brainDump", label: "Brain Dump", hint: "Organize messy notes into pages and events" },
-  { id: "board", label: "Board", hint: "Freeform whiteboard" },
+  { id: "board", label: "Board", hint: "Freeform whiteboards" },
   { id: "calendar", label: "Calendar", hint: "Dates and events" },
   { id: "graph", label: "Graph", hint: "Link map of notes" },
   { id: "writingTools", label: "Writing tools", hint: "Rewrite / polish in the editor (remote AI)" },

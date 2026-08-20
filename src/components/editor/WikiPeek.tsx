@@ -1,4 +1,6 @@
 import { Panel } from "@/components/ui";
+import { useContextMenu } from "@/components/ContextMenu";
+import { wikiMenuItems } from "@/lib/context-menus";
 import { NoteLabel } from "@/lib/chrome-icons";
 import { plainSnippet, resolveLink } from "@/lib/parse";
 import { useApp } from "@/store";
@@ -22,6 +24,7 @@ export function WikiPeek({
   children: ReactNode;
 }) {
   const createPage = useApp((s) => s.createPage);
+  const { open } = useContextMenu();
   const hit = resolveLink(target, notes);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const timer = useRef(0);
@@ -31,6 +34,7 @@ export function WikiPeek({
   return (
     <span
       onMouseEnter={(e) => {
+        if (window.matchMedia("(hover: none)").matches) return;
         const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
         window.clearTimeout(timer.current);
         timer.current = window.setTimeout(() => setPos({ x: r.left, y: r.bottom + 6 }), 280);
@@ -50,6 +54,7 @@ export function WikiPeek({
             useApp.getState().setView({ kind: "note", id });
           }
         }}
+        onContextMenu={(e) => open(e, wikiMenuItems(target, hit))}
       >
         {children}
       </button>

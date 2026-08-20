@@ -34,6 +34,8 @@ export function CommandPalette() {
   const saveToFolder = useApp((s) => s.saveToFolder);
   const openFolder = useApp((s) => s.openFolder);
   const createDaily = useApp((s) => s.createDaily);
+  const boards = useApp((s) => s.boards);
+  const createBoard = useApp((s) => s.createBoard);
   const recents = useApp((s) => s.recents);
   const workspaces = useApp((s) => s.workspaces);
   const activeWorkspaceId = useApp((s) => s.activeWorkspaceId);
@@ -75,11 +77,19 @@ export function CommandPalette() {
     }
     if (tools.board) {
       list.push({
-        id: "board",
-        label: "Open board",
-        run: () => setView({ kind: "freeform" }),
+        id: "new-board",
+        label: "New board",
+        run: () => createBoard(),
         icon: LayoutDashboard,
       });
+      for (const b of boards) {
+        list.push({
+          id: `board-${b.id}`,
+          label: b.title,
+          run: () => setView({ kind: "freeform", id: b.id }),
+          icon: LayoutDashboard,
+        });
+      }
     }
     if (tools.brainDump) {
       list.push({
@@ -103,6 +113,7 @@ export function CommandPalette() {
     );
     return list;
   }, [
+    createBoard,
     createDaily,
     createDatabase,
     createPage,
@@ -113,6 +124,7 @@ export function CommandPalette() {
     setTheme,
     setView,
     theme,
+    boards,
     tools.board,
     tools.brainDump,
     tools.calendar,
@@ -193,7 +205,9 @@ export function CommandPalette() {
             placeholder="Go somewhere"
             className="w-full bg-transparent py-4 font-serif text-base focus-visible:outline-none"
           />
-          <Kbd>ESC</Kbd>
+          <span className="hidden sm:inline-flex">
+            <Kbd>ESC</Kbd>
+          </span>
         </div>
         <ul className="max-h-80 overflow-y-auto py-2">
           {items.map((item, idx) => (
@@ -202,7 +216,7 @@ export function CommandPalette() {
                 type="button"
                 onMouseEnter={() => setI(idx)}
                 onClick={() => run(idx)}
-                className={`flex w-full items-center justify-between gap-3 border-l-2 px-4 py-2 text-left font-serif text-sm ${
+                className={`flex w-full items-center justify-between gap-3 border-l-2 px-4 py-2 text-left font-serif text-sm max-md:py-3 ${
                   idx === i ? "border-ink bg-paper-2 text-ink" : "border-transparent text-mute hover:bg-paper-2"
                 }`}
               >

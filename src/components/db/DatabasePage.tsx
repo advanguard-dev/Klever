@@ -3,8 +3,10 @@ import { PropInput } from "@/components/editor/PropInput";
 import { PropertyManager } from "@/components/db/PropertyManager";
 import { RecordCard } from "@/components/db/RecordCard";
 import { Chip, ConfirmDialog, EmptyState, Field, GhostButton, IconButton, MonoLabel, Panel, Select, SolidButton, TextButton } from "@/components/ui";
+import { useContextMenu } from "@/components/ContextMenu";
+import { noteMenuItems } from "@/lib/context-menus";
 import { cn } from "@/lib/cn";
-import { ChromeIcon, NoteIcon, NoteLabel, noteKindIcon, PROP_ICONS, VIEW_ICONS } from "@/lib/chrome-icons";
+import { ChromeIcon, NoteIcon, NoteLabel, accentIconClass, noteKindIcon, PROP_ICONS, VIEW_ICONS } from "@/lib/chrome-icons";
 import { nid, slugify } from "@/lib/ids";
 import { applyView, newView, visibleSchema } from "@/lib/views";
 import { useApp } from "@/store";
@@ -30,6 +32,7 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editingTab, setEditingTab] = useState<string | null>(null);
   const [pendingDeleteView, setPendingDeleteView] = useState(false);
+  const { open } = useContextMenu();
   const [draftTitle, setDraftTitle] = useState(note.title);
   const [titleSeenId, setTitleSeenId] = useState(note.id);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
@@ -60,7 +63,14 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
   };
 
   return (
-    <div className="flex flex-col px-8 py-10 pb-32 group/page">
+    <div
+      className="flex flex-col px-4 py-8 pb-32 group/page md:px-8 md:py-10"
+      onContextMenu={(e) => {
+        const t = e.target as HTMLElement;
+        if (t.closest("input, textarea, select, button, table, [role='menu']")) return;
+        open(e, noteMenuItems(note));
+      }}
+    >
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <MonoLabel>Database</MonoLabel>
@@ -91,7 +101,7 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
                 (e.target as HTMLInputElement).blur();
               }
             }}
-            className="mt-2 block bg-transparent font-sans text-4xl tracking-tight focus-visible:outline-none"
+            className="mt-2 block bg-transparent font-sans text-3xl tracking-tight focus-visible:outline-none md:text-4xl"
             placeholder="Untitled"
           />
         </div>
@@ -107,7 +117,7 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
         </div>
       </div>
 
-      <div className="mt-8 flex flex-nowrap items-center gap-1 border-b border-line">
+      <div className="mt-8 flex flex-nowrap items-center gap-1 overflow-x-auto border-b border-line">
         {views.map((v) => (
           <div key={v.id} className="group/tab flex items-center">
             {editingTab === v.id ? (
@@ -133,6 +143,45 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
                 title="Double-click to rename"
                 onClick={() => setView({ kind: "database", id: note.id, viewId: v.id })}
                 onDoubleClick={() => setEditingTab(v.id)}
+                onContextMenu={(e) =>
+                  open(e, [
+                    {
+                      id: "open",
+                      label: "Open",
+                      onSelect: () => setView({ kind: "database", id: note.id, viewId: v.id }),
+                    },
+                    { id: "rename", label: "Rename", onSelect: () => setEditingTab(v.id) },
+                    {
+                      id: "dup",
+                      label: "Duplicate view",
+                      onSelect: () => {
+                        const copy = { ...v, id: nid(), name: `${v.name} copy` };
+                        patchNote(note.id, { views: [...views, copy] });
+                        setView({ kind: "database", id: note.id, viewId: copy.id });
+                      },
+                    },
+                    { type: "sep" as const },
+                    {
+                      id: "delete",
+                      label: "Delete view",
+                      danger: true,
+                      hidden: views.length <= 1,
+                      confirm: {
+                        title: `Delete ${v.name}?`,
+                        description: "This cannot be undone.",
+                        confirmLabel: "Delete",
+                      },
+                      onSelect: () => {
+                        const next = views.filter((x) => x.id !== v.id);
+                        patchNote(note.id, { views: next });
+                        const fallback = next[0];
+                        if (v.id === active.id && fallback) {
+                          setView({ kind: "database", id: note.id, viewId: fallback.id });
+                        }
+                      },
+                    },
+                  ])
+                }
                 className={cn(
                   "inline-flex h-9 items-center gap-2 rounded-t-lg border-b-2 px-3 font-serif text-sm transition-colors duration-150",
                   v.id === active.id
@@ -362,6 +411,7 @@ function ViewSettings({
             <Chip
               key={s.key}
               selected={visible.includes(s.key)}
+              tone="prop"
               onClick={() => {
                 const next = visible.includes(s.key)
                   ? visible.filter((k) => k !== s.key)
@@ -529,7 +579,9 @@ function SortEditor({
 
 function TableView({ rows, schema }: { rows: Note[]; schema: SchemaProp[] }) {
   const setView = useApp((s) => s.setView);
+  const { open } = useContextMenu();
   return (
+    <div className="overflow-x-auto">
     <table className="w-full min-w-[640px] border-collapse text-sm">
       <thead>
         <tr className="text-left">
@@ -542,7 +594,7 @@ function TableView({ rows, schema }: { rows: Note[]; schema: SchemaProp[] }) {
               className="border-b border-line py-2 pr-4 font-mono text-[10px] font-normal uppercase tracking-[0.14em] text-faint"
             >
               <span className="inline-flex items-center gap-1.5">
-                <ChromeIcon icon={PROP_ICONS[s.type]} />
+                <ChromeIcon icon={PROP_ICONS[s.type]} className={accentIconClass(s.type)} />
                 {s.name}
               </span>
             </th>
@@ -551,12 +603,20 @@ function TableView({ rows, schema }: { rows: Note[]; schema: SchemaProp[] }) {
       </thead>
       <tbody>
         {rows.map((row) => (
-          <tr key={row.id} className="align-middle transition-colors duration-150 hover:bg-paper-2">
+          <tr
+            key={row.id}
+            className="align-middle transition-colors duration-150 hover:bg-paper-2"
+            onContextMenu={(e) => {
+              if ((e.target as HTMLElement).closest("input, textarea, select, button:not(.row-name)")) return;
+              open(e, noteMenuItems(row));
+            }}
+          >
             <td className="border-b border-line py-2.5 pr-4">
               <button
                 type="button"
-                className="text-left hover:opacity-70"
+                className="row-name text-left hover:opacity-70"
                 onClick={() => setView({ kind: "note", id: row.id })}
+                onContextMenu={(e) => open(e, noteMenuItems(row))}
               >
                 <NoteLabel note={row} />
               </button>
@@ -570,6 +630,7 @@ function TableView({ rows, schema }: { rows: Note[]; schema: SchemaProp[] }) {
         ))}
       </tbody>
     </table>
+    </div>
   );
 }
 
@@ -591,6 +652,7 @@ function BoardView({
   const createPage = useApp((s) => s.createPage);
   const patchNote = useApp((s) => s.patchNote);
   const setView = useApp((s) => s.setView);
+  const { open } = useContextMenu();
   const col = schema.find((s) => s.key === groupBy) ?? db.schema?.find((s) => s.key === groupBy);
   const columns = [...(col?.options ?? ["No status"])];
   if (rows.some((r) => !r.props[groupBy])) columns.push("—");
@@ -616,6 +678,7 @@ function BoardView({
                   cover={cover ?? "none"}
                   size={size ?? "s"}
                   onOpen={() => setView({ kind: "note", id: row.id })}
+                  onContextMenu={(e) => open(e, noteMenuItems(row))}
                 />
               ))}
               <GhostButton
@@ -652,6 +715,7 @@ function GalleryView({
   size: NonNullable<DbView["cardSize"]>;
 }) {
   const setView = useApp((s) => s.setView);
+  const { open } = useContextMenu();
   const cols = size === "s" ? "sm:grid-cols-3 xl:grid-cols-4" : size === "l" ? "sm:grid-cols-2" : "sm:grid-cols-2 xl:grid-cols-3";
   return (
     <div className={cn("grid grid-cols-1 gap-4", cols)}>
@@ -663,6 +727,7 @@ function GalleryView({
           cover={cover}
           size={size}
           onOpen={() => setView({ kind: "note", id: row.id })}
+          onContextMenu={(e) => open(e, noteMenuItems(row))}
         />
       ))}
     </div>
@@ -681,6 +746,7 @@ function CardView({
   size: NonNullable<DbView["cardSize"]>;
 }) {
   const setView = useApp((s) => s.setView);
+  const { open } = useContextMenu();
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-6">
       {rows.map((row) => (
@@ -692,6 +758,7 @@ function CardView({
           size={size}
           snippet
           onOpen={() => setView({ kind: "note", id: row.id })}
+          onContextMenu={(e) => open(e, noteMenuItems(row))}
         />
       ))}
     </div>
@@ -700,6 +767,7 @@ function CardView({
 
 function ListView({ rows, schema }: { rows: Note[]; schema: SchemaProp[] }) {
   const setView = useApp((s) => s.setView);
+  const { open } = useContextMenu();
   const status = schema.find((s) => s.type === "select");
   return (
     <ul>
@@ -709,10 +777,16 @@ function ListView({ rows, schema }: { rows: Note[]; schema: SchemaProp[] }) {
             type="button"
             className="text-left text-sm hover:opacity-70"
             onClick={() => setView({ kind: "note", id: row.id })}
+            onContextMenu={(e) => open(e, noteMenuItems(row))}
           >
             <NoteLabel note={row} />
           </button>
-          <span className="ml-auto font-mono text-[11px] text-mute">
+          <span
+            className={cn(
+              "ml-auto font-mono text-[11px]",
+              status ? "text-prop/80" : "text-tag/75",
+            )}
+          >
             {status ? String(row.props[status.key] ?? "") : row.tags.join(" ")}
           </span>
         </li>
@@ -723,6 +797,7 @@ function ListView({ rows, schema }: { rows: Note[]; schema: SchemaProp[] }) {
 
 function CalendarView({ rows, dateProp }: { rows: Note[]; dateProp: string }) {
   const setView = useApp((s) => s.setView);
+  const { open } = useContextMenu();
   const now = new Date();
   const year = now.getFullYear();
   const month = now.getMonth();
@@ -758,6 +833,7 @@ function CalendarView({ rows, dateProp }: { rows: Note[]; dateProp: string }) {
                     type="button"
                     className="mt-1 flex w-full items-center gap-1 truncate text-left text-xs hover:opacity-70"
                     onClick={() => setView({ kind: "note", id: n.id })}
+                    onContextMenu={(e) => open(e, noteMenuItems(n))}
                   >
                     {n.icon ? <NoteIcon icon={n.icon} size={12} className="shrink-0 text-faint" /> : null}
                     <span className="truncate">{n.title}</span>

@@ -66,7 +66,7 @@ export function WorkspaceSetup() {
           {isCreate ? "New workspace" : "Edit workspace"}
         </h2>
         <p className="mt-3 text-sm leading-relaxed text-mute">
-          Each workspace is its own vault of notes, board, and calendar — with tools and AI mode you
+          Each workspace is its own vault of notes, boards, and calendar — with tools and AI mode you
           pick here.
         </p>
 

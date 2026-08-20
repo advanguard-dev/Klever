@@ -1,10 +1,17 @@
 import { AppShell } from "@/components/layout/AppShell";
 import { Welcome } from "@/components/layout/Welcome";
 import { WorkspaceSetup } from "@/components/layout/WorkspaceSetup";
+import { ContextMenuHost } from "@/components/ContextMenu";
 import { defaultWorkspaceTools } from "@/lib/workspaces";
 import { useApp } from "@/store";
 import { nextEditorMode } from "@/types";
 import { useEffect } from "react";
+
+declare global {
+  interface Window {
+    __kleverFlush?: () => Promise<void>;
+  }
+}
 
 export function App() {
   const ready = useApp((s) => s.ready);
@@ -23,6 +30,7 @@ export function App() {
   const setSettingsOpen = useApp((s) => s.setSettingsOpen);
   const setPlusOpen = useApp((s) => s.setPlusOpen);
   const closeWorkspaceSetup = useApp((s) => s.closeWorkspaceSetup);
+  const flushNow = useApp((s) => s.flushNow);
   const workspaces = useApp((s) => s.workspaces);
   const activeWorkspaceId = useApp((s) => s.activeWorkspaceId);
   const tools =
@@ -31,6 +39,24 @@ export function App() {
   useEffect(() => {
     void hydrate();
   }, [hydrate]);
+
+  useEffect(() => {
+    window.__kleverFlush = flushNow;
+    const onHide = () => {
+      if (document.visibilityState !== "hidden") return;
+      void flushNow();
+    };
+    const onPageHide = () => {
+      void flushNow();
+    };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      delete window.__kleverFlush;
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", onPageHide);
+    };
+  }, [flushNow]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -64,6 +90,7 @@ export function App() {
         setMode(nextEditorMode(mode));
       }
       if (e.key === "Escape") {
+        if (mode === "read") return;
         setCommandOpen(false);
         setDumpOpen(false);
         setSettingsOpen(false);
@@ -93,7 +120,7 @@ export function App() {
 
   if (!ready) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-paper">
+      <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-paper">
         <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-mute">Vault</span>
         <p className="font-serif text-5xl italic tracking-tight">Klever</p>
       </div>
@@ -102,11 +129,15 @@ export function App() {
 
   if (view.kind === "welcome") {
     return (
-      <>
+      <ContextMenuHost>
         <Welcome />
         <WorkspaceSetup />
-      </>
+      </ContextMenuHost>
     );
   }
-  return <AppShell />;
+  return (
+    <ContextMenuHost>
+      <AppShell />
+    </ContextMenuHost>
+  );
 }

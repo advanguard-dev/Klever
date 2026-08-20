@@ -1,6 +1,8 @@
 @import "tailwindcss";
 
 @theme {
+  --klever-titlebar-inset: 4.75rem;
+
   --font-sans: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
   --font-serif: "Instrument Serif", ui-serif, Georgia, "Times New Roman", serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
@@ -12,6 +14,9 @@
   --color-faint: #9a948a;
   --color-line: #ddd8ce;
   --color-accent: #1b1a16;
+  --color-tag: #6a7864;
+  --color-prop: #7d6b56;
+  --color-smart: #5a6b76;
 
   --radius-sm: 0.5rem;
   --radius-md: 0.75rem;
@@ -51,6 +56,9 @@ html.dark {
   --color-faint: #5c5850;
   --color-line: #2c2a26;
   --color-accent: #eceae3;
+  --color-tag: #9aa892;
+  --color-prop: #c4b09a;
+  --color-smart: #9aadb8;
 }
 
 @layer base {
@@ -66,7 +74,7 @@ html.dark {
 
   body {
     margin: 0;
-    min-height: 100vh;
+    min-height: 100dvh;
     background: transparent;
     color: var(--color-ink);
     font-family: var(--font-sans);
@@ -78,6 +86,16 @@ html.dark {
 
   button,
   [role="button"] {
+    cursor: pointer;
+  }
+
+  button.cursor-grab,
+  [data-block-gutter] {
+    cursor: grab;
+  }
+
+  [data-block-gutter] [data-block-insert],
+  [data-block-gutter] [data-block-insert] * {
     cursor: pointer;
   }
 
@@ -226,6 +244,35 @@ li.ProseMirror-selectednode::after {
   line-height: 1.75;
 }
 
+.klever-block-hover {
+  border-radius: 0.5rem;
+  background-color: color-mix(in srgb, var(--color-paper-2) 72%, transparent);
+}
+
+.klever-block-dragging {
+  opacity: 0.4;
+}
+
+.klever-editor-dragging,
+.klever-editor-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
+.tiptap p.klever-block-hover,
+.tiptap h1.klever-block-hover,
+.tiptap h2.klever-block-hover,
+.tiptap h3.klever-block-hover,
+.tiptap li.klever-block-hover,
+.tiptap pre.klever-block-hover,
+.tiptap blockquote.klever-block-hover {
+  box-decoration-break: clone;
+}
+
+.ProseMirror-dropcursor {
+  border-radius: 1px;
+}
+
 /* Calm long-form Read mode — Instrument Serif, generous leading, paper/ink. */
 .prose-klever-read {
   font-family: var(--font-serif);
@@ -237,6 +284,21 @@ li.ProseMirror-selectednode::after {
 .prose-klever-read.prose-klever-read--small {
   font-size: 1.05rem;
   line-height: 1.75;
+}
+
+.prose-klever [data-word-font="sans"],
+.prose-klever .font-sans[data-word-font] {
+  font-family: var(--font-sans);
+}
+
+.prose-klever [data-word-font="serif"],
+.prose-klever .font-serif[data-word-font] {
+  font-family: var(--font-serif);
+}
+
+.prose-klever [data-word-font="mono"],
+.prose-klever .font-mono[data-word-font] {
+  font-family: var(--font-mono);
 }
 
 .prose-klever-read h1,
@@ -296,6 +358,7 @@ li.ProseMirror-selectednode::after {
 
 .prose-klever-read .hash-tag {
   font-family: var(--font-mono);
+  color: color-mix(in srgb, var(--color-tag) 70%, var(--color-mute));
 }
 
 .prose-klever h1,
@@ -475,10 +538,14 @@ li.ProseMirror-selectednode::after {
   font-size: 0.95em;
 }
 
-.prose-klever .hash-tag {
+.prose-klever .hash-tag,
+.hash-tag {
   font-family: var(--font-mono);
   font-size: 0.78em;
-  color: var(--color-mute);
+  color: color-mix(in srgb, var(--color-tag) 68%, var(--color-mute));
+  background: color-mix(in srgb, var(--color-tag) 9%, transparent);
+  border-radius: 999px;
+  padding: 0.05em 0.42em;
   text-decoration: none;
   border-bottom: none;
 }
@@ -527,12 +594,86 @@ li.ProseMirror-selectednode::after {
   border-radius: var(--radius-lg);
 }
 
+.prose-klever .vault-audio,
+.ProseMirror .vault-audio,
+.prose-klever audio,
+.ProseMirror audio {
+  display: block;
+  width: 100%;
+  margin: 1.25rem 0;
+}
+
+.prose-klever .vault-video,
+.ProseMirror .vault-video,
+.prose-klever video,
+.ProseMirror video {
+  display: block;
+  width: 100%;
+  max-width: 40rem;
+  margin: 1.25rem 0;
+  border-radius: var(--radius-lg);
+  background: var(--color-paper-2);
+}
+
+.prose-klever .vault-pdf,
+.ProseMirror .vault-pdf,
+.prose-klever iframe[data-vault-pdf],
+.ProseMirror iframe[data-vault-pdf] {
+  display: block;
+  width: 100%;
+  height: 28rem;
+  margin: 1.25rem 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  background: var(--color-paper-2);
+}
+
+.prose-klever .file-card,
+.ProseMirror .file-card {
+  text-decoration: none;
+  border-bottom: none;
+  color: inherit;
+}
+
+.prose-klever .file-card:hover,
+.ProseMirror .file-card:hover {
+  color: inherit;
+}
+
+.ProseMirror [data-vault-file],
+.ProseMirror .vault-file {
+  margin: 1rem 0;
+}
+
 .ProseMirror .selectedCell::after {
   display: none !important;
 }
 
 .ProseMirror-gapcursor::after {
   border-top: 1px solid var(--color-ink) !important;
+}
+
+/* macOS Electron — native window drag + traffic-light safe area (hiddenInset). */
+html.electron-mac .klever-titlebar {
+  -webkit-app-region: drag;
+  padding-left: var(--klever-titlebar-inset);
+}
+
+html.electron-mac .klever-titlebar :is(
+  button,
+  a,
+  input,
+  textarea,
+  select,
+  label,
+  [role="button"],
+  [role="tab"],
+  [role="switch"],
+  [role="menu"],
+  [role="menuitem"],
+  [contenteditable="true"]
+) {
+  -webkit-app-region: no-drag;
 }
 
 @media (prefers-reduced-motion: reduce) {

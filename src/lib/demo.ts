@@ -7,7 +7,7 @@ tags:
   - klever
 created: 2026-08-14T09:00:00.000Z
 updated: 2026-08-14T09:00:00.000Z
-width: m
+width: l
 ---
 
 Klever is a local garden. Notes are markdown. Databases are markdown. The graph is the leftover shape of how you think.

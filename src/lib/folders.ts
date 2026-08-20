@@ -41,6 +41,22 @@ export function buildVaultTree(notes: Note[]): VaultFolder {
   return root;
 }
 
+/** Depth-first notes in sidebar order: a folder’s pages, then its subfolders. */
+export function flattenVaultNotes(root: VaultFolder): Note[] {
+  const out: Note[] = [];
+  const walk = (f: VaultFolder) => {
+    out.push(...f.notes);
+    f.folders.forEach(walk);
+  };
+  walk(root);
+  return out;
+}
+
+/** Pages in vault order for Read mode prev/next and the page menu. */
+export function readingQueue(notes: Note[]): Note[] {
+  return flattenVaultNotes(buildVaultTree(notes.filter((n) => n.type === "page")));
+}
+
 export function folderAncestors(path: string) {
   const folder = noteFolder(path);
   if (!folder) return [];

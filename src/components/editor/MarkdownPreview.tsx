@@ -1,9 +1,16 @@
+import { FileAttachment } from "@/components/editor/FileAttachment";
 import { ImageBlock } from "@/components/editor/ImageBlock";
 import { WikiPeek, openNote } from "@/components/editor/WikiPeek";
+import { useContextMenu } from "@/components/ContextMenu";
 import { NoteLabel } from "@/lib/chrome-icons";
-import { parseAlt, resolveAssetSrc, setImageWidth, isAudioPath } from "@/lib/assets";
+import { tagMenuItems, wikiMenuItems } from "@/lib/context-menus";
+import { parseAlt, replaceImageSrc, setImageWidth } from "@/lib/assets";
+import { isAttachedFileHref, isLocalAssetHref, setFileDisplay } from "@/lib/file-display";
 import { headingSlug, plainSnippet, resolveLink, wikifyForPreview } from "@/lib/parse";
+import { isPageFont, wordFontSyntaxToHtml } from "@/lib/word-font";
+import { pageFontClass } from "@/lib/page-fonts";
 import type { Note } from "@/types";
+import rehypeRaw from "rehype-raw";
 import { useApp } from "@/store";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -26,8 +33,8 @@ export function MarkdownPreview({
 }) {
   const setView = useApp((s) => s.setView);
   const patchNote = useApp((s) => s.patchNote);
-  const blobs = useApp((s) => s.blobs);
-  const source = wikifyForPreview(note.body || "*Empty page.*");
+  const { open } = useContextMenu();
+  const source = wordFontSyntaxToHtml(wikifyForPreview(note.body || "*Empty page.*"));
 
   const heading = (Tag: "h1" | "h2" | "h3") =>
     function Heading({ children }: { children?: ReactNode }) {
@@ -47,7 +54,24 @@ export function MarkdownPreview({
         </blockquote>
       );
     },
-    a({ href, children }) {
+    span({ node, children, className, ...props }) {
+      const attrs = node?.properties as Record<string, unknown> | undefined;
+      const raw = attrs?.dataWordFont ?? attrs?.["data-word-font"];
+      const font = typeof raw === "string" && isPageFont(raw) ? raw : null;
+      if (font) {
+        return (
+          <span {...props} data-word-font={font} className={[pageFontClass(font), className].filter(Boolean).join(" ")}>
+            {children}
+          </span>
+        );
+      }
+      return (
+        <span className={className} {...props}>
+          {children}
+        </span>
+      );
+    },
+    a({ href, title, children }) {
       if (href?.startsWith("embed:")) {
         const target = decodeURIComponent(href.slice(6));
         return <NoteEmbed target={target} notes={notes} depth={depth} reading={reading} />;
@@ -59,21 +83,32 @@ export function MarkdownPreview({
       if (href?.startsWith("#")) {
         const tag = href.slice(1);
         return (
-          <button type="button" className="hash-tag" onClick={() => setView({ kind: "tag", tag })}>
+          <button
+            type="button"
+            className="hash-tag"
+            onClick={() => setView({ kind: "tag", tag })}
+            onContextMenu={(e) => open(e, tagMenuItems(tag, { noteId: note.id }))}
+          >
             {children}
           </button>
         );
       }
       const path = href?.replace(/^\.\//, "") ?? "";
-      if (href && blobs[path]) {
-        if (isAudioPath(path)) {
-          return <audio controls src={resolveAssetSrc(path, blobs)} className="my-4 w-full" />;
-        }
-        const url = resolveAssetSrc(path, blobs);
+      if (href && isAttachedFileHref(path)) {
         return (
-          <a href={url} download={path.split("/").pop()}>
-            {children}
-          </a>
+          <FileAttachment
+            src={path}
+            name={nodeText(children)}
+            title={title}
+            readOnly={reading}
+            onDisplay={
+              reading ? undefined : (display) => patchNote(note.id, { body: setFileDisplay(note.body, path, display) })
+            }
+            onWidth={reading ? undefined : (w) => patchNote(note.id, { body: setImageWidth(note.body, path, w) })}
+            onReplaceSrc={
+              reading ? undefined : (next) => patchNote(note.id, { body: replaceImageSrc(note.body, path, next) })
+            }
+          />
         );
       }
       return (
@@ -82,9 +117,27 @@ export function MarkdownPreview({
         </a>
       );
     },
-    img({ src, alt }) {
+    img({ src, alt, title }) {
       if (!src) return null;
       const parsed = parseAlt(alt ?? "");
+      if (isLocalAssetHref(src) || isAttachedFileHref(src.replace(/^\.\//, ""))) {
+        const path = src.replace(/^\.\//, "");
+        return (
+          <FileAttachment
+            src={path}
+            name={alt}
+            title={title}
+            readOnly={reading}
+            onDisplay={
+              reading ? undefined : (display) => patchNote(note.id, { body: setFileDisplay(note.body, path, display) })
+            }
+            onWidth={reading ? undefined : (w) => patchNote(note.id, { body: setImageWidth(note.body, path, w) })}
+            onReplaceSrc={
+              reading ? undefined : (next) => patchNote(note.id, { body: replaceImageSrc(note.body, path, next) })
+            }
+          />
+        );
+      }
       return (
         <ImageBlock
           src={src}
@@ -95,6 +148,11 @@ export function MarkdownPreview({
             reading
               ? undefined
               : (w) => patchNote(note.id, { body: setImageWidth(note.body, src, w) })
+          }
+          onReplaceSrc={
+            reading
+              ? undefined
+              : (next) => patchNote(note.id, { body: replaceImageSrc(note.body, src, next) })
           }
         />
       );
@@ -112,7 +170,7 @@ export function MarkdownPreview({
         .filter(Boolean)
         .join(" ")}
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]} components={components}>
         {source}
       </ReactMarkdown>
     </div>
@@ -131,6 +189,7 @@ function NoteEmbed({
   reading?: boolean;
 }) {
   const hit = resolveLink(target, notes);
+  const { open } = useContextMenu();
   if (!hit) return <WikiPeek target={target} notes={notes}>{target}</WikiPeek>;
   const lines = hit.body.split("\n");
   const clipped = lines.length > 36 ? `${lines.slice(0, 36).join("\n")}\n\n…` : hit.body;
@@ -140,6 +199,7 @@ function NoteEmbed({
         type="button"
         className="mb-2 font-serif text-sm text-mute hover:bg-paper-2 hover:text-ink"
         onClick={() => openNote(hit)}
+        onContextMenu={(e) => open(e, wikiMenuItems(target, hit))}
       >
         <NoteLabel note={hit} size={14} />
       </button>

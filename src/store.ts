@@ -19,22 +19,28 @@ import type {
 } from "@/types";
 import { defaultAi } from "@/lib/ai";
 import { DEMO_FILES } from "@/lib/demo";
-import { pickFiles } from "@/lib/assets";
+import { assetPathFor, mimeFromPath, pickFiles, pickLocalFile, refreshBlobFromHandle, refreshBlobsFromDisk, safeFileName } from "@/lib/assets";
 import { nid, slugify, todayDate, todayIso } from "@/lib/ids";
-import { fileToNote, noteToFile, notesFromFiles } from "@/lib/parse";
+import { handleDroppedFiles } from "@/lib/drop-files";
+import { isElectron } from "@/lib/electron";
+import { blobsFromDesktopPayload, blobsToDesktopPayload, externalFileBlob } from "@/lib/open-local-file";
+import { localPathFromFile } from "@/lib/local-file-path";
+import { fileToNote, normalizeNote, noteToFile, notesFromFiles } from "@/lib/parse";
 import { defaultViews, newView } from "@/lib/views";
 import { createWorkspaceDraft, normalizeWorkspaceTools } from "@/lib/workspaces";
 import {
   defaultFreeformBoard,
   loadBlobs,
-  loadBoard,
+  loadBoards,
   loadEvents,
   loadFiles,
   loadOrMigrateWorkspaces,
   loadWorkspaceVaultMeta,
+  nextBoardTitle,
   pickVaultFolder,
+  readBlobFromVault,
   saveBlobs,
-  saveBoard,
+  saveBoards,
   saveEvents,
   saveFiles,
   saveMeta,
@@ -43,9 +49,12 @@ import {
   walkVault,
   writeVaultToDirectory,
 } from "@/lib/persist";
+import { runBeforeFlushHooks } from "@/lib/save-hooks";
 
 let dirHandle: FileSystemDirectoryHandle | null = null;
+let vaultRootPath: string | null = null;
 let persistTimer: number | undefined;
+let flushInFlight: Promise<void> | null = null;
 const TAB_ID = nid();
 let channel: BroadcastChannel | null = null;
 let helloTimer: number | undefined;
@@ -54,9 +63,27 @@ function viewNoteId(view: AppView) {
   return view.kind === "note" || view.kind === "database" ? view.id : undefined;
 }
 
+const OPEN_TABS_MAX = 16;
+
+function withOpenTab(tabs: string[], id: string) {
+  if (tabs.includes(id)) return tabs;
+  const next = [...tabs, id];
+  return next.length > OPEN_TABS_MAX ? next.slice(next.length - OPEN_TABS_MAX) : next;
+}
+
+function noteAppView(note: Note): AppView {
+  return note.type === "database" ? { kind: "database", id: note.id } : { kind: "note", id: note.id };
+}
+
+function seedOpenTabs(tabs: string[], current: string | undefined, notes: Note[]) {
+  const existing = tabs.filter((id) => notes.some((n) => n.id === id));
+  if (!current || existing.includes(current) || !notes.some((n) => n.id === current)) return existing;
+  return [...existing, current];
+}
+
 function filesFromNotes(notes: Note[]) {
   const files: Record<string, string> = {};
-  for (const n of notes) files[n.path] = noteToFile(n);
+  for (const n of notes) files[n.path] = noteToFile(normalizeNote(n));
   return files;
 }
 
@@ -86,13 +113,42 @@ function homeView(notes: Note[]): AppView {
     : { kind: "note", id: first.id };
 }
 
-function clampViewToTools(view: AppView, tools: WorkspaceTools): AppView {
+function clampViewToTools(view: AppView, tools: WorkspaceTools, boards?: FreeformBoard[]): AppView {
   if (view.kind === "calendar" && !tools.calendar) return { kind: "graph" };
-  if (view.kind === "freeform" && !tools.board) return { kind: "graph" };
+  if (view.kind === "freeform") {
+    if (!tools.board) {
+      return tools.graph ? { kind: "graph" } : tools.calendar ? { kind: "calendar" } : { kind: "welcome" };
+    }
+    const id =
+      (view.id && boards?.some((b) => b.id === view.id) && view.id) ||
+      boards?.[0]?.id ||
+      "main";
+    return { kind: "freeform", id };
+  }
   if (view.kind === "graph" && !tools.graph) {
-    return tools.calendar ? { kind: "calendar" } : tools.board ? { kind: "freeform" } : { kind: "welcome" };
+    return tools.calendar ? { kind: "calendar" } : tools.board ? { kind: "freeform", id: boards?.[0]?.id } : { kind: "welcome" };
   }
   return view;
+}
+
+function activeBoardId(s: { view: AppView; boards: FreeformBoard[] }): string {
+  if (s.view.kind === "freeform") {
+    const id = s.view.id;
+    if (id && s.boards.some((b) => b.id === id)) return id;
+  }
+  return s.boards[0]?.id ?? "main";
+}
+
+function withActiveBoard(
+  s: { view: AppView; boards: FreeformBoard[] },
+  fn: (b: FreeformBoard) => FreeformBoard,
+): FreeformBoard[] {
+  const id = activeBoardId(s);
+  const boards = s.boards.length ? s.boards : [defaultFreeformBoard({ id })];
+  if (!boards.some((b) => b.id === id)) {
+    return [...boards, { ...fn(defaultFreeformBoard({ id })), id, updated: todayIso() }];
+  }
+  return boards.map((b) => (b.id === id ? { ...fn(b), id: b.id, updated: todayIso() } : b));
 }
 
 interface AppState {
@@ -100,7 +156,7 @@ interface AppState {
   notes: Note[];
   blobs: Record<string, BlobRecord>;
   events: VaultEvent[];
-  board: FreeformBoard;
+  boards: FreeformBoard[];
   view: AppView;
   sidebarOpen: boolean;
   propsOpen: boolean;
@@ -119,6 +175,7 @@ interface AppState {
   folderName: string | null;
   recents: string[];
   starred: string[];
+  openTabs: string[];
   workspaces: Workspace[];
   activeWorkspaceId: string;
   workspaceSetupOpen: boolean;
@@ -142,6 +199,7 @@ interface AppState {
   openWorkspaceSetup: (id?: string | null) => void;
   closeWorkspaceSetup: () => void;
   setView: (view: AppView) => void;
+  closeOpenTab: (id: string) => void;
   toggleStar: (id: string) => void;
   setTheme: (theme: "light" | "dark") => void;
   setMode: (mode: EditorMode) => void;
@@ -194,9 +252,24 @@ interface AppState {
   patchBoardObject: (id: string, patch: Partial<FreeformObject>) => void;
   removeBoardObject: (id: string) => void;
   clearBoard: () => void;
+  createBoard: (title?: string) => string;
+  deleteBoard: (id: string) => void;
+  leaveBoard: () => void;
   duplicateNote: (id: string) => string;
   addDatabaseView: (dbId: string, type: DbViewType) => string;
   putBlob: (file: Blob, path: string, mime?: string) => Promise<string>;
+  /** Load blob bytes when missing — from handle, vault folder, or disk. */
+  ensureBlob: (path: string) => Promise<void>;
+  /** Attach a disk/cloud file by reading it in place — no vault copy. */
+  linkLocalFile: (accept?: string) => Promise<string | null>;
+  /** Flush pending edits to IndexedDB (and linked folder if open). */
+  flushNow: () => Promise<void>;
+  /** Move a vault page/database to another folder (path-based tree). */
+  moveNoteToFolder: (id: string, folder: string) => void;
+  /** Store a File from drag-and-drop into vault blobs. */
+  storeFileFromDrop: (file: File) => Promise<string>;
+  /** Import dropped files — markdown as pages, others attach to target note or new page. */
+  importDroppedFiles: (files: File[], opts?: { folder?: string; attachToNoteId?: string }) => Promise<void>;
 }
 
 function applyTheme(theme: "light" | "dark") {
@@ -207,13 +280,14 @@ async function flush(s: {
   notes: Note[];
   blobs: Record<string, BlobRecord>;
   events: VaultEvent[];
-  board: FreeformBoard;
+  boards: FreeformBoard[];
   theme: "light" | "dark";
   ai: AiSettings;
   displayName: string;
   folderName: string | null;
   recents: string[];
   starred: string[];
+  openTabs: string[];
   view: AppView;
   activeWorkspaceId: string;
   workspaces: Workspace[];
@@ -223,12 +297,14 @@ async function flush(s: {
   await saveFiles(files, wsId);
   await saveBlobs(s.blobs, wsId);
   await saveEvents(s.events, wsId);
-  await saveBoard(s.board, wsId);
+  await saveBoards(s.boards, wsId);
   await saveWorkspaceVaultMeta(wsId, {
     hasVault: s.view.kind !== "welcome",
     lastPath: s.folderName ?? undefined,
+    vaultRootPath: vaultRootPath ?? undefined,
     recents: s.recents,
     starred: s.starred,
+    openTabs: s.openTabs,
   });
   await saveMeta({
     theme: s.theme,
@@ -245,27 +321,45 @@ async function flush(s: {
     } catch {
       /* permission may have lapsed */
     }
+  } else if (vaultRootPath && window.kleverDesktop?.writeVault) {
+    try {
+      await window.kleverDesktop.writeVault(vaultRootPath, files, blobsToDesktopPayload(s.blobs));
+    } catch {
+      /* disk write may have failed */
+    }
   }
   channel?.postMessage({ type: "vault", tab: TAB_ID, workspaceId: wsId });
 }
 
+async function flushNowInternal(getState: () => AppState) {
+  window.clearTimeout(persistTimer);
+  persistTimer = undefined;
+  runBeforeFlushHooks();
+  window.clearTimeout(persistTimer);
+  persistTimer = undefined;
+  const s = getState();
+  if (!s.activeWorkspaceId) return;
+  await flush(s);
+}
+
 async function loadWorkspaceIntoState(workspaceId: string) {
   const files = await loadFiles(workspaceId);
-  const blobs = await loadBlobs(workspaceId);
+  const blobs = await refreshBlobsFromDisk(await loadBlobs(workspaceId));
   const events = await loadEvents(workspaceId);
-  const board = await loadBoard(workspaceId);
+  const boards = await loadBoards(workspaceId);
   const vaultMeta = await loadWorkspaceVaultMeta(workspaceId);
   const hasContent = Boolean(files && Object.keys(files).length);
   if (vaultMeta.hasVault && hasContent) {
-    const notes = notesFromFiles(files!);
+    const notes = notesFromFiles(files!).map(normalizeNote);
     return {
       notes,
       blobs,
       events,
-      board,
+      boards,
       folderName: vaultMeta.lastPath ?? null,
       recents: (vaultMeta.recents ?? []).filter((id) => notes.some((n) => n.id === id)),
       starred: (vaultMeta.starred ?? []).filter((id) => notes.some((n) => n.id === id)),
+      openTabs: seedOpenTabs(vaultMeta.openTabs ?? [], viewNoteId(homeView(notes)), notes),
       view: homeView(notes),
     };
   }
@@ -273,10 +367,11 @@ async function loadWorkspaceIntoState(workspaceId: string) {
     notes: [] as Note[],
     blobs,
     events,
-    board,
+    boards,
     folderName: vaultMeta.lastPath ?? null,
     recents: vaultMeta.recents ?? [],
     starred: vaultMeta.starred ?? [],
+    openTabs: vaultMeta.openTabs ?? [],
     view: { kind: "welcome" as const },
   };
 }
@@ -291,15 +386,24 @@ export const useApp = create<AppState>((set, get) => {
     }, 350);
   };
 
+  const flushNow = () => {
+    if (!flushInFlight) {
+      flushInFlight = flushNowInternal(get).finally(() => {
+        flushInFlight = null;
+      });
+    }
+    return flushInFlight;
+  };
+
   return {
     ready: false,
     notes: [],
     blobs: {},
     events: [],
-    board: defaultFreeformBoard(),
+    boards: [defaultFreeformBoard()],
     view: { kind: "welcome" },
     sidebarOpen: true,
-    propsOpen: true,
+    propsOpen: false,
     theme: "light",
     mode: "wysiwyg",
     displayName: "You",
@@ -315,29 +419,45 @@ export const useApp = create<AppState>((set, get) => {
     folderName: null,
     recents: [],
     starred: [],
+    openTabs: [],
     workspaces: [],
     activeWorkspaceId: "",
     workspaceSetupOpen: false,
     workspaceSetupId: null,
 
+    flushNow,
+
     hydrate: async () => {
-      const { registry, globalMeta, vaultMeta } = await loadOrMigrateWorkspaces();
-      applyTheme(globalMeta.theme);
-      const loaded = await loadWorkspaceIntoState(registry.activeId);
-      const active = registry.workspaces.find((w) => w.id === registry.activeId);
-      const tools = active?.tools ?? normalizeWorkspaceTools();
-      set({
-        ready: true,
-        ...loaded,
-        view: clampViewToTools(loaded.view, tools),
-        theme: globalMeta.theme,
-        ai: globalMeta.ai,
-        displayName: globalMeta.displayName || "You",
-        workspaces: registry.workspaces,
-        activeWorkspaceId: registry.activeId,
-        folderName: loaded.folderName ?? vaultMeta.lastPath ?? null,
-      });
-      startCollab();
+      try {
+        const { registry, globalMeta, vaultMeta } = await loadOrMigrateWorkspaces();
+        applyTheme(globalMeta.theme);
+        const loaded = await loadWorkspaceIntoState(registry.activeId);
+        const active = registry.workspaces.find((w) => w.id === registry.activeId);
+        const tools = active?.tools ?? normalizeWorkspaceTools();
+        set({
+          ready: true,
+          ...loaded,
+          view: clampViewToTools(loaded.view, tools, loaded.boards),
+          theme: globalMeta.theme,
+          ai: globalMeta.ai,
+          displayName: globalMeta.displayName || "You",
+          workspaces: registry.workspaces,
+          activeWorkspaceId: registry.activeId,
+          folderName: loaded.folderName ?? vaultMeta.lastPath ?? null,
+        });
+        if (vaultMeta.vaultRootPath && window.kleverDesktop?.setVaultRoot) {
+          vaultRootPath = vaultMeta.vaultRootPath;
+          void window.kleverDesktop.setVaultRoot(vaultMeta.vaultRootPath);
+        }
+        startCollab();
+      } catch (err) {
+        console.error("Klever failed to hydrate", err);
+        set({
+          ready: true,
+          view: { kind: "welcome" },
+          error: err instanceof Error ? err.message : "Could not load vault",
+        });
+      }
     },
 
     startDemo: async () => {
@@ -346,8 +466,9 @@ export const useApp = create<AppState>((set, get) => {
         notes,
         blobs: {},
         events: [],
-        board: defaultFreeformBoard(),
+        boards: [defaultFreeformBoard()],
         view: { kind: "note", id: "welcome" },
+        openTabs: ["welcome"],
         folderName: "Sample vault",
       });
       schedule();
@@ -361,8 +482,9 @@ export const useApp = create<AppState>((set, get) => {
         notes: [],
         blobs: {},
         events: [],
-        board: defaultFreeformBoard(),
-        view: clampViewToTools({ kind: "graph" }, tools),
+        boards: [defaultFreeformBoard()],
+        view: clampViewToTools({ kind: "graph" }, tools, [defaultFreeformBoard()]),
+        openTabs: [],
         folderName:
           get().workspaces.find((w) => w.id === get().activeWorkspaceId)?.name ?? "Vault",
       });
@@ -371,25 +493,85 @@ export const useApp = create<AppState>((set, get) => {
 
     openFolder: async () => {
       try {
+        if (isElectron() && window.kleverDesktop?.pickVault) {
+          const picked = await window.kleverDesktop.pickVault();
+          if (!picked) return;
+          vaultRootPath = picked.path;
+          dirHandle = null;
+          const blobs: Record<string, BlobRecord> = {
+            ...blobsFromDesktopPayload(picked.blobs),
+          };
+          for (const [path, rec] of Object.entries(get().blobs)) {
+            if (rec.external && !(path in blobs)) blobs[path] = rec;
+          }
+          const live = await refreshBlobsFromDisk(blobs);
+          const notes = notesFromFiles(picked.files);
+          if (!notes.length) {
+            const seeded = notesFromFiles(DEMO_FILES);
+            set({
+              notes: seeded,
+              blobs: live,
+              view: { kind: "note", id: "welcome" },
+              openTabs: ["welcome"],
+              folderName: picked.name,
+              error: null,
+            });
+            await window.kleverDesktop.writeVault(
+              picked.path,
+              filesFromNotes(seeded),
+              blobsToDesktopPayload(live),
+            );
+          } else {
+            const home = notes.find((n) => n.type === "page") ?? notes[0];
+            set({
+              notes,
+              blobs: live,
+              folderName: picked.name,
+              error: null,
+              view:
+                home.type === "database"
+                  ? { kind: "database", id: home.id }
+                  : { kind: "note", id: home.id },
+              openTabs: [home.id],
+            });
+          }
+          schedule();
+          return;
+        }
+
         const dir = await pickVaultFolder();
         dirHandle = dir;
-        const { files, blobs } = await walkVault(dir);
+        vaultRootPath = null;
+        const { files, blobs: vaultBlobs } = await walkVault(dir);
+        const blobs: Record<string, BlobRecord> = { ...vaultBlobs };
+        for (const [path, rec] of Object.entries(get().blobs)) {
+          if (rec.external && !(path in blobs)) blobs[path] = rec;
+        }
+        const live = await refreshBlobsFromDisk(blobs);
         const notes = notesFromFiles(files);
         if (!notes.length) {
           const seeded = notesFromFiles(DEMO_FILES);
-          set({ notes: seeded, blobs, view: { kind: "note", id: "welcome" }, folderName: dir.name, error: null });
-          await writeVaultToDirectory(dir, filesFromNotes(seeded), blobs);
+          set({
+            notes: seeded,
+            blobs: live,
+            view: { kind: "note", id: "welcome" },
+            openTabs: ["welcome"],
+            folderName: dir.name,
+            error: null,
+          });
+          await writeVaultToDirectory(dir, filesFromNotes(seeded), live);
         } else {
           const home = notes.find((n) => n.type === "page") ?? notes[0];
           set({
             notes,
-            blobs,
+            blobs: live,
             folderName: dir.name,
             error: null,
             view:
               home.type === "database"
                 ? { kind: "database", id: home.id }
                 : { kind: "note", id: home.id },
+            openTabs: [home.id],
           });
         }
         schedule();
@@ -463,7 +645,7 @@ export const useApp = create<AppState>((set, get) => {
       set({
         activeWorkspaceId: id,
         ...loaded,
-        view: clampViewToTools(loaded.view, tools),
+        view: clampViewToTools(loaded.view, tools, loaded.boards),
         query: "",
         dumpOpen: false,
         plusOpen: false,
@@ -485,11 +667,11 @@ export const useApp = create<AppState>((set, get) => {
         tools: input.tools,
         aiMode: input.aiMode,
       });
-      await saveWorkspaceVaultMeta(ws.id, { hasVault: false, recents: [], starred: [] });
+      await saveWorkspaceVaultMeta(ws.id, { hasVault: false, recents: [], starred: [], openTabs: [] });
       await saveFiles({}, ws.id);
       await saveBlobs({}, ws.id);
       await saveEvents([], ws.id);
-      await saveBoard(defaultFreeformBoard(), ws.id);
+      await saveBoards([defaultFreeformBoard()], ws.id);
       const workspaces = [...s.workspaces, ws];
       set({
         workspaces,
@@ -497,11 +679,12 @@ export const useApp = create<AppState>((set, get) => {
         notes: [],
         blobs: {},
         events: [],
-        board: defaultFreeformBoard(),
+        boards: [defaultFreeformBoard()],
         view: clampViewToTools({ kind: "graph" }, ws.tools),
         folderName: ws.name,
         recents: [],
         starred: [],
+        openTabs: [],
         query: "",
         dumpOpen: false,
         plusOpen: false,
@@ -510,7 +693,7 @@ export const useApp = create<AppState>((set, get) => {
         error: null,
       });
       await saveWorkspacesRegistry({ activeId: ws.id, workspaces });
-      await saveWorkspaceVaultMeta(ws.id, { hasVault: true, lastPath: ws.name, recents: [], starred: [] });
+      await saveWorkspaceVaultMeta(ws.id, { hasVault: true, lastPath: ws.name, recents: [], starred: [], openTabs: [] });
       schedule();
     },
 
@@ -528,7 +711,7 @@ export const useApp = create<AppState>((set, get) => {
       const active = workspaces.find((w) => w.id === get().activeWorkspaceId);
       const next: Partial<AppState> = { workspaces };
       if (active && id === get().activeWorkspaceId) {
-        next.view = clampViewToTools(get().view, active.tools);
+        next.view = clampViewToTools(get().view, active.tools, get().boards);
         if (patch.name !== undefined) next.folderName = active.name;
       }
       set(next);
@@ -546,16 +729,31 @@ export const useApp = create<AppState>((set, get) => {
       const tools =
         get().workspaces.find((w) => w.id === get().activeWorkspaceId)?.tools ??
         normalizeWorkspaceTools();
-      const next = clampViewToTools(view, tools);
+      const next = clampViewToTools(view, tools, get().boards);
       const noteId = viewNoteId(next);
       if (noteId) {
         const recents = [noteId, ...get().recents.filter((x) => x !== noteId)].slice(0, 3);
-        set({ view: next, recents });
+        const openTabs = withOpenTab(get().openTabs, noteId);
+        set({ view: next, recents, openTabs });
         schedule();
       } else {
         set({ view: next });
       }
       ping();
+    },
+    closeOpenTab: (id) => {
+      const prev = get().openTabs;
+      const i = prev.indexOf(id);
+      if (i < 0) return;
+      const openTabs = prev.filter((x) => x !== id);
+      const current = viewNoteId(get().view);
+      set({ openTabs });
+      if (current === id) {
+        const neighborId = openTabs[i] ?? openTabs[i - 1];
+        const neighbor = neighborId ? get().notes.find((n) => n.id === neighborId) : undefined;
+        if (neighbor) get().setView(noteAppView(neighbor));
+      }
+      schedule();
     },
     toggleStar: (id) => {
       const starred = get().starred.includes(id)
@@ -634,14 +832,18 @@ export const useApp = create<AppState>((set, get) => {
 
     deleteNote: (id) => {
       const notes = get().notes.filter((n) => n.id !== id && n.parent !== id);
+      const openTabs = get().openTabs.filter((tid) => notes.some((n) => n.id === tid));
       const view = get().view;
       const lost =
         (view.kind === "note" && view.id === id) ||
         (view.kind === "database" && view.id === id);
-      set({
-        notes,
-        view: lost ? (notes[0] ? { kind: "note", id: notes[0].id } : { kind: "graph" }) : view,
-      });
+      let nextView = view;
+      if (lost) {
+        const fallbackId = openTabs[0] ?? notes[0]?.id;
+        const fallback = fallbackId ? notes.find((n) => n.id === fallbackId) : undefined;
+        nextView = fallback ? noteAppView(fallback) : { kind: "graph" };
+      }
+      set({ notes, openTabs, view: nextView });
       schedule();
     },
 
@@ -674,11 +876,8 @@ export const useApp = create<AppState>((set, get) => {
       };
       get().upsertNote(note);
       if (!opts?.stay) {
-        set({
-          view: parent ? { kind: "database", id: parent } : { kind: "note", id },
-          mode: "wysiwyg",
-        });
-        if (!parent) set({ view: { kind: "note", id } });
+        set({ mode: "wysiwyg" });
+        get().setView(parent ? { kind: "database", id: parent } : { kind: "note", id });
       }
       return id;
     },
@@ -716,7 +915,7 @@ export const useApp = create<AppState>((set, get) => {
       };
       get().upsertNote(note);
       if (!opts?.stay) {
-        set({ view: { kind: "database", id, viewId: preferred.id } });
+        get().setView({ kind: "database", id, viewId: preferred.id });
       }
       return id;
     },
@@ -726,7 +925,8 @@ export const useApp = create<AppState>((set, get) => {
       const path = `Daily/${date}.md`;
       const existing = get().notes.find((n) => n.path === path || n.title === date);
       if (existing) {
-        set({ view: { kind: "note", id: existing.id }, mode: "wysiwyg" });
+        set({ mode: "wysiwyg" });
+        get().setView({ kind: "note", id: existing.id });
         return existing.id;
       }
       return get().createPage({ title: date, path, body: `# ${date}\n\n` });
@@ -766,52 +966,41 @@ export const useApp = create<AppState>((set, get) => {
     },
 
     setBoard: (patch) => {
-      const cur = get().board;
-      set({
-        board: {
-          ...cur,
-          ...patch,
-          id: cur.id,
-          updated: todayIso(),
-        },
-      });
+      set({ boards: withActiveBoard(get(), (cur) => ({ ...cur, ...patch })) });
       schedule();
     },
 
     upsertBoardObject: (obj) => {
-      const cur = get().board;
-      const exists = cur.objects.some((o) => o.id === obj.id);
       set({
-        board: {
-          ...cur,
-          objects: exists
-            ? cur.objects.map((o) => (o.id === obj.id ? obj : o))
-            : [...cur.objects, obj],
-          updated: todayIso(),
-        },
+        boards: withActiveBoard(get(), (cur) => {
+          const exists = cur.objects.some((o) => o.id === obj.id);
+          return {
+            ...cur,
+            objects: exists
+              ? cur.objects.map((o) => (o.id === obj.id ? obj : o))
+              : [...cur.objects, obj],
+          };
+        }),
       });
       schedule();
     },
 
     patchBoardObject: (id, patch) => {
-      const cur = get().board;
       set({
-        board: {
+        boards: withActiveBoard(get(), (cur) => ({
           ...cur,
           objects: cur.objects.map((o) => {
             if (o.id !== id) return o;
             return { ...o, ...patch, id: o.id, type: o.type } as FreeformObject;
           }),
-          updated: todayIso(),
-        },
+        })),
       });
       schedule();
     },
 
     removeBoardObject: (id) => {
-      const cur = get().board;
       set({
-        board: {
+        boards: withActiveBoard(get(), (cur) => ({
           ...cur,
           objects: cur.objects
             .filter((o) => o.id !== id)
@@ -819,24 +1008,54 @@ export const useApp = create<AppState>((set, get) => {
               o.type === "mind" && o.parentId === id ? { ...o, parentId: undefined } : o,
             ),
           connections: (cur.connections ?? []).filter((c) => c.from !== id && c.to !== id),
-          updated: todayIso(),
-        },
+        })),
       });
       schedule();
     },
 
     clearBoard: () => {
-      const cur = get().board;
       set({
-        board: {
+        boards: withActiveBoard(get(), (cur) => ({
           ...cur,
           objects: [],
           connections: [],
           camera: { x: 0, y: 0, zoom: 1 },
-          updated: todayIso(),
-        },
+        })),
       });
       schedule();
+    },
+
+    createBoard: (title) => {
+      const s = get();
+      const board = defaultFreeformBoard({
+        id: nid(),
+        title: title?.trim() || nextBoardTitle(s.boards),
+      });
+      set({
+        boards: [...s.boards, board],
+        view: { kind: "freeform", id: board.id },
+      });
+      schedule();
+      return board.id;
+    },
+
+    deleteBoard: (id) => {
+      const s = get();
+      if (s.boards.length <= 1) return;
+      const boards = s.boards.filter((b) => b.id !== id);
+      const view =
+        s.view.kind === "freeform" && s.view.id === id
+          ? ({ kind: "freeform", id: boards[0]!.id } as const)
+          : s.view;
+      set({ boards, view });
+      schedule();
+    },
+
+    leaveBoard: () => {
+      const s = get();
+      const tools =
+        s.workspaces.find((w) => w.id === s.activeWorkspaceId)?.tools ?? normalizeWorkspaceTools();
+      set({ view: clampViewToTools(homeView(s.notes), tools, s.boards) });
     },
 
     duplicateNote: (id) => {
@@ -871,6 +1090,124 @@ export const useApp = create<AppState>((set, get) => {
       schedule();
       return path;
     },
+
+    ensureBlob: async (path) => {
+      const key = path.replace(/^\.\//, "");
+      const rec = get().blobs[key] ?? get().blobs[path];
+      if (rec?.data?.byteLength) return;
+
+      if (rec?.handle) {
+        const refreshed = await refreshBlobFromHandle(rec);
+        if (refreshed.data.byteLength) {
+          set({ blobs: { ...get().blobs, [key]: refreshed } });
+          schedule();
+          return;
+        }
+      }
+
+      if (dirHandle) {
+        const fromVault = await readBlobFromVault(dirHandle, key);
+        if (fromVault) {
+          set({
+            blobs: {
+              ...get().blobs,
+              [key]: {
+                ...fromVault,
+                ...(rec?.external ? { external: true } : {}),
+                ...(rec?.localPath ? { localPath: rec.localPath } : {}),
+              },
+            },
+          });
+          schedule();
+        }
+      }
+    },
+
+    storeFileFromDrop: async (file) => {
+      const localPath = localPathFromFile(file);
+      if (localPath) {
+        const vaultPath = `ext/${nid()}/${safeFileName(file.name)}`;
+        set({
+          blobs: {
+            ...get().blobs,
+            [vaultPath]: externalFileBlob(file, { localPath }),
+          },
+        });
+        schedule();
+        return vaultPath;
+      }
+      const path = assetPathFor(file);
+      await get().putBlob(file, path, file.type || mimeFromPath(file.name));
+      return path;
+    },
+
+    importDroppedFiles: async (files, opts) => {
+      await handleDroppedFiles(files, opts);
+    },
+
+    moveNoteToFolder: (id, folder) => {
+      const note = get().notes.find((n) => n.id === id);
+      if (!note) return;
+      const fileName = note.path.includes("/") ? note.path.slice(note.path.lastIndexOf("/") + 1) : note.path;
+      const targetFolder = folder.trim();
+      const nextPath = targetFolder ? `${targetFolder}/${fileName}` : fileName;
+      if (nextPath === note.path) return;
+      const path = uniquePath(get().notes, nextPath, id);
+      const moved = normalizeNote({ ...note, path, parent: undefined });
+      get().upsertNote(moved, { renameFrom: note.path });
+    },
+
+    linkLocalFile: async (accept = "*/*") => {
+      const picked = await pickLocalFile(accept);
+      if (!picked) return null;
+      const { file, handle, localPath } = picked;
+      const mime = file.type || mimeFromPath(file.name);
+
+      if (localPath) {
+        const vaultPath = `ext/${nid()}/${safeFileName(file.name)}`;
+        set({
+          blobs: {
+            ...get().blobs,
+            [vaultPath]: externalFileBlob(file, { localPath }),
+          },
+        });
+        schedule();
+        return vaultPath;
+      }
+
+      if (handle && dirHandle && typeof dirHandle.resolve === "function") {
+        try {
+          const rel = await dirHandle.resolve(handle);
+          if (rel?.length) {
+            const vaultPath = rel.join("/");
+            set({
+              blobs: {
+                ...get().blobs,
+                [vaultPath]: {
+                  mime: mime || mimeFromPath(vaultPath),
+                  data: new ArrayBuffer(0),
+                  handle,
+                },
+              },
+            });
+            schedule();
+            return vaultPath;
+          }
+        } catch {
+          /* not in this vault */
+        }
+      }
+
+      const vaultPath = `ext/${nid()}/${safeFileName(file.name)}`;
+      set({
+        blobs: {
+          ...get().blobs,
+          [vaultPath]: externalFileBlob(file, { handle }),
+        },
+      });
+      schedule();
+      return vaultPath;
+    },
   };
 });
 
@@ -904,7 +1241,7 @@ function startCollab() {
         const wsId = useApp.getState().activeWorkspaceId;
         if (msg.workspaceId && msg.workspaceId !== wsId) return;
         const files = await loadFiles(wsId);
-        const blobs = await loadBlobs(wsId);
+        const blobs = await refreshBlobsFromDisk(await loadBlobs(wsId));
         const events = await loadEvents(wsId);
         if (files && Object.keys(files).length) {
           useApp.setState({ notes: notesFromFiles(files), blobs, events });

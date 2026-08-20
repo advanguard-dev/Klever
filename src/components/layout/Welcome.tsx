@@ -9,14 +9,14 @@ export function Welcome() {
   const setError = useApp((s) => s.setError);
 
   return (
-    <main className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden px-8">
+    <main className="relative flex min-h-dvh flex-col items-center justify-center overflow-hidden px-5 py-12 md:px-8">
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_20%_0%,color-mix(in_srgb,var(--color-paper-2)_90%,transparent),transparent_55%),radial-gradient(ellipse_at_90%_80%,color-mix(in_srgb,var(--color-line)_55%,transparent),transparent_45%)]"
       />
       <div className="relative w-full max-w-md">
         <MonoLabel>Local · Markdown · Private</MonoLabel>
-        <h1 className="mt-5 font-serif text-[4.75rem] italic leading-[0.88] tracking-tight">Klever</h1>
+        <h1 className="mt-5 font-serif text-[3.25rem] italic leading-[0.88] tracking-tight sm:text-[4.75rem]">Klever</h1>
         <p className="mt-8 max-w-sm text-[1.05rem] leading-relaxed text-mute">
           Notes, databases, tags, and a graph. Files on disk. Nothing leaves the machine unless you send it to a model you choose.
         </p>

@@ -438,13 +438,23 @@ function isSubstantialPage(item: ProposedItem) {
   return false;
 }
 
+export const DEFAULT_WRITING_SYSTEM_PROMPT = `You are a precise writing tool for a markdown notes app.
+Return ONLY the rewritten markdown. No preamble. Preserve [[wikilinks]] and #tags unless asked otherwise.`;
+
+export function writingSystemPrompt(settings: AiSettings): string {
+  return settings.writingSystemPrompt?.trim() || DEFAULT_WRITING_SYSTEM_PROMPT;
+}
+
+export function writingInstruction(settings: AiSettings, toolId: string, fallback: string): string {
+  return settings.writingPrompts?.[toolId]?.trim() || fallback;
+}
+
 export async function rewrite(
   settings: AiSettings,
   text: string,
   instruction: string,
 ) {
-  const system = `You are a precise writing tool for a markdown notes app.
-Return ONLY the rewritten markdown. No preamble. Preserve [[wikilinks]] and #tags unless asked otherwise.`;
+  const system = writingSystemPrompt(settings);
   return chat(settings, system, `${instruction}\n\n---\n${text}`);
 }
 

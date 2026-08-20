@@ -1,7 +1,8 @@
 import { get, set, del } from "idb-keyval";
 import type { AiSettings, BlobRecord, FreeformBoard, FreeformConnection, FreeformObject, VaultEvent, Workspace } from "@/types";
 import { defaultAi, migrateAiSettings } from "@/lib/ai";
-import { mimeFromPath } from "@/lib/assets";
+import { mimeFromPath, persistableBlobs } from "@/lib/assets";
+import { nid } from "@/lib/ids";
 import { createWorkspaceDraft, normalizeWorkspace } from "@/lib/workspaces";
 
 const FILES_KEY = "klever.files";
@@ -42,8 +43,11 @@ export interface PersistedMeta {
 export interface WorkspaceVaultMeta {
   hasVault: boolean;
   lastPath?: string;
+  /** Absolute vault folder path (Electron — Finder integration). */
+  vaultRootPath?: string;
   recents?: string[];
   starred?: string[];
+  openTabs?: string[];
 }
 
 export interface WorkspacesRegistry {
@@ -87,8 +91,10 @@ export async function loadWorkspaceVaultMeta(workspaceId: string): Promise<Works
   return {
     hasVault: Boolean(meta?.hasVault),
     lastPath: meta?.lastPath,
+    vaultRootPath: meta?.vaultRootPath,
     recents: asIdList(meta?.recents, 3),
     starred: asIdList(meta?.starred, 32),
+    openTabs: asIdList(meta?.openTabs, 16),
   };
 }
 
@@ -114,8 +120,9 @@ export async function loadBlobs(workspaceId?: string): Promise<Record<string, Bl
 }
 
 export async function saveBlobs(blobs: Record<string, BlobRecord>, workspaceId?: string) {
-  if (workspaceId) await set(wsBlobsKey(workspaceId), blobs);
-  else await set(BLOBS_KEY, blobs);
+  const stored = persistableBlobs(blobs);
+  if (workspaceId) await set(wsBlobsKey(workspaceId), stored);
+  else await set(BLOBS_KEY, stored);
 }
 
 export async function clearFiles(workspaceId?: string) {
@@ -152,16 +159,24 @@ function isFreeformObject(o: unknown): o is FreeformObject {
   return typeof obj.id === "string" && typeof obj.type === "string";
 }
 
-export function defaultFreeformBoard(): FreeformBoard {
+export function defaultFreeformBoard(init?: { id?: string; title?: string }): FreeformBoard {
   return {
-    id: "main",
-    title: "Board",
+    id: init?.id ?? "main",
+    title: init?.title ?? "Board",
     objects: [],
     connections: [],
     dotted: true,
     camera: { x: 0, y: 0, zoom: 1 },
     updated: new Date().toISOString(),
   };
+}
+
+export function nextBoardTitle(boards: FreeformBoard[]): string {
+  const used = new Set(boards.map((b) => b.title.trim().toLowerCase()));
+  if (!used.has("board")) return "Board";
+  let n = 2;
+  while (used.has(`board ${n}`)) n += 1;
+  return `Board ${n}`;
 }
 
 function normalizeConnections(raw: unknown): FreeformConnection[] {
@@ -177,28 +192,59 @@ function normalizeConnections(raw: unknown): FreeformConnection[] {
   return out;
 }
 
-export async function loadBoard(workspaceId?: string): Promise<FreeformBoard> {
-  const key = workspaceId ? wsBoardKey(workspaceId) : BOARD_KEY;
-  const raw = (await get(key)) as FreeformBoard | undefined;
-  if (!raw || typeof raw !== "object") return defaultFreeformBoard();
+function normalizeBoard(raw: unknown): FreeformBoard | null {
+  if (!raw || typeof raw !== "object") return null;
+  const b = raw as Record<string, unknown>;
+  if (Array.isArray(b.boards) && !("objects" in b)) return null;
+  const cam = b.camera && typeof b.camera === "object" ? (b.camera as Record<string, unknown>) : {};
   return {
-    id: typeof raw.id === "string" ? raw.id : "main",
-    title: typeof raw.title === "string" ? raw.title : "Board",
-    objects: Array.isArray(raw.objects) ? raw.objects.filter(isFreeformObject) : [],
-    connections: normalizeConnections(raw.connections),
-    dotted: raw.dotted !== false,
+    id: typeof b.id === "string" && b.id ? b.id : nid(),
+    title: typeof b.title === "string" && b.title.trim() ? b.title : "Board",
+    objects: Array.isArray(b.objects) ? b.objects.filter(isFreeformObject) : [],
+    connections: normalizeConnections(b.connections),
+    dotted: b.dotted !== false,
     camera: {
-      x: typeof raw.camera?.x === "number" ? raw.camera.x : 0,
-      y: typeof raw.camera?.y === "number" ? raw.camera.y : 0,
-      zoom: typeof raw.camera?.zoom === "number" && raw.camera.zoom > 0 ? raw.camera.zoom : 1,
+      x: typeof cam.x === "number" ? cam.x : 0,
+      y: typeof cam.y === "number" ? cam.y : 0,
+      zoom: typeof cam.zoom === "number" && cam.zoom > 0 ? cam.zoom : 1,
     },
-    updated: typeof raw.updated === "string" ? raw.updated : new Date().toISOString(),
+    updated: typeof b.updated === "string" ? b.updated : new Date().toISOString(),
   };
 }
 
-export async function saveBoard(board: FreeformBoard, workspaceId?: string) {
-  if (workspaceId) await set(wsBoardKey(workspaceId), board);
-  else await set(BOARD_KEY, board);
+function ensureUniqueBoardIds(list: FreeformBoard[]): FreeformBoard[] {
+  const seen = new Set<string>();
+  return list.map((b, i) => {
+    let id = b.id;
+    if (!id || seen.has(id)) id = i === 0 && !seen.has("main") ? "main" : nid();
+    seen.add(id);
+    return id === b.id ? b : { ...b, id };
+  });
+}
+
+export function normalizeBoards(raw: unknown): FreeformBoard[] {
+  if (Array.isArray(raw)) {
+    const list = raw.map(normalizeBoard).filter((b): b is FreeformBoard => Boolean(b));
+    return list.length ? ensureUniqueBoardIds(list) : [defaultFreeformBoard()];
+  }
+  if (raw && typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+    if (Array.isArray(obj.boards)) return normalizeBoards(obj.boards);
+    const one = normalizeBoard(raw);
+    if (one) return [one];
+  }
+  return [defaultFreeformBoard()];
+}
+
+export async function loadBoards(workspaceId?: string): Promise<FreeformBoard[]> {
+  const key = workspaceId ? wsBoardKey(workspaceId) : BOARD_KEY;
+  return normalizeBoards(await get(key));
+}
+
+export async function saveBoards(boards: FreeformBoard[], workspaceId?: string) {
+  const list = boards.length ? boards : [defaultFreeformBoard()];
+  if (workspaceId) await set(wsBoardKey(workspaceId), list);
+  else await set(BOARD_KEY, list);
 }
 
 export async function deleteWorkspaceStorage(workspaceId: string) {
@@ -264,7 +310,7 @@ export async function loadOrMigrateWorkspaces(): Promise<{
       starred: globalMeta.starred,
     });
   } else {
-    await saveWorkspaceVaultMeta(ws.id, { hasVault: false, recents: [], starred: [] });
+    await saveWorkspaceVaultMeta(ws.id, { hasVault: false, recents: [], starred: [], openTabs: [] });
   }
 
   await saveMeta(globalMeta);
@@ -279,8 +325,6 @@ function dirEntries(dir: FileSystemDirectoryHandle) {
     }
   ).entries();
 }
-
-const BINARY_RE = /\.(png|jpe?g|gif|webp|svg|avif|mp3|wav|ogg|m4a|pdf|zip|mov|mp4|webm|txt)$/i;
 
 export async function walkVault(
   dir: FileSystemDirectoryHandle,
@@ -299,10 +343,11 @@ export async function walkVault(
       const file = await (handle as FileSystemFileHandle).getFile();
       if (name.endsWith(".md")) {
         files[path] = await file.text();
-      } else if (BINARY_RE.test(name) || prefix.startsWith("assets")) {
+      } else {
         blobs[path] = {
           mime: file.type || mimeFromPath(path),
           data: await file.arrayBuffer(),
+          handle: handle as FileSystemFileHandle,
         };
       }
     }
@@ -342,7 +387,32 @@ export async function writeVaultToDirectory(
     await writePath(root, path, content);
   }
   for (const [path, rec] of Object.entries(blobs)) {
+    // Linked originals stay on disk/cloud — Klever only writes files it created.
+    if (rec.external || rec.handle || rec.localPath) continue;
     await writePath(root, path, rec.data);
+  }
+}
+
+export async function readBlobFromVault(
+  root: FileSystemDirectoryHandle,
+  path: string,
+): Promise<BlobRecord | null> {
+  try {
+    const parts = path.split("/").filter(Boolean);
+    if (!parts.length) return null;
+    let dir = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      dir = await dir.getDirectoryHandle(parts[i]!);
+    }
+    const handle = await dir.getFileHandle(parts[parts.length - 1]!);
+    const file = await handle.getFile();
+    return {
+      mime: file.type || mimeFromPath(path),
+      data: await file.arrayBuffer(),
+      handle,
+    };
+  } catch {
+    return null;
   }
 }
 

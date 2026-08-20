@@ -1,4 +1,6 @@
 import { MonoLabel, GhostButton, TextButton } from "@/components/ui";
+import { useContextMenu } from "@/components/ContextMenu";
+import { eventMenuItems } from "@/lib/context-menus";
 import { useApp } from "@/store";
 import type { VaultEvent } from "@/types";
 import { ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
@@ -8,6 +10,8 @@ import { useMemo, useState } from "react";
 export function GlobalCalendar() {
   const events = useApp((s) => s.events);
   const deleteEvent = useApp((s) => s.deleteEvent);
+  const createEvent = useApp((s) => s.createEvent);
+  const { open } = useContextMenu();
   const [cursor, setCursor] = useState(() => {
     const n = new Date();
     return new Date(n.getFullYear(), n.getMonth(), 1);
@@ -43,10 +47,10 @@ export function GlobalCalendar() {
     : undefined;
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-10 md:px-10">
+    <div className="mx-auto max-w-5xl px-4 py-8 md:px-10 md:py-10">
       <MonoLabel>Calendar</MonoLabel>
       <div className="mt-2 flex flex-wrap items-end justify-between gap-3">
-        <h1 className="font-serif text-4xl italic tracking-tight text-ink">{label}</h1>
+        <h1 className="font-serif text-3xl italic tracking-tight text-ink md:text-4xl">{label}</h1>
         <div className="flex items-center gap-1">
           <TextButton
             type="button"
@@ -81,15 +85,30 @@ export function GlobalCalendar() {
         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
           <div
             key={d}
-            className="bg-paper-2 px-2 py-2 font-mono text-[10px] uppercase tracking-wide text-faint"
+            className="bg-paper-2 px-1 py-2 text-center font-mono text-[10px] uppercase tracking-wide text-faint md:px-2 md:text-left"
           >
-            {d}
+            <span className="md:hidden">{d.slice(0, 1)}</span>
+            <span className="hidden md:inline">{d}</span>
           </div>
         ))}
         {cells.map((c, i) => (
           <div
             key={i}
-            className={`min-h-24 bg-paper p-2 ${c?.iso === today ? "ring-1 ring-inset ring-ink/20" : ""}`}
+            className={`min-h-16 bg-paper p-1.5 md:min-h-24 md:p-2 ${c?.iso === today ? "ring-1 ring-inset ring-ink/20" : ""}`}
+            onContextMenu={(e) => {
+              if (!c) return;
+              if ((e.target as HTMLElement).closest("button")) return;
+              open(e, [
+                {
+                  id: "new",
+                  label: "New event",
+                  onSelect: () => {
+                    const id = createEvent({ title: "Untitled event", date: c.iso });
+                    setSelectedId(id);
+                  },
+                },
+              ]);
+            }}
           >
             {c && (
               <>
@@ -107,6 +126,9 @@ export function GlobalCalendar() {
                           selectedId === e.id ? "text-ink underline" : "text-ink"
                         }`}
                         onClick={() => setSelectedId(e.id)}
+                        onContextMenu={(ev) =>
+                          open(ev, eventMenuItems(e, () => setSelectedId(e.id)))
+                        }
                       >
                         <span className="truncate">{e.title}</span>
                       </button>
