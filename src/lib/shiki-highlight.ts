@@ -47,7 +47,7 @@ export const CODE_LANGUAGES = [
 
 export function normalizeLang(lang?: string | null): string {
   const raw = (lang ?? "text").trim().toLowerCase();
-  return LANG_ALIASES[raw] ?? raw || "text";
+  return (LANG_ALIASES[raw] ?? raw) || "text";
 }
 
 async function getHighlighter() {
