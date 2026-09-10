@@ -1,38 +1,68 @@
-import { GhostButton, MonoLabel, Panel, SolidButton, TextArea, TextButton } from "@/components/ui";
+import { schemaTarget } from "@/components/db/PropertyManager";
+import { GhostButton, MonoLabel, Overlay, Panel, SolidButton, TextArea, TextButton } from "@/components/ui";
 import {
   DEFAULT_WRITING_SYSTEM_PROMPT,
   rewrite,
   WRITING_TOOLS,
   writingInstruction,
+  writingPagePatch,
 } from "@/lib/ai";
+import { writingToolLabel } from "@/lib/i18n";
+import { MEETING_INTERNAL_KEYS } from "@/lib/meetings";
+import { useLocale, useT } from "@/lib/use-t";
 import { useApp } from "@/store";
+import type { AiSettings, Note, SchemaProp } from "@/types";
 import type { EditorView } from "@codemirror/view";
 import { ChevronDown, ChevronRight, Loader2, Settings2, Sparkles } from "lucide-react";
-import { useState } from "react";
+import { useId, useState } from "react";
 
 type Props = {
+  note: Note;
   body: string;
   busy: string | null;
   setBusy: (v: string | null) => void;
   setBody: (v: string) => void;
   setError: (v: string | null) => void;
   viewRef: React.RefObject<EditorView | null>;
+  /** Called after a successful rewrite so the page can flash the changed text. */
+  onApplied?: () => void;
 };
 
-export function WritingToolsBar({ body, busy, setBusy, setBody, setError, viewRef }: Props) {
+function writableSchema(note: Note, notes: Note[]): SchemaProp[] {
+  const target = schemaTarget(note, notes);
+  return (target.schema ?? []).filter(
+    (s) => !s.hidden && !MEETING_INTERNAL_KEYS.has(s.key) && s.type !== "formula" && s.type !== "rollup",
+  );
+}
+
+function toolDrafts(ai: AiSettings): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const t of WRITING_TOOLS) {
+    out[t.id] = writingInstruction(ai, t.id, t.instruction);
+  }
+  return out;
+}
+
+export function WritingToolsBar({ note, body, busy, setBusy, setBody, setError, viewRef, onApplied }: Props) {
+  const t = useT();
+  const locale = useLocale();
   const ai = useApp((s) => s.ai);
   const setAi = useApp((s) => s.setAi);
+  const notes = useApp((s) => s.notes);
+  const patchNote = useApp((s) => s.patchNote);
   const [editOpen, setEditOpen] = useState(false);
   const [customOpen, setCustomOpen] = useState(false);
   const [customPrompt, setCustomPrompt] = useState(ai.lastCustomPrompt ?? "");
   const [draftSystem, setDraftSystem] = useState(ai.writingSystemPrompt ?? DEFAULT_WRITING_SYSTEM_PROMPT);
-  const [draftTools, setDraftTools] = useState<Record<string, string>>(() => {
-    const out: Record<string, string> = {};
-    for (const t of WRITING_TOOLS) {
-      out[t.id] = writingInstruction(ai, t.id, t.instruction);
-    }
-    return out;
-  });
+  const [draftTools, setDraftTools] = useState<Record<string, string>>(() => toolDrafts(ai));
+  const titleId = useId();
+  const descId = useId();
+
+  const openEditor = () => {
+    setDraftSystem(ai.writingSystemPrompt ?? DEFAULT_WRITING_SYSTEM_PROMPT);
+    setDraftTools(toolDrafts(ai));
+    setEditOpen(true);
+  };
 
   const sourceText = () => {
     const view = viewRef.current;
@@ -54,27 +84,55 @@ export function WritingToolsBar({ body, busy, setBusy, setBody, setError, viewRe
     } else {
       setBody(next);
     }
+    onApplied?.();
   };
 
   const run = async (label: string, instruction: string, persistCustom?: string) => {
     if (busy) return;
     const source = sourceText();
     if (!source.trim()) {
-      setError("Select text or write something before using a writing tool.");
+      setError(t("writing.needText"));
       return;
     }
     if (!ai.apiKey.trim()) {
-      setError("Add a Gemini API key in Settings to use AI writing tools.");
+      setError(t("writing.needKey"));
       return;
     }
     setBusy(label);
     setError(null);
     try {
-      const next = await rewrite(ai, source, instruction);
-      applyResult(next);
+      const view = viewRef.current;
+      const selected = view
+        ? view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to)
+        : "";
+      const schema = writableSchema(note, notes);
+      const next = await rewrite(ai, source, instruction, {
+        title: note.title,
+        schema: schema.map((s) => ({ key: s.key, name: s.name, type: s.type, options: s.options })),
+        selected: Boolean(selected.trim()),
+      });
+      applyResult(next.body);
+      const liveNotes = useApp.getState().notes;
+      const live = liveNotes.find((n) => n.id === note.id) ?? note;
+      const target = schemaTarget(live, liveNotes);
+      const fullSchema = target.schema ?? [];
+      const result = writingPagePatch(live, next, fullSchema, liveNotes);
+      if (result) {
+        const nextSchema = result.schemaAdds.length
+          ? [...fullSchema, ...result.schemaAdds]
+          : undefined;
+        if (target.id === live.id) {
+          if (Object.keys(result.patch).length || nextSchema) {
+            patchNote(live.id, { ...result.patch, ...(nextSchema ? { schema: nextSchema } : {}) });
+          }
+        } else {
+          if (nextSchema) patchNote(target.id, { schema: nextSchema });
+          if (Object.keys(result.patch).length) patchNote(live.id, result.patch);
+        }
+      }
       if (persistCustom !== undefined) setAi({ lastCustomPrompt: persistCustom });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Writing tool failed");
+      setError(e instanceof Error ? e.message : t("writing.failed"));
     } finally {
       setBusy(null);
     }
@@ -84,7 +142,7 @@ export function WritingToolsBar({ body, busy, setBusy, setBody, setError, viewRe
     const tool = WRITING_TOOLS.find((t) => t.id === id);
     if (!tool) return;
     const instruction = writingInstruction(ai, id, tool.instruction);
-    void run(tool.label, instruction);
+    void run(writingToolLabel(locale, tool.id), instruction);
   };
 
   const savePromptEdits = () => {
@@ -95,7 +153,7 @@ export function WritingToolsBar({ body, busy, setBusy, setBody, setError, viewRe
     }
     setAi({
       writingSystemPrompt:
-        draftSystem.trim() === DEFAULT_WRITING_SYSTEM_PROMPT ? undefined : draftSystem.trim(),
+        draftSystem.trim() === DEFAULT_WRITING_SYSTEM_PROMPT ? undefined : draftSystem.trim() || undefined,
       writingPrompts: Object.keys(writingPrompts).length ? writingPrompts : undefined,
     });
     setEditOpen(false);
@@ -103,9 +161,9 @@ export function WritingToolsBar({ body, busy, setBusy, setBody, setError, viewRe
 
   const resetPromptEdits = () => {
     setDraftSystem(DEFAULT_WRITING_SYSTEM_PROMPT);
-    const out: Record<string, string> = {};
-    for (const t of WRITING_TOOLS) out[t.id] = t.instruction;
-    setDraftTools(out);
+    const defaults: Record<string, string> = {};
+    for (const t of WRITING_TOOLS) defaults[t.id] = t.instruction;
+    setDraftTools(defaults);
     setAi({ writingSystemPrompt: undefined, writingPrompts: undefined });
   };
 
@@ -119,78 +177,113 @@ export function WritingToolsBar({ body, busy, setBusy, setBody, setError, viewRe
         )}
         {busy && (
           <span className="font-mono text-[11px] text-mute" role="status">
-            {busy} with Gemini…
+            {t("writing.withGemini", { tool: busy })}
           </span>
         )}
-        {WRITING_TOOLS.map((t) => (
-          <GhostButton
-            key={t.id}
-            className="border-0 px-2 py-1 text-[12px] text-mute"
-            disabled={Boolean(busy)}
-            aria-pressed={busy === t.label}
-            onClick={() => applyTool(t.id)}
-          >
-            {busy === t.label ? `${t.label}…` : t.label}
-          </GhostButton>
-        ))}
+        {WRITING_TOOLS.map((tool) => {
+          const label = writingToolLabel(locale, tool.id);
+          return (
+            <GhostButton
+              key={tool.id}
+              className="border-0 px-2 py-1 text-[12px] text-mute"
+              disabled={Boolean(busy)}
+              aria-pressed={busy === label}
+              onClick={() => applyTool(tool.id)}
+            >
+              {busy === label ? `${label}…` : label}
+            </GhostButton>
+          );
+        })}
         <GhostButton
           className="border-0 px-2 py-1 text-[12px] text-mute"
           disabled={Boolean(busy)}
           onClick={() => setCustomOpen((o) => !o)}
         >
-          Custom
+          {t("writing.custom")}
           {customOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         </GhostButton>
         <TextButton
           className="ml-auto h-7 text-[11px] text-faint"
-          onClick={() => setEditOpen((o) => !o)}
+          onClick={openEditor}
           aria-expanded={editOpen}
+          aria-haspopup="dialog"
         >
           <Settings2 size={12} strokeWidth={1.5} />
-          Edit prompts
+          {t("writing.editPrompts")}
         </TextButton>
       </div>
 
       {customOpen && (
         <Panel className="mt-3 space-y-3 px-3 py-3">
-          <MonoLabel>Custom instruction</MonoLabel>
+          <MonoLabel>{t("writing.customInstruction")}</MonoLabel>
           <TextArea
             rows={3}
             value={customPrompt}
-            placeholder="Describe how to rewrite the selected text…"
+            placeholder={t("writing.customPlaceholder")}
             onChange={(e) => setCustomPrompt(e.target.value)}
           />
           <SolidButton
             disabled={Boolean(busy) || !customPrompt.trim()}
-            onClick={() => void run("Custom", customPrompt.trim(), customPrompt.trim())}
+            onClick={() => void run(t("writing.custom"), customPrompt.trim(), customPrompt.trim())}
           >
-            Run custom
+            {t("writing.runCustom")}
           </SolidButton>
         </Panel>
       )}
 
       {editOpen && (
-        <Panel className="mt-3 space-y-4 px-3 py-3">
-          <MonoLabel>System prompt</MonoLabel>
-          <TextArea rows={4} value={draftSystem} onChange={(e) => setDraftSystem(e.target.value)} />
-          <div className="space-y-3">
-            <MonoLabel>Tool instructions</MonoLabel>
-            {WRITING_TOOLS.map((t) => (
-              <div key={t.id} className="space-y-1.5">
-                <MonoLabel>{t.label}</MonoLabel>
-                <TextArea
-                  rows={2}
-                  value={draftTools[t.id] ?? t.instruction}
-                  onChange={(e) => setDraftTools((d) => ({ ...d, [t.id]: e.target.value }))}
-                />
-              </div>
-            ))}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <SolidButton onClick={savePromptEdits}>Save prompts</SolidButton>
-            <GhostButton onClick={resetPromptEdits}>Reset to defaults</GhostButton>
-          </div>
-        </Panel>
+        <Overlay
+          onClose={() => setEditOpen(false)}
+          title={t("writing.title")}
+          labelledBy={titleId}
+          describedBy={descId}
+          className="max-w-xl"
+        >
+          <Panel className="max-h-[min(88vh,44rem)] space-y-5 overflow-y-auto p-6">
+            <MonoLabel>{t("writing.tools")}</MonoLabel>
+            <h2 id={titleId} className="mt-2 font-serif text-3xl font-semibold tracking-tight">
+              {t("writing.title")}
+            </h2>
+            <p id={descId} className="text-sm leading-relaxed text-mute">
+              {t("writing.blurb")}
+            </p>
+            <div className="space-y-2">
+              <MonoLabel>{t("writing.systemPrompt")}</MonoLabel>
+              <TextArea rows={4} value={draftSystem} onChange={(e) => setDraftSystem(e.target.value)} />
+              <TextButton
+                className="h-7 text-[11px] text-faint"
+                onClick={() => setDraftSystem(DEFAULT_WRITING_SYSTEM_PROMPT)}
+              >
+                {t("writing.resetSystem")}
+              </TextButton>
+            </div>
+            <div className="space-y-4">
+              <MonoLabel>{t("writing.toolInstructions")}</MonoLabel>
+              {WRITING_TOOLS.map((tool) => (
+                <div key={tool.id} className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <MonoLabel>{writingToolLabel(locale, tool.id)}</MonoLabel>
+                    <TextButton
+                      className="h-7 text-[11px] text-faint"
+                      onClick={() => setDraftTools((d) => ({ ...d, [tool.id]: tool.instruction }))}
+                    >
+                      {t("writing.resetDefault")}
+                    </TextButton>
+                  </div>
+                  <TextArea
+                    rows={2}
+                    value={draftTools[tool.id] ?? tool.instruction}
+                    onChange={(e) => setDraftTools((d) => ({ ...d, [tool.id]: e.target.value }))}
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <SolidButton onClick={savePromptEdits}>{t("writing.save")}</SolidButton>
+              <GhostButton onClick={resetPromptEdits}>{t("writing.resetAll")}</GhostButton>
+            </div>
+          </Panel>
+        </Overlay>
       )}
     </div>
   );

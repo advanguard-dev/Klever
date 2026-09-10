@@ -3,14 +3,15 @@ import { PropInput } from "@/components/editor/PropInput";
 import { PropertyManager } from "@/components/db/PropertyManager";
 import { RecordCard } from "@/components/db/RecordCard";
 import { Chip, ConfirmDialog, EmptyState, Field, GhostButton, IconButton, MonoLabel, Panel, Select, SolidButton, TextButton } from "@/components/ui";
-import { useContextMenu } from "@/components/ContextMenu";
+import { contextMenuFromKey, useContextMenu } from "@/components/ContextMenu";
 import { noteMenuItems } from "@/lib/context-menus";
 import { cn } from "@/lib/cn";
 import { ChromeIcon, NoteIcon, NoteLabel, accentIconClass, noteKindIcon, PROP_ICONS, VIEW_ICONS } from "@/lib/chrome-icons";
 import { nid, slugify } from "@/lib/ids";
-import { applyView, newView, visibleSchema } from "@/lib/views";
+import { effectivePropType, itemColorId, propAccentStyle } from "@/lib/prop-schema";
+import { applyView, emptyFilterRule, resolveFilter, visibleSchema, newView } from "@/lib/views";
 import { useApp } from "@/store";
-import type { CoverSource, DbView, DbViewType, FilterOp, Note, SchemaProp, ViewFilter, ViewSort } from "@/types";
+import type { CoverSource, DbView, DbViewType, FilterNode, FilterOp, Note, SchemaProp, ViewSort } from "@/types";
 import { DB_VIEW_TYPES } from "@/types";
 import { ChevronLeft, ChevronRight, Plus, SlidersHorizontal, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -32,6 +33,8 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editingTab, setEditingTab] = useState<string | null>(null);
   const [pendingDeleteView, setPendingDeleteView] = useState(false);
+  const [addViewOpen, setAddViewOpen] = useState(false);
+  const addViewRef = useRef<HTMLDivElement | null>(null);
   const { open } = useContextMenu();
   const [draftTitle, setDraftTitle] = useState(note.title);
   const [titleSeenId, setTitleSeenId] = useState(note.id);
@@ -45,6 +48,30 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
     if (draftTitle === note.title) return;
     setDraftTitle(note.title);
   }, [note.title, note.id, draftTitle]);
+
+  useEffect(() => {
+    if (!addViewOpen) return;
+    const onPointer = (e: PointerEvent) => {
+      if (addViewRef.current?.contains(e.target as Node)) return;
+      setAddViewOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAddViewOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [addViewOpen]);
+
+  const addView = (type: DbViewType) => {
+    const view = newView(type);
+    patchNote(note.id, { views: [...views, view] });
+    setView({ kind: "database", id: note.id, viewId: view.id });
+    setAddViewOpen(false);
+  };
 
   const patchView = (patch: Partial<DbView>) => {
     patchNote(note.id, {
@@ -101,21 +128,30 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
                 (e.target as HTMLInputElement).blur();
               }
             }}
-            className="mt-2 block bg-transparent font-sans text-3xl tracking-tight focus-visible:outline-none md:text-4xl"
+            className="klever-focus mt-2 block rounded-md bg-transparent font-serif text-3xl font-semibold tracking-tight md:text-4xl"
             placeholder="Untitled"
+            aria-label="Database title"
           />
         </div>
         <div className="flex gap-2">
-          <GhostButton onClick={() => setPropsOpen(true)}>Properties</GhostButton>
+          <GhostButton onClick={() => setPropsOpen((o) => !o)} aria-pressed={propsOpen}>
+            Properties
+          </GhostButton>
           <SolidButton onClick={() => createPage({ parent: note.id, stay: true })}>
             <Plus size={14} strokeWidth={1.4} />
-            Row
+            New row
           </SolidButton>
           <GhostButton onClick={() => setPlusOpen(true, "database")} aria-label="Insert">
-            <Plus size={14} strokeWidth={1.4} />
+            Insert
           </GhostButton>
         </div>
       </div>
+
+      {propsOpen && (
+        <div className="mt-6">
+          <PropertyManager note={note} onClose={() => setPropsOpen(false)} />
+        </div>
+      )}
 
       <div className="mt-8 flex flex-nowrap items-center gap-1 overflow-x-auto border-b border-line">
         {views.map((v) => (
@@ -124,7 +160,7 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
               <input
                 autoFocus
                 defaultValue={v.name}
-                className="h-9 w-28 border-b-2 border-ink bg-transparent px-2 font-serif text-sm focus-visible:outline-none"
+                className="klever-focus h-9 w-28 border-b-2 border-ring bg-transparent px-2 text-sm"
                 onBlur={(e) => {
                   const name = e.target.value.trim() || v.name;
                   patchNote(note.id, {
@@ -183,9 +219,9 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
                   ])
                 }
                 className={cn(
-                  "inline-flex h-9 items-center gap-2 rounded-t-lg border-b-2 px-3 font-serif text-sm transition-colors duration-150",
+                  "klever-focus inline-flex h-9 items-center gap-2 rounded-t-md border-b-2 px-3 text-sm font-medium transition-colors duration-150",
                   v.id === active.id
-                    ? "border-ink text-ink"
+                    ? "border-ring text-ink"
                     : "border-transparent text-mute hover:bg-paper-2 hover:text-ink",
                 )}
               >
@@ -198,7 +234,7 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
               </button>
             )}
             {v.id === active.id && (
-              <span className="ml-0.5 hidden items-center group-hover/tab:flex">
+              <span className="ml-0.5 hidden items-center group-hover/tab:flex group-focus-within/tab:flex">
                 <IconButton aria-label="Move tab left" onClick={() => moveTab(v.id, -1)}>
                   <ChevronLeft size={13} strokeWidth={1.4} />
                 </IconButton>
@@ -209,25 +245,36 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
             )}
           </div>
         ))}
-        <Select
-          aria-label="Add view"
-          value=""
-          className="ml-2 min-w-[6.5rem]"
-          onChange={(e) => {
-            const type = e.target.value as DbViewType;
-            if (!type) return;
-            const view = newView(type);
-            patchNote(note.id, { views: [...views, view] });
-            setView({ kind: "database", id: note.id, viewId: view.id });
-          }}
-        >
-          <option value="">Add view</option>
-          {DB_VIEW_TYPES.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </Select>
+        <div ref={addViewRef} className="relative ml-0.5 shrink-0">
+          <IconButton
+            aria-label="Add view"
+            aria-haspopup="menu"
+            aria-expanded={addViewOpen}
+            onClick={() => setAddViewOpen((o) => !o)}
+          >
+            <Plus size={14} strokeWidth={1.4} />
+          </IconButton>
+          {addViewOpen && (
+            <div
+              role="menu"
+              aria-label="Add view"
+              className="absolute left-0 top-full z-30 mt-1 min-w-[9.5rem] rounded-md border border-line bg-paper py-1 shadow-md"
+            >
+              {DB_VIEW_TYPES.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  role="menuitem"
+                  className="klever-focus flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm capitalize text-mute hover:bg-paper-2 hover:text-ink"
+                  onClick={() => addView(t)}
+                >
+                  <ChromeIcon icon={VIEW_ICONS[t]} size={14} className="text-mute" />
+                  {t}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <GhostButton
           className="ml-2 h-8 px-3 py-0 text-sm"
           aria-label={settingsOpen ? "Hide view settings" : "View settings"}
@@ -261,7 +308,7 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
           <EmptyState
             className="px-0"
             title="No rows yet"
-            description="Add a row to start this database."
+            description="Each row is a page in this database. Add one to begin."
             action={
               <SolidButton onClick={() => createPage({ parent: note.id, stay: true })}>
                 <Plus size={14} strokeWidth={1.4} />
@@ -285,15 +332,21 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
             {active.type === "calendar" && (
               <CalendarView rows={filtered} dateProp={active.dateProp ?? "due"} />
             )}
+            {active.type === "timeline" && (
+              <TimelineView
+                rows={filtered}
+                dateProp={active.dateProp ?? "due"}
+                endDateProp={active.endDateProp}
+              />
+            )}
           </>
         )}
       </div>
 
-      {propsOpen && <PropertyManager note={note} onClose={() => setPropsOpen(false)} />}
       {pendingDeleteView && (
         <ConfirmDialog
           title="Delete this view?"
-          description={`"${active.name}" will be removed. Rows are kept.`}
+          description={`“${active.name}” is removed. Rows stay in the database.`}
           confirmLabel="Delete view"
           onConfirm={() => {
             const next = views.filter((v) => v.id !== active.id);
@@ -375,6 +428,39 @@ function ViewSettings({
             </Select>
           </label>
         )}
+        {view.type === "timeline" && (
+          <>
+            <label className="block">
+              <MonoLabel>Start date</MonoLabel>
+              <Select
+                value={view.dateProp ?? "due"}
+                onChange={(e) => onPatch({ dateProp: e.target.value })}
+                className="mt-1"
+              >
+                {schema.filter((s) => s.type === "date").map((s) => (
+                  <option key={s.key} value={s.key}>
+                    {s.name}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <label className="block">
+              <MonoLabel>End date (optional)</MonoLabel>
+              <Select
+                value={view.endDateProp ?? ""}
+                onChange={(e) => onPatch({ endDateProp: e.target.value || undefined })}
+                className="mt-1"
+              >
+                <option value="">Same day</option>
+                {schema.filter((s) => s.type === "date").map((s) => (
+                  <option key={s.key} value={s.key}>
+                    {s.name}
+                  </option>
+                ))}
+              </Select>
+            </label>
+          </>
+        )}
         {(view.type === "gallery" || view.type === "card" || view.type === "board") && (
           <>
             <label className="block">
@@ -443,74 +529,174 @@ function FilterEditor({
   schema: SchemaProp[];
   onPatch: (p: Partial<DbView>) => void;
 }) {
-  const filters = view.filters ?? [];
-  const ops: FilterOp[] = ["eq", "neq", "contains", "empty", "not_empty"];
+  const root = resolveFilter(view) ?? ({ type: "group", op: "and", children: [] } satisfies FilterNode);
+  const group: Extract<FilterNode, { type: "group" }> =
+    root.type === "group" ? root : { type: "group", op: "and", children: [root] };
+
+  const commit = (next: FilterNode) => {
+    onPatch({ filter: next, filters: undefined });
+  };
+
   return (
     <div className="mt-4">
-      <MonoLabel>Filters</MonoLabel>
+      <div className="flex items-center justify-between gap-2">
+        <MonoLabel>Filters</MonoLabel>
+        <Select
+          value={group.op}
+          onChange={(e) => commit({ ...group, op: e.target.value as "and" | "or" })}
+          className="h-7 min-w-[4.5rem] text-[10px]"
+        >
+          <option value="and">AND</option>
+          <option value="or">OR</option>
+        </Select>
+      </div>
       <div className="mt-2 space-y-2">
-        {filters.map((f, i) => (
-          <div key={i} className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
-            <Select
-              value={f.key}
-              onChange={(e) => {
-                const next = [...filters];
-                next[i] = { ...f, key: e.target.value };
-                onPatch({ filters: next });
-              }}
-              className="min-w-[6rem]"
-            >
-              <option value="title">Title</option>
-              {schema.map((s) => (
-                <option key={s.key} value={s.key}>
-                  {s.name}
-                </option>
-              ))}
-            </Select>
-            <Select
-              value={f.op}
-              onChange={(e) => {
-                const next = [...filters];
-                next[i] = { ...f, op: e.target.value as FilterOp };
-                onPatch({ filters: next });
-              }}
-              className="min-w-[7rem]"
-            >
-              {ops.map((o) => (
-                <option key={o} value={o}>
-                  {o.replace("_", " ")}
-                </option>
-              ))}
-            </Select>
-            {f.op !== "empty" && f.op !== "not_empty" && (
-              <Field
-                value={String(f.value ?? "")}
-                onChange={(e) => {
-                  const next = [...filters];
-                  next[i] = { ...f, value: e.target.value };
-                  onPatch({ filters: next });
-                }}
-                className="h-8 w-40 rounded-lg py-1"
-              />
-            )}
-            <IconButton
-              aria-label="Remove filter"
-              onClick={() => onPatch({ filters: filters.filter((_, j) => j !== i) })}
-            >
+        <FilterNodeEditor
+          node={group}
+          depth={0}
+          schema={schema}
+          onChange={commit}
+        />
+        <div className="flex flex-wrap gap-2">
+          <TextButton
+            onClick={() =>
+              commit({
+                ...group,
+                children: [...group.children, emptyFilterRule(schema[0]?.key ?? "title")],
+              })
+            }
+          >
+            + condition
+          </TextButton>
+          <TextButton
+            onClick={() =>
+              commit({
+                ...group,
+                children: [
+                  ...group.children,
+                  { type: "group", op: "or", children: [emptyFilterRule(schema[0]?.key ?? "title")] },
+                ],
+              })
+            }
+          >
+            + group
+          </TextButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FilterNodeEditor({
+  node,
+  depth,
+  schema,
+  onChange,
+  onRemove,
+}: {
+  node: FilterNode;
+  depth: number;
+  schema: SchemaProp[];
+  onChange: (n: FilterNode) => void;
+  onRemove?: () => void;
+}) {
+  const ops: FilterOp[] = ["eq", "neq", "contains", "empty", "not_empty", "gt", "lt", "gte", "lte"];
+
+  if (node.type === "rule") {
+    return (
+      <div className="flex flex-wrap items-center gap-2 font-mono text-[11px]">
+        <Select
+          value={node.key}
+          onChange={(e) => onChange({ ...node, key: e.target.value })}
+          className="min-w-[6rem]"
+        >
+          <option value="title">Title</option>
+          {schema.map((s) => (
+            <option key={s.key} value={s.key}>
+              {s.name}
+            </option>
+          ))}
+        </Select>
+        <Select
+          value={node.op}
+          onChange={(e) => onChange({ ...node, op: e.target.value as FilterOp })}
+          className="min-w-[7rem]"
+        >
+          {ops.map((o) => (
+            <option key={o} value={o}>
+              {o.replace("_", " ")}
+            </option>
+          ))}
+        </Select>
+        {node.op !== "empty" && node.op !== "not_empty" && (
+          <Field
+            value={String(node.value ?? "")}
+            onChange={(e) => onChange({ ...node, value: e.target.value })}
+            className="h-8 w-40 rounded-lg py-1"
+          />
+        )}
+        {onRemove && (
+          <IconButton aria-label="Remove" onClick={onRemove}>
+            <X size={13} strokeWidth={1.4} />
+          </IconButton>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={cn(
+        "space-y-2",
+        depth > 0 && "rounded-lg border border-rule bg-paper-2/50 p-2",
+      )}
+    >
+      {depth > 0 && (
+        <div className="flex items-center gap-2">
+          <Select
+            value={node.op}
+            onChange={(e) => onChange({ ...node, op: e.target.value as "and" | "or" })}
+            className="h-7 min-w-[4.5rem] text-[10px]"
+          >
+            <option value="and">AND</option>
+            <option value="or">OR</option>
+          </Select>
+          <span className="font-mono text-[10px] text-mute">group</span>
+          {onRemove && (
+            <IconButton aria-label="Remove group" onClick={onRemove}>
               <X size={13} strokeWidth={1.4} />
             </IconButton>
-          </div>
-        ))}
+          )}
+        </div>
+      )}
+      {node.children.map((child, i) => (
+        <FilterNodeEditor
+          key={i}
+          node={child}
+          depth={depth + 1}
+          schema={schema}
+          onChange={(next) => {
+            const children = [...node.children];
+            children[i] = next;
+            onChange({ ...node, children });
+          }}
+          onRemove={() =>
+            onChange({ ...node, children: node.children.filter((_, j) => j !== i) })
+          }
+        />
+      ))}
+      {depth < 2 && (
         <TextButton
           onClick={() =>
-            onPatch({
-              filters: [...filters, { key: schema[0]?.key ?? "title", op: "eq", value: "" } satisfies ViewFilter],
+            onChange({
+              ...node,
+              children: [...node.children, emptyFilterRule(schema[0]?.key ?? "title")],
             })
           }
         >
-          + filter
+          + condition
         </TextButton>
-      </div>
+      )}
     </div>
   );
 }
@@ -585,16 +771,16 @@ function TableView({ rows, schema }: { rows: Note[]; schema: SchemaProp[] }) {
     <table className="w-full min-w-[640px] border-collapse text-sm">
       <thead>
         <tr className="text-left">
-          <th className="border-b border-line py-2 pr-4 font-mono text-[10px] font-normal uppercase tracking-[0.14em] text-faint">
+          <th className="border-b border-line py-2 pr-4 font-mono text-[10px] font-normal uppercase tracking-[0.14em] text-mute">
             Name
           </th>
           {schema.map((s) => (
             <th
               key={s.key}
-              className="border-b border-line py-2 pr-4 font-mono text-[10px] font-normal uppercase tracking-[0.14em] text-faint"
+              className="border-b border-line py-2 pr-4 font-mono text-[10px] font-normal uppercase tracking-[0.14em] text-mute"
             >
               <span className="inline-flex items-center gap-1.5">
-                <ChromeIcon icon={PROP_ICONS[s.type]} className={accentIconClass(s.type)} />
+                <ChromeIcon icon={PROP_ICONS[effectivePropType(s)]} className={accentIconClass(effectivePropType(s))} />
                 {s.name}
               </span>
             </th>
@@ -666,7 +852,9 @@ function BoardView({
         return (
           <section key={c} className="w-64 shrink-0">
             <div className="mb-3 flex items-baseline justify-between">
-              <MonoLabel>{c}</MonoLabel>
+              <MonoLabel style={c === "—" ? undefined : propAccentStyle(itemColorId(col?.itemColors, c))}>
+                {c}
+              </MonoLabel>
               <span className="font-mono text-[10px] text-faint">{items.length}</span>
             </div>
             <div className="space-y-2">
@@ -786,6 +974,11 @@ function ListView({ rows, schema }: { rows: Note[]; schema: SchemaProp[] }) {
               "ml-auto font-mono text-[11px]",
               status ? "text-prop/80" : "text-tag/75",
             )}
+            style={
+              status
+                ? propAccentStyle(itemColorId(status.itemColors, String(row.props[status.key] ?? "")))
+                : undefined
+            }
           >
             {status ? String(row.props[status.key] ?? "") : row.tags.join(" ")}
           </span>
@@ -818,7 +1011,7 @@ function CalendarView({ rows, dateProp }: { rows: Note[]; dateProp: string }) {
       </MonoLabel>
       <div className="mt-4 grid grid-cols-7 gap-px bg-line">
         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
-          <div key={d} className="bg-paper px-2 py-2 font-mono text-[10px] text-faint">
+          <div key={d} className="bg-paper px-2 py-2 font-mono text-[10px] text-mute">
             {d}
           </div>
         ))}
@@ -826,14 +1019,17 @@ function CalendarView({ rows, dateProp }: { rows: Note[]; dateProp: string }) {
           <div key={i} className="min-h-24 bg-paper p-2">
             {c && (
               <>
-                <div className="font-mono text-[10px] text-faint">{c.day}</div>
+                <div className="font-mono text-[10px] text-mute">{c.day}</div>
                 {c.items.map((n) => (
                   <button
                     key={n.id}
                     type="button"
-                    className="mt-1 flex w-full items-center gap-1 truncate text-left text-xs hover:opacity-70"
+                    className="klever-focus mt-1 flex w-full items-center gap-1 truncate rounded-md text-left text-xs hover:opacity-70"
                     onClick={() => setView({ kind: "note", id: n.id })}
                     onContextMenu={(e) => open(e, noteMenuItems(n))}
+                    onKeyDown={(e) =>
+                      contextMenuFromKey(e, (ev) => open(ev, noteMenuItems(n)))
+                    }
                   >
                     {n.icon ? <NoteIcon icon={n.icon} size={12} className="shrink-0 text-faint" /> : null}
                     <span className="truncate">{n.title}</span>
@@ -843,6 +1039,86 @@ function CalendarView({ rows, dateProp }: { rows: Note[]; dateProp: string }) {
             )}
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function parseDay(raw: unknown): number | null {
+  const s = String(raw ?? "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const t = Date.parse(s + "T12:00:00");
+  return Number.isFinite(t) ? t : null;
+}
+
+function TimelineView({
+  rows,
+  dateProp,
+  endDateProp,
+}: {
+  rows: Note[];
+  dateProp: string;
+  endDateProp?: string;
+}) {
+  const setView = useApp((s) => s.setView);
+  const { open } = useContextMenu();
+  const items = rows
+    .map((n) => {
+      const start = parseDay(n.props[dateProp]);
+      if (start == null) return null;
+      const end = endDateProp ? parseDay(n.props[endDateProp]) ?? start : start;
+      return { note: n, start, end: Math.max(end, start) };
+    })
+    .filter((x): x is { note: Note; start: number; end: number } => Boolean(x))
+    .sort((a, b) => a.start - b.start);
+
+  if (!items.length) {
+    return (
+      <p className="font-mono text-[12px] text-mute">
+        No dated rows. Set a date property on rows to see the timeline.
+      </p>
+    );
+  }
+
+  const min = Math.min(...items.map((i) => i.start));
+  const max = Math.max(...items.map((i) => i.end));
+  const span = Math.max(max - min, 86400000);
+  const dayMs = 86400000;
+  const days = Math.ceil(span / dayMs) + 1;
+
+  return (
+    <div className="overflow-x-auto">
+      <MonoLabel>
+        {new Date(min).toLocaleDateString()} — {new Date(max).toLocaleDateString()} · {days}d
+      </MonoLabel>
+      <div className="mt-3 min-w-[640px] space-y-2">
+        {items.map(({ note, start, end }) => {
+          const left = ((start - min) / span) * 100;
+          const width = Math.max(((end - start + dayMs) / span) * 100, 2);
+          return (
+            <div key={note.id} className="grid grid-cols-[10rem_1fr] items-center gap-3">
+              <button
+                type="button"
+                className="truncate text-left text-sm hover:opacity-70"
+                onClick={() => setView({ kind: "note", id: note.id })}
+                onContextMenu={(e) => open(e, noteMenuItems(note))}
+              >
+                {note.title}
+              </button>
+              <div className="relative h-7 rounded bg-paper-2">
+                <button
+                  type="button"
+                  className="absolute top-0.5 h-6 rounded-md bg-ink/80 px-2 text-left font-mono text-[10px] text-paper hover:bg-ink"
+                  style={{ left: `${left}%`, width: `${width}%`, minWidth: 24 }}
+                  onClick={() => setView({ kind: "note", id: note.id })}
+                  title={note.title}
+                >
+                  <span className="truncate">{note.title}</span>
+                </button>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

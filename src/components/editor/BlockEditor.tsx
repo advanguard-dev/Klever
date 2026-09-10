@@ -1,20 +1,29 @@
 import { SlashStack } from "@/components/insert/PlusMenu";
 import { openNote } from "@/components/editor/WikiPeek";
-import { useContextMenu } from "@/components/ContextMenu";
+import { contextMenuFromKey, useContextMenu } from "@/components/ContextMenu";
 import type { ContextMenuItem } from "@/lib/context-menus";
 import { Panel } from "@/components/ui";
 import { NoteLabel } from "@/lib/chrome-icons";
-import { copyFromTipTap, cutFromTipTap, pasteIntoTipTap } from "@/lib/clipboard-editing";
-import { filterCommands, slashCommands } from "@/lib/commands";
-import { registerWysiwyg } from "@/lib/editor-bridge";
+import { copyFromTipTap, cutFromTipTap, insertClipboardIntoTipTap, pasteIntoTipTap } from "@/lib/clipboard-editing";
+import { htmlLooksExplosive, sanitizePastedHtml } from "@/lib/paste-guard";
+import { registerBeforeFlush } from "@/lib/save-hooks";
+import { registerLinkEmbed, registerWysiwyg } from "@/lib/editor-bridge";
+import { coerceHttpUrl, urlEmbedHtml, urlHostname } from "@/lib/url-embed";
+import { UrlEmbed } from "@/lib/url-embed-ext";
+import { LinkEmbedDialog } from "@/components/editor/LinkEmbedDialog";
 import { resolveAssetSrc } from "@/lib/assets";
+import { hasFileTransfer } from "@/lib/dnd";
+import { handleDroppedFiles } from "@/lib/drop-files";
+import { filesFromFileList } from "@/lib/local-file-path";
 import { htmlToMd, mdToHtml } from "@/lib/markdown-io";
 import { resolveLink } from "@/lib/parse";
 import { runCommand } from "@/lib/run-command";
 import { useApp } from "@/store";
 import { VaultFile } from "@/lib/vault-file-ext";
+import { GrammarMarks } from "@/lib/grammar-ext";
 import { WordFont } from "@/lib/word-font-ext";
 import { WikiLink } from "@/lib/wiki-ext";
+import { KleverCodeBlock } from "@/lib/code-block-ext";
 import { PAGE_FONTS } from "@/lib/page-fonts";
 import type { PageFont } from "@/types";
 import type { InsertCommand, Note } from "@/types";
@@ -25,12 +34,13 @@ import { TableKit } from "@tiptap/extension-table";
 import TaskItem from "@tiptap/extension-task-item";
 import TaskList from "@tiptap/extension-task-list";
 import { Fragment } from "@tiptap/pm/model";
+import { TextSelection } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import { BubbleMenu } from "@tiptap/react/menus";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Bold, GripVertical, Heading2, Italic, Link2, Plus, Strikethrough } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 
 const AssetImage = Image.extend({
   addNodeView() {
@@ -105,6 +115,8 @@ export function BlockEditor({
   const notes = useApp((s) => s.notes);
   const setPlusOpen = useApp((s) => s.setPlusOpen);
   const { open } = useContextMenu();
+  const [linkUi, setLinkUi] = useState<{ mode: "link" | "embed"; href: string; text: string } | null>(null);
+  const closeLinkUi = useCallback(() => setLinkUi(null), []);
   const [slash, setSlash] = useState<{ query: string } | null>(null);
   const [wiki, setWiki] = useState<{ query: string; embed: boolean } | null>(null);
   const [slashI, setSlashI] = useState(0);
@@ -124,20 +136,16 @@ export function BlockEditor({
   const lastEmitted = useRef(markdown);
   const syncingRef = useRef(false);
   const onChangeRef = useRef(onChange);
+  const mdTimerRef = useRef<number>(0);
   onChangeRef.current = onChange;
   slashRef.current = slash;
   slashIRef.current = slashI;
   wikiRef.current = wiki;
   wikiIRef.current = wikiI;
 
-  const hits = useMemo(
-    () => (slash ? filterCommands(slashCommands(notes), slash.query) : []),
-    [notes, slash],
-  );
   const wikiHits = useMemo(() => (wiki ? wikiMatches(notes, wiki.query) : []), [notes, wiki]);
-  const hitsRef = useRef(hits);
+  const hitsRef = useRef<InsertCommand[]>([]);
   const wikiHitsRef = useRef(wikiHits);
-  hitsRef.current = hits;
   wikiHitsRef.current = wikiHits;
 
   const editor = useEditor(
@@ -146,10 +154,13 @@ export function BlockEditor({
         StarterKit.configure({
           heading: { levels: [1, 2, 3] },
           link: false,
+          codeBlock: false,
           dropcursor: { color: "var(--color-ink)", width: 2 },
         }),
+        KleverCodeBlock,
         WikiLink,
         WordFont,
+        UrlEmbed,
         Link.configure({
           openOnClick: false,
           autolink: false,
@@ -161,9 +172,10 @@ export function BlockEditor({
             return !/^[a-z][a-z0-9+.-]*:/i.test(url);
           },
         }),
-        Placeholder.configure({ placeholder: "Type / for blocks, [[ to link" }),
+        Placeholder.configure({ placeholder: "Type / for blocks, @ to link" }),
         AssetImage.configure({ inline: false }),
         VaultFile,
+        GrammarMarks.configure({ noteId }),
         TaskList,
         TaskItem.configure({ nested: true }),
         TableKit.configure({ table: { resizable: false } }),
@@ -173,6 +185,17 @@ export function BlockEditor({
       editorProps: {
         attributes: {
           class: "prose-klever tiptap min-h-[50vh]",
+        },
+        transformPastedHTML: (html) => sanitizePastedHtml(html) || html,
+        handlePaste: (_view, event) => {
+          const html = event.clipboardData?.getData("text/html") ?? "";
+          const text = event.clipboardData?.getData("text/plain") ?? "";
+          if (!html && !text) return false;
+          if (!htmlLooksExplosive(html, text) && html.length + text.length < 24_000) return false;
+          event.preventDefault();
+          const ed = editorRef.current;
+          if (ed && !ed.isDestroyed) void insertClipboardIntoTipTap(ed, html, text);
+          return true;
         },
         handleClick: (_view, _pos, event) => {
           const wikiEl = (event.target as HTMLElement | null)?.closest("[data-wiki]") as HTMLElement | null;
@@ -205,6 +228,25 @@ export function BlockEditor({
             }
           }
           return false;
+        },
+        handleDrop: (editorView, event, _slice, moved) => {
+          if (moved) return false;
+          if (!hasFileTransfer(event as unknown as React.DragEvent)) return false;
+          const list = event.dataTransfer?.files;
+          if (!list?.length) return false;
+          event.preventDefault();
+          event.stopPropagation();
+          const files = filesFromFileList(list);
+          const at = { clientX: event.clientX, clientY: event.clientY };
+          const coords = editorView.posAtCoords({ left: event.clientX, top: event.clientY });
+          if (coords) {
+            const $pos = editorView.state.doc.resolve(coords.pos);
+            editorView.dispatch(editorView.state.tr.setSelection(TextSelection.near($pos)));
+          }
+          const appView = useApp.getState().view;
+          const noteId = appView.kind === "note" ? appView.id : undefined;
+          void handleDroppedFiles(files, { attachToNoteId: noteId, at });
+          return true;
         },
         handleKeyDown: (_view, event) => {
           if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
@@ -271,17 +313,27 @@ export function BlockEditor({
       },
       onUpdate: ({ editor: ed }) => {
         if (syncingRef.current) return;
-        const md = htmlToMd(ed.getHTML());
-        lastEmitted.current = md;
-        onChangeRef.current(md);
-        const w = detectWiki(ed);
-        if (w) {
-          setWiki(w);
+        const large = ed.state.doc.nodeSize > 5_000;
+        if (large) {
+          setWiki(null);
           setSlash(null);
         } else {
-          setWiki(null);
-          detectSlash(ed, setSlash);
+          const w = detectWiki(ed);
+          if (w) {
+            setWiki(w);
+            setSlash(null);
+          } else {
+            setWiki(null);
+            detectSlash(ed, setSlash);
+          }
         }
+        window.clearTimeout(mdTimerRef.current);
+        mdTimerRef.current = window.setTimeout(() => {
+          if (ed.isDestroyed || syncingRef.current) return;
+          const md = htmlToMd(ed.getHTML());
+          lastEmitted.current = md;
+          onChangeRef.current(md);
+        }, large ? 480 : 140);
       },
       immediatelyRender: false,
     },
@@ -291,15 +343,55 @@ export function BlockEditor({
   editorRef.current = editor;
 
   useEffect(() => {
+    const commit = () => {
+      const ed = editorRef.current;
+      if (!ed || ed.isDestroyed || syncingRef.current) return;
+      window.clearTimeout(mdTimerRef.current);
+      const md = htmlToMd(ed.getHTML());
+      lastEmitted.current = md;
+      onChangeRef.current(md);
+    };
+    return registerBeforeFlush(commit);
+  }, [editor]);
+
+  useEffect(() => {
+    return () => window.clearTimeout(mdTimerRef.current);
+  }, []);
+
+  useEffect(() => {
     if (!editor) return;
     editor.setEditable(editable);
   }, [editor, editable]);
 
   useEffect(() => {
+    registerLinkEmbed((opts) => {
+      const ed = editorRef.current;
+      const selected =
+        ed && !ed.state.selection.empty
+          ? ed.state.doc.textBetween(ed.state.selection.from, ed.state.selection.to)
+          : "";
+      const asUrl = selected ? coerceHttpUrl(selected) : null;
+      setLinkUi({
+        mode: opts.mode,
+        href: opts.href ?? asUrl ?? "",
+        text: opts.text ?? (asUrl ? "" : selected),
+      });
+    });
+    return () => registerLinkEmbed(null);
+  }, []);
+
+  useEffect(() => {
     if (!editor || editor.isDestroyed) return;
     registerWysiwyg({
-      snippet: (md) => {
+      snippet: (md, at) => {
         if (editor.isDestroyed) return false;
+        if (at) {
+          const coords = editor.view.posAtCoords({ left: at.clientX, top: at.clientY });
+          if (coords) {
+            const $pos = editor.state.doc.resolve(coords.pos);
+            editor.view.dispatch(editor.state.tr.setSelection(TextSelection.near($pos)));
+          }
+        }
         editor.chain().focus().insertContent(mdToHtml(md)).run();
         return true;
       },
@@ -466,7 +558,7 @@ export function BlockEditor({
             data-block-insert
             aria-label="Insert block"
             title="Insert"
-            className="flex h-6 w-4 items-center justify-center rounded-md text-mute hover:bg-paper-2 hover:text-ink"
+            className="klever-focus flex h-6 w-4 items-center justify-center rounded-md text-mute hover:bg-paper-2 hover:text-ink"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
               editor.chain().focus().run();
@@ -476,9 +568,16 @@ export function BlockEditor({
             <Plus size={13} strokeWidth={1.4} />
           </button>
           <span
-            aria-label="Drag to move block"
-            title="Drag to move"
-            className="flex h-6 w-4 items-center justify-center rounded-md text-mute hover:bg-paper-2 hover:text-ink"
+            role="button"
+            tabIndex={0}
+            aria-label="Move block. Drag, or Option Up and Option Down"
+            title="Move · ⌥↑ ⌥↓"
+            className="klever-focus flex h-6 w-4 items-center justify-center rounded-md text-mute hover:bg-paper-2 hover:text-ink"
+            onKeyDown={(e) =>
+              contextMenuFromKey(e, (ev) =>
+                open(ev, blockMenuItems(editor, () => setPlusOpen(true, "editor"))),
+              )
+            }
           >
             <GripVertical size={14} strokeWidth={1.4} />
           </span>
@@ -530,10 +629,16 @@ export function BlockEditor({
               label="Link"
               active={editor.isActive("link")}
               onClick={() => {
-                const href = window.prompt("URL", editor.getAttributes("link").href ?? "https://");
-                if (href === null) return;
-                if (!href.trim()) editor.chain().focus().unsetLink().run();
-                else editor.chain().focus().setLink({ href: href.trim() }).run();
+                const selected = editor.state.selection.empty
+                  ? ""
+                  : editor.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to);
+                const existing = String(editor.getAttributes("link").href ?? "");
+                const asUrl = selected ? coerceHttpUrl(selected) : null;
+                setLinkUi({
+                  mode: "link",
+                  href: existing || asUrl || "",
+                  text: asUrl ? "" : selected,
+                });
               }}
             >
               <Link2 size={13} strokeWidth={1.4} />
@@ -563,6 +668,9 @@ export function BlockEditor({
           query={slash.query}
           index={slashI}
           onIndex={setSlashI}
+          onFiltered={(cmds) => {
+            hitsRef.current = cmds;
+          }}
           onClose={() => setSlash(null)}
           onRun={(cmd) => {
             eatSlash(editor);
@@ -572,9 +680,38 @@ export function BlockEditor({
           style={caretMenuStyle(editor, wrapRef.current)}
         />
       )}
+      {linkUi && (
+        <LinkEmbedDialog
+          initialHref={linkUi.href}
+          initialText={linkUi.text}
+          initialMode={linkUi.mode}
+          onClose={closeLinkUi}
+          onApply={({ href, text, mode }) => {
+            const ed = editorRef.current;
+            if (!ed || ed.isDestroyed) return;
+            if (mode === "embed") {
+              ed.chain().focus().insertContent(urlEmbedHtml(href, text)).run();
+              return;
+            }
+            if (!ed.state.selection.empty) {
+              ed.chain().focus().setLink({ href }).run();
+              return;
+            }
+            const label = text || urlHostname(href);
+            ed.chain()
+              .focus()
+              .insertContent({
+                type: "text",
+                text: label,
+                marks: [{ type: "link", attrs: { href } }],
+              })
+              .run();
+          }}
+        />
+      )}
       {wiki && (
         <Panel
-          className="absolute z-20 max-h-72 w-72 overflow-y-auto font-serif"
+          className="absolute z-20 max-h-72 w-72 overflow-y-auto"
           style={caretMenuStyle(editor, wrapRef.current)}
         >
         <ul>
@@ -587,8 +724,8 @@ export function BlockEditor({
                   insertWiki(editor, n.title, wiki.embed);
                   setWiki(null);
                 }}
-                className={`flex w-full items-center justify-between px-3 py-1.5 text-left text-sm ${
-                  idx === wikiI ? "bg-paper-2 text-ink" : "text-mute"
+                className={`flex w-full items-center justify-between border-l-2 px-3 py-1.5 text-left text-sm ${
+                  idx === wikiI ? "border-ring bg-paper-2 text-ink" : "border-transparent text-mute"
                 }`}
               >
                 <span className="truncate">
@@ -847,7 +984,8 @@ function FontBtn({
       title={label}
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
-      className={`inline-flex h-8 min-w-8 items-center justify-center px-1.5 text-[11px] ${className} ${
+      aria-pressed={active}
+      className={`klever-focus inline-flex h-8 min-w-8 items-center justify-center px-1.5 text-[11px] ${className} ${
         active ? "bg-paper-2 text-ink ring-1 ring-ink/15" : "text-mute hover:bg-paper-2 hover:text-ink"
       }`}
     >
@@ -871,9 +1009,10 @@ function MarkBtn({
     <button
       type="button"
       aria-label={label}
+      aria-pressed={active}
       onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
-      className={`inline-flex h-8 w-8 items-center justify-center font-serif text-sm ${
+      className={`klever-focus inline-flex h-8 w-8 items-center justify-center rounded-md text-sm font-medium ${
         active ? "bg-paper-2 text-ink" : "text-mute hover:bg-paper-2 hover:text-ink"
       }`}
     >
@@ -890,20 +1029,30 @@ function wikiMatches(notes: Note[], q: string) {
   return list.slice(0, 12);
 }
 
+function wikiTrigger(text: string) {
+  const wiki = text.match(/(!?)\[\[([^\]]*)$/);
+  if (wiki) return { query: wiki[2], embed: wiki[1] === "!", length: wiki[0].length };
+  const at = text.match(/@([^\s[]*)$/);
+  if (!at) return null;
+  const start = text.length - at[0].length;
+  if (start > 0 && !/\s/.test(text[start - 1]!)) return null;
+  return { query: at[1], embed: false, length: at[0].length };
+}
+
 function detectWiki(editor: Editor) {
   const { $from } = editor.state.selection;
   const text = $from.parent.textBetween(0, $from.parentOffset, undefined, "\ufffc");
-  const m = text.match(/(!?)\[\[([^\]]*)$/);
+  const m = wikiTrigger(text);
   if (!m) return null;
-  return { query: m[2], embed: m[1] === "!" };
+  return { query: m.query, embed: m.embed };
 }
 
 function insertWiki(editor: Editor, title: string, embed: boolean) {
   const { $from } = editor.state.selection;
   const text = $from.parent.textBetween(0, $from.parentOffset, undefined, "\ufffc");
-  const m = text.match(/(!?)\[\[([^\]]*)$/);
+  const m = wikiTrigger(text);
   if (!m) return;
-  const from = editor.state.selection.from - m[0].length;
+  const from = editor.state.selection.from - m.length;
   const to = editor.state.selection.from;
   editor
     .chain()

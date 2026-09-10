@@ -1,32 +1,75 @@
 import { create } from "zustand";
 import type {
   AiSettings,
+  CalendarSource,
+  CalSettings,
   AppView,
   BlobRecord,
   DbView,
   DbViewType,
+  DevSettings,
   EditorMode,
   FreeformBoard,
   FreeformObject,
   InsertContext,
   Note,
   NoteComment,
+  SchemaProp,
   Peer,
   VaultEvent,
   Workspace,
   WorkspaceAiMode,
+  WorkspaceLock,
   WorkspaceTools,
 } from "@/types";
 import { defaultAi } from "@/lib/ai";
+import { defaultDevSettings, normalizeDevSettings } from "@/lib/dev-settings";
+import { applyDocumentLang, detectBrowserLocale, resolveLocale, type Locale } from "@/lib/i18n";
+import {
+  defaultCalendarSources,
+  defaultSourceName,
+  dropEventsForSource,
+  inferCalendarKind,
+  migrateCalendarSources,
+  normalizeFeedUrl,
+  syncOneFeed,
+} from "@/lib/calendar-sync";
+import { defaultCalSettings } from "@/lib/calcom";
 import { DEMO_FILES } from "@/lib/demo";
-import { assetPathFor, mimeFromPath, pickFiles, pickLocalFile, refreshBlobFromHandle, refreshBlobsFromDisk, safeFileName } from "@/lib/assets";
+import { assetPathFor, mimeFromPath, pickFiles, pickLocalFiles, refreshBlobFromHandle, refreshBlobsFromDisk, safeFileName } from "@/lib/assets";
 import { nid, slugify, todayDate, todayIso } from "@/lib/ids";
 import { handleDroppedFiles } from "@/lib/drop-files";
 import { isElectron } from "@/lib/electron";
+import { filterRemoveKey } from "@/lib/views";
+import {
+  assertPassword,
+  exportDekB64,
+  generateDek,
+  importDekB64,
+  LockedVaultError,
+  unwrapDekWithPassword,
+  wrapDekWithPassword,
+} from "@/lib/vault-crypto";
+import { clearSessionDek, isSessionUnlocked, sessionDekFor, setSessionDek } from "@/lib/vault-session";
+import { isEncryptedWorkspace, lockFromWrap, wrapFromLock } from "@/lib/workspace-lock";
+import { isTouchCancel, touchEncryptSecret, touchUnlockSecret } from "@/lib/touch-id";
 import { blobsFromDesktopPayload, blobsToDesktopPayload, externalFileBlob } from "@/lib/open-local-file";
 import { localPathFromFile } from "@/lib/local-file-path";
 import { fileToNote, normalizeNote, noteToFile, notesFromFiles } from "@/lib/parse";
 import { defaultViews, newView } from "@/lib/views";
+import {
+  canMoveFolder,
+  existingFolderPaths,
+  filesFromFolderIcons,
+  mergeFolderIcons,
+  nestedFolderPath,
+  nextFolderPath,
+  notesToDeleteWithFolder,
+  omitFolderIcons,
+  remapFolderIcons,
+  rewritePathPrefix,
+  uniqueFolderPath,
+} from "@/lib/folders";
 import { createWorkspaceDraft, normalizeWorkspaceTools } from "@/lib/workspaces";
 import {
   defaultFreeformBoard,
@@ -49,15 +92,24 @@ import {
   walkVault,
   writeVaultToDirectory,
 } from "@/lib/persist";
-import { runBeforeFlushHooks } from "@/lib/save-hooks";
+import { notifyLocalWebhooks, runAfterSaveHooks, runBeforeFlushHooks } from "@/lib/save-hooks";
 
 let dirHandle: FileSystemDirectoryHandle | null = null;
 let vaultRootPath: string | null = null;
 let persistTimer: number | undefined;
 let flushInFlight: Promise<void> | null = null;
+const dirtyBodies = new Map<string, string>();
 const TAB_ID = nid();
 let channel: BroadcastChannel | null = null;
 let helloTimer: number | undefined;
+
+function applyLocalApiConfig(dev: DevSettings) {
+  void window.kleverDesktop?.configureLocalApi?.({
+    enabled: dev.localApiEnabled,
+    port: dev.localApiPort,
+    token: dev.localApiToken,
+  });
+}
 
 function viewNoteId(view: AppView) {
   return view.kind === "note" || view.kind === "database" ? view.id : undefined;
@@ -87,6 +139,10 @@ function filesFromNotes(notes: Note[]) {
   return files;
 }
 
+function vaultFiles(notes: Note[], folderIcons: Record<string, string> = {}) {
+  return { ...filesFromNotes(notes), ...filesFromFolderIcons(folderIcons) };
+}
+
 function uniquePath(notes: Note[], path: string, id: string) {
   if (!notes.some((n) => n.path === path)) return path;
   return path.replace(/(\.database)?\.md$/, (m) => `-${id}${m}`);
@@ -113,21 +169,27 @@ function homeView(notes: Note[]): AppView {
     : { kind: "note", id: first.id };
 }
 
+function fallbackToolView(tools: WorkspaceTools, boards?: FreeformBoard[]): AppView {
+  if (tools.graph) return { kind: "graph" };
+  if (tools.calendar) return { kind: "calendar" };
+  if (tools.meeting) return { kind: "meeting" };
+  if (tools.board) return { kind: "freeform", id: boards?.[0]?.id };
+  return { kind: "welcome" };
+}
+
 function clampViewToTools(view: AppView, tools: WorkspaceTools, boards?: FreeformBoard[]): AppView {
-  if (view.kind === "calendar" && !tools.calendar) return { kind: "graph" };
+  if (view.kind === "unlock" || view.kind === "welcome") return view;
+  if (view.kind === "calendar" && !tools.calendar) return fallbackToolView(tools, boards);
+  if (view.kind === "meeting" && !tools.meeting) return fallbackToolView(tools, boards);
   if (view.kind === "freeform") {
-    if (!tools.board) {
-      return tools.graph ? { kind: "graph" } : tools.calendar ? { kind: "calendar" } : { kind: "welcome" };
-    }
+    if (!tools.board) return fallbackToolView(tools, boards);
     const id =
       (view.id && boards?.some((b) => b.id === view.id) && view.id) ||
       boards?.[0]?.id ||
       "main";
     return { kind: "freeform", id };
   }
-  if (view.kind === "graph" && !tools.graph) {
-    return tools.calendar ? { kind: "calendar" } : tools.board ? { kind: "freeform", id: boards?.[0]?.id } : { kind: "welcome" };
-  }
+  if (view.kind === "graph" && !tools.graph) return fallbackToolView(tools, boards);
   return view;
 }
 
@@ -162,9 +224,16 @@ interface AppState {
   propsOpen: boolean;
   theme: "light" | "dark";
   mode: EditorMode;
+  strongFocus: boolean;
+  /** UI chrome locale. Note bodies are not translated. */
+  locale: Locale;
   displayName: string;
   peers: Peer[];
   ai: AiSettings;
+  cal: CalSettings;
+  calendarSources: CalendarSource[];
+  calendarSyncing: boolean;
+  dev: DevSettings;
   commandOpen: boolean;
   dumpOpen: boolean;
   settingsOpen: boolean;
@@ -176,10 +245,14 @@ interface AppState {
   recents: string[];
   starred: string[];
   openTabs: string[];
+  /** Vault folder path → icon (emoji or lucide:name). */
+  folderIcons: Record<string, string>;
   workspaces: Workspace[];
   activeWorkspaceId: string;
   workspaceSetupOpen: boolean;
   workspaceSetupId: string | null;
+  /** False while an encrypted workspace is waiting for password / Touch ID. */
+  unlocked: boolean;
   hydrate: () => Promise<void>;
   startDemo: () => Promise<void>;
   startEmpty: () => void;
@@ -191,23 +264,40 @@ interface AppState {
     name: string;
     tools: WorkspaceTools;
     aiMode: WorkspaceAiMode;
+    password?: string;
+    touchId?: boolean;
   }) => Promise<void>;
   updateWorkspace: (
     id: string,
-    patch: { name?: string; tools?: Partial<WorkspaceTools>; aiMode?: WorkspaceAiMode },
+    patch: { name?: string; tools?: Partial<WorkspaceTools>; aiMode?: WorkspaceAiMode; lock?: WorkspaceLock | null },
   ) => void;
+  enableWorkspaceLock: (password: string, confirm: string, touchId?: boolean) => Promise<void>;
+  disableWorkspaceLock: (password: string) => Promise<void>;
+  changeWorkspacePassword: (current: string, next: string, confirm: string) => Promise<void>;
+  setWorkspaceTouchId: (enabled: boolean) => Promise<void>;
+  lockWorkspace: () => Promise<void>;
+  unlockWorkspace: (password: string) => Promise<void>;
+  unlockWorkspaceWithTouchId: () => Promise<void>;
   openWorkspaceSetup: (id?: string | null) => void;
   closeWorkspaceSetup: () => void;
   setView: (view: AppView) => void;
   closeOpenTab: (id: string) => void;
   toggleStar: (id: string) => void;
   setTheme: (theme: "light" | "dark") => void;
+  setStrongFocus: (on: boolean) => void;
+  setLocale: (locale: Locale) => void;
   setMode: (mode: EditorMode) => void;
   setDisplayName: (name: string) => void;
   addComment: (noteId: string, body: string) => void;
   resolveComment: (noteId: string, commentId: string, resolved?: boolean) => void;
   removeComment: (noteId: string, commentId: string) => void;
   setAi: (ai: Partial<AiSettings>) => void;
+  setCal: (cal: Partial<CalSettings>) => void;
+  setDev: (p: Partial<DevSettings>) => void;
+  addCalendarSource: (opts: { url: string; name?: string; kind?: CalendarSource["kind"] }) => Promise<void>;
+  connectCalendarProvider: (kind: "google" | "apple", url: string) => Promise<void>;
+  removeCalendarSource: (id: string) => void;
+  syncCalendarFeeds: (opts?: { sourceId?: string }) => Promise<void>;
   setQuery: (q: string) => void;
   setError: (e: string | null) => void;
   toggleSidebar: () => void;
@@ -218,6 +308,8 @@ interface AppState {
   setPlusOpen: (open: boolean, context?: InsertContext) => void;
   upsertNote: (note: Note, opts?: { renameFrom?: string }) => void;
   patchNote: (id: string, patch: Partial<Note>) => void;
+  /** Remove a schema property and any stored values on that database’s rows. */
+  deleteProperty: (schemaNoteId: string, key: string) => void;
   deleteNote: (id: string) => void;
   createPage: (opts?: {
     parent?: string;
@@ -228,6 +320,7 @@ interface AppState {
     template?: boolean;
     stay?: boolean;
     folder?: string;
+    icon?: string;
     props?: Record<string, unknown>;
   }) => string;
   createDatabase: (opts?: {
@@ -236,6 +329,9 @@ interface AppState {
     stay?: boolean;
     folder?: string;
     path?: string;
+    icon?: string;
+    schema?: SchemaProp[];
+    views?: DbView[];
   }) => string;
   createDaily: () => string;
   createEvent: (opts: {
@@ -244,6 +340,8 @@ interface AppState {
     date: string;
     project?: string;
     tags?: string[];
+    calUrl?: string;
+    calBookingUid?: string;
   }) => string;
   patchEvent: (id: string, patch: Partial<VaultEvent>) => void;
   deleteEvent: (id: string) => void;
@@ -262,18 +360,73 @@ interface AppState {
   ensureBlob: (path: string) => Promise<void>;
   /** Attach a disk/cloud file by reading it in place — no vault copy. */
   linkLocalFile: (accept?: string) => Promise<string | null>;
+  /** Attach one or more disk files (multi-select). Returns vault paths. */
+  linkLocalFiles: (accept?: string) => Promise<string[]>;
   /** Flush pending edits to IndexedDB (and linked folder if open). */
   flushNow: () => Promise<void>;
   /** Move a vault page/database to another folder (path-based tree). */
   moveNoteToFolder: (id: string, folder: string) => void;
+  /** Nest a folder under another (or vault root when dest is ""). */
+  moveFolder: (from: string, dest: string) => string | undefined;
+  renameFolder: (path: string, name: string) => string | undefined;
+  deleteFolder: (path: string) => void;
+  setFolderIcon: (path: string, icon: string | undefined) => void;
   /** Store a File from drag-and-drop into vault blobs. */
   storeFileFromDrop: (file: File) => Promise<string>;
-  /** Import dropped files — markdown as pages, others attach to target note or new page. */
-  importDroppedFiles: (files: File[], opts?: { folder?: string; attachToNoteId?: string }) => Promise<void>;
+  /** Import dropped files — markdown as pages, others attach at cursor / drop point. */
+  importDroppedFiles: (
+    files: File[],
+    opts?: { folder?: string; attachToNoteId?: string; at?: { clientX: number; clientY: number } },
+  ) => Promise<void>;
 }
 
 function applyTheme(theme: "light" | "dark") {
   document.documentElement.classList.toggle("dark", theme === "dark");
+}
+
+function applyStrongFocus(on: boolean) {
+  document.documentElement.classList.toggle("klever-a11y-focus", on);
+}
+
+function applyLocale(locale: Locale) {
+  applyDocumentLang(locale);
+}
+
+function lockedShell(folderName: string | null) {
+  return {
+    notes: [] as Note[],
+    blobs: {} as Record<string, BlobRecord>,
+    events: [] as VaultEvent[],
+    boards: [defaultFreeformBoard()],
+    recents: [] as string[],
+    starred: [] as string[],
+    openTabs: [] as string[],
+    query: "",
+    dumpOpen: false,
+    plusOpen: false,
+    commandOpen: false,
+    settingsOpen: false,
+    workspaceSetupOpen: false,
+    workspaceSetupId: null as string | null,
+    view: { kind: "unlock" as const },
+    unlocked: false,
+    folderName,
+    folderIcons: {} as Record<string, string>,
+  };
+}
+
+async function bindVaultFolder(workspaceId: string, encrypted: boolean) {
+  dirHandle = null;
+  if (encrypted) {
+    vaultRootPath = null;
+    if (window.kleverDesktop?.setVaultRoot) void window.kleverDesktop.setVaultRoot("");
+    return;
+  }
+  const meta = await loadWorkspaceVaultMeta(workspaceId);
+  vaultRootPath = meta.vaultRootPath ?? null;
+  if (vaultRootPath && window.kleverDesktop?.setVaultRoot) {
+    void window.kleverDesktop.setVaultRoot(vaultRootPath);
+  }
 }
 
 async function flush(s: {
@@ -282,53 +435,85 @@ async function flush(s: {
   events: VaultEvent[];
   boards: FreeformBoard[];
   theme: "light" | "dark";
+  strongFocus: boolean;
+  locale: Locale;
   ai: AiSettings;
+  cal: CalSettings;
+  calendarSources: CalendarSource[];
   displayName: string;
   folderName: string | null;
   recents: string[];
   starred: string[];
   openTabs: string[];
+  folderIcons: Record<string, string>;
   view: AppView;
   activeWorkspaceId: string;
   workspaces: Workspace[];
+  dev: DevSettings;
 }) {
-  const files = filesFromNotes(s.notes);
   const wsId = s.activeWorkspaceId;
-  await saveFiles(files, wsId);
-  await saveBlobs(s.blobs, wsId);
-  await saveEvents(s.events, wsId);
-  await saveBoards(s.boards, wsId);
-  await saveWorkspaceVaultMeta(wsId, {
-    hasVault: s.view.kind !== "welcome",
-    lastPath: s.folderName ?? undefined,
-    vaultRootPath: vaultRootPath ?? undefined,
-    recents: s.recents,
-    starred: s.starred,
-    openTabs: s.openTabs,
-  });
+  if (!wsId) return;
+  const ws = s.workspaces.find((w) => w.id === wsId);
+  const encrypted = isEncryptedWorkspace(ws);
+  const dek = sessionDekFor(wsId);
+
   await saveMeta({
     theme: s.theme,
-    ai: s.ai,
+    ai: { ...s.ai, locale: s.locale },
+    cal: s.cal,
+    calendarSources: s.calendarSources,
     displayName: s.displayName.trim() || "You",
+    strongFocus: s.strongFocus,
+    locale: s.locale,
+    dev: s.dev,
   });
   await saveWorkspacesRegistry({
     activeId: wsId,
     workspaces: s.workspaces,
   });
-  if (dirHandle) {
-    try {
-      await writeVaultToDirectory(dirHandle, files, s.blobs);
-    } catch {
-      /* permission may have lapsed */
-    }
-  } else if (vaultRootPath && window.kleverDesktop?.writeVault) {
-    try {
-      await window.kleverDesktop.writeVault(vaultRootPath, files, blobsToDesktopPayload(s.blobs));
-    } catch {
-      /* disk write may have failed */
+
+  // Locked screen holds empty in-memory notes — never overwrite ciphertext with that.
+  if (encrypted && !dek) return;
+
+  const files = vaultFiles(s.notes, s.folderIcons);
+  await saveFiles(files, wsId, dek);
+  await saveBlobs(s.blobs, wsId, dek);
+  await saveEvents(s.events, wsId, dek);
+  await saveBoards(s.boards, wsId, dek);
+  await saveWorkspaceVaultMeta(wsId, {
+    hasVault: s.view.kind !== "welcome" && s.view.kind !== "unlock",
+    lastPath: s.folderName ?? undefined,
+    vaultRootPath: encrypted ? undefined : vaultRootPath ?? undefined,
+    recents: s.recents,
+    starred: s.starred,
+    openTabs: s.openTabs,
+    folderIcons: Object.keys(s.folderIcons).length ? s.folderIcons : undefined,
+  });
+
+  if (!encrypted) {
+    if (dirHandle) {
+      try {
+        await writeVaultToDirectory(dirHandle, files, s.blobs);
+      } catch {
+        /* permission may have lapsed */
+      }
+    } else if (vaultRootPath && window.kleverDesktop?.writeVault) {
+      try {
+        await window.kleverDesktop.writeVault(vaultRootPath, files, blobsToDesktopPayload(s.blobs));
+      } catch {
+        /* disk write may have failed */
+      }
     }
   }
   channel?.postMessage({ type: "vault", tab: TAB_ID, workspaceId: wsId });
+  dirtyBodies.clear();
+  const afterSave = {
+    workspaceId: wsId,
+    noteCount: s.notes.length,
+    at: Date.now(),
+  };
+  await runAfterSaveHooks(afterSave);
+  await notifyLocalWebhooks(s.dev.webhookUrls, afterSave);
 }
 
 async function flushNowInternal(getState: () => AppState) {
@@ -343,37 +528,50 @@ async function flushNowInternal(getState: () => AppState) {
 }
 
 async function loadWorkspaceIntoState(workspaceId: string) {
-  const files = await loadFiles(workspaceId);
-  const blobs = await refreshBlobsFromDisk(await loadBlobs(workspaceId));
-  const events = await loadEvents(workspaceId);
-  const boards = await loadBoards(workspaceId);
-  const vaultMeta = await loadWorkspaceVaultMeta(workspaceId);
-  const hasContent = Boolean(files && Object.keys(files).length);
-  if (vaultMeta.hasVault && hasContent) {
-    const notes = notesFromFiles(files!).map(normalizeNote);
+  const dek = sessionDekFor(workspaceId);
+  try {
+    const files = await loadFiles(workspaceId, dek);
+    const blobs = await refreshBlobsFromDisk(await loadBlobs(workspaceId, dek));
+    const events = await loadEvents(workspaceId, dek);
+    const boards = await loadBoards(workspaceId, dek);
+    const vaultMeta = await loadWorkspaceVaultMeta(workspaceId);
+    const hasContent = Boolean(files && Object.keys(files).length);
+    if (vaultMeta.hasVault && hasContent) {
+      const notes = notesFromFiles(files!).map(normalizeNote);
+      return {
+        notes,
+        blobs,
+        events,
+        boards,
+        folderName: vaultMeta.lastPath ?? null,
+        folderIcons: mergeFolderIcons(files, vaultMeta.folderIcons),
+        recents: (vaultMeta.recents ?? []).filter((id) => notes.some((n) => n.id === id)),
+        starred: (vaultMeta.starred ?? []).filter((id) => notes.some((n) => n.id === id)),
+        openTabs: seedOpenTabs(vaultMeta.openTabs ?? [], viewNoteId(homeView(notes)), notes),
+        view: homeView(notes),
+        unlocked: true,
+      };
+    }
     return {
-      notes,
+      notes: [] as Note[],
       blobs,
       events,
       boards,
       folderName: vaultMeta.lastPath ?? null,
-      recents: (vaultMeta.recents ?? []).filter((id) => notes.some((n) => n.id === id)),
-      starred: (vaultMeta.starred ?? []).filter((id) => notes.some((n) => n.id === id)),
-      openTabs: seedOpenTabs(vaultMeta.openTabs ?? [], viewNoteId(homeView(notes)), notes),
-      view: homeView(notes),
+      folderIcons: mergeFolderIcons(files, vaultMeta.folderIcons),
+      recents: vaultMeta.recents ?? [],
+      starred: vaultMeta.starred ?? [],
+      openTabs: vaultMeta.openTabs ?? [],
+      view: { kind: "welcome" as const },
+      unlocked: true,
     };
+  } catch (err) {
+    if (err instanceof LockedVaultError) {
+      const vaultMeta = await loadWorkspaceVaultMeta(workspaceId);
+      return lockedShell(vaultMeta.lastPath ?? null);
+    }
+    throw err;
   }
-  return {
-    notes: [] as Note[],
-    blobs,
-    events,
-    boards,
-    folderName: vaultMeta.lastPath ?? null,
-    recents: vaultMeta.recents ?? [],
-    starred: vaultMeta.starred ?? [],
-    openTabs: vaultMeta.openTabs ?? [],
-    view: { kind: "welcome" as const },
-  };
 }
 
 export const useApp = create<AppState>((set, get) => {
@@ -405,10 +603,16 @@ export const useApp = create<AppState>((set, get) => {
     sidebarOpen: true,
     propsOpen: false,
     theme: "light",
+    strongFocus: false,
+    locale: detectBrowserLocale(),
     mode: "wysiwyg",
     displayName: "You",
     peers: [],
     ai: defaultAi(),
+    cal: defaultCalSettings(),
+    calendarSources: defaultCalendarSources(),
+    calendarSyncing: false,
+    dev: defaultDevSettings(),
     commandOpen: false,
     dumpOpen: false,
     settingsOpen: false,
@@ -420,10 +624,12 @@ export const useApp = create<AppState>((set, get) => {
     recents: [],
     starred: [],
     openTabs: [],
+    folderIcons: {},
     workspaces: [],
     activeWorkspaceId: "",
     workspaceSetupOpen: false,
     workspaceSetupId: null,
+    unlocked: true,
 
     flushNow,
 
@@ -431,21 +637,52 @@ export const useApp = create<AppState>((set, get) => {
       try {
         const { registry, globalMeta, vaultMeta } = await loadOrMigrateWorkspaces();
         applyTheme(globalMeta.theme);
-        const loaded = await loadWorkspaceIntoState(registry.activeId);
+        applyStrongFocus(Boolean(globalMeta.strongFocus));
+        const locale = resolveLocale(globalMeta.locale ?? globalMeta.ai.locale);
+        applyLocale(locale);
         const active = registry.workspaces.find((w) => w.id === registry.activeId);
+        const encrypted = isEncryptedWorkspace(active);
+        const dev = normalizeDevSettings(globalMeta.dev);
+        if (encrypted && !isSessionUnlocked(registry.activeId)) {
+          set({
+            ready: true,
+            ...lockedShell(active?.name ?? vaultMeta.lastPath ?? null),
+            theme: globalMeta.theme,
+            strongFocus: Boolean(globalMeta.strongFocus),
+            locale,
+            ai: { ...globalMeta.ai, locale },
+            cal: globalMeta.cal,
+            calendarSources: migrateCalendarSources(globalMeta.calendarSources),
+            displayName: globalMeta.displayName || "You",
+            dev,
+            workspaces: registry.workspaces,
+            activeWorkspaceId: registry.activeId,
+          });
+          applyLocalApiConfig(dev);
+          startCollab();
+          return;
+        }
+        const loaded = await loadWorkspaceIntoState(registry.activeId);
         const tools = active?.tools ?? normalizeWorkspaceTools();
         set({
           ready: true,
           ...loaded,
           view: clampViewToTools(loaded.view, tools, loaded.boards),
           theme: globalMeta.theme,
-          ai: globalMeta.ai,
+          strongFocus: Boolean(globalMeta.strongFocus),
+          locale,
+          ai: { ...globalMeta.ai, locale },
+          cal: globalMeta.cal,
+          calendarSources: migrateCalendarSources(globalMeta.calendarSources),
           displayName: globalMeta.displayName || "You",
+          dev,
           workspaces: registry.workspaces,
           activeWorkspaceId: registry.activeId,
           folderName: loaded.folderName ?? vaultMeta.lastPath ?? null,
+          unlocked: true,
         });
-        if (vaultMeta.vaultRootPath && window.kleverDesktop?.setVaultRoot) {
+        applyLocalApiConfig(dev);
+        if (!encrypted && vaultMeta.vaultRootPath && window.kleverDesktop?.setVaultRoot) {
           vaultRootPath = vaultMeta.vaultRootPath;
           void window.kleverDesktop.setVaultRoot(vaultMeta.vaultRootPath);
         }
@@ -455,7 +692,8 @@ export const useApp = create<AppState>((set, get) => {
         set({
           ready: true,
           view: { kind: "welcome" },
-          error: err instanceof Error ? err.message : "Could not load vault",
+          unlocked: true,
+          error: err instanceof Error ? err.message : "Could not load this vault",
         });
       }
     },
@@ -470,6 +708,7 @@ export const useApp = create<AppState>((set, get) => {
         view: { kind: "note", id: "welcome" },
         openTabs: ["welcome"],
         folderName: "Sample vault",
+        folderIcons: mergeFolderIcons(DEMO_FILES),
       });
       schedule();
     },
@@ -485,6 +724,7 @@ export const useApp = create<AppState>((set, get) => {
         boards: [defaultFreeformBoard()],
         view: clampViewToTools({ kind: "graph" }, tools, [defaultFreeformBoard()]),
         openTabs: [],
+        folderIcons: {},
         folderName:
           get().workspaces.find((w) => w.id === get().activeWorkspaceId)?.name ?? "Vault",
       });
@@ -493,6 +733,14 @@ export const useApp = create<AppState>((set, get) => {
 
     openFolder: async () => {
       try {
+        const active = get().workspaces.find((w) => w.id === get().activeWorkspaceId);
+        if (isEncryptedWorkspace(active)) {
+          set({
+            error:
+              "Encrypted workspaces stay inside Klever. They are not written as readable markdown folders.",
+          });
+          return;
+        }
         if (isElectron() && window.kleverDesktop?.pickVault) {
           const picked = await window.kleverDesktop.pickVault();
           if (!picked) return;
@@ -514,11 +762,12 @@ export const useApp = create<AppState>((set, get) => {
               view: { kind: "note", id: "welcome" },
               openTabs: ["welcome"],
               folderName: picked.name,
+              folderIcons: mergeFolderIcons(DEMO_FILES),
               error: null,
             });
             await window.kleverDesktop.writeVault(
               picked.path,
-              filesFromNotes(seeded),
+              vaultFiles(seeded, mergeFolderIcons(DEMO_FILES)),
               blobsToDesktopPayload(live),
             );
           } else {
@@ -527,6 +776,7 @@ export const useApp = create<AppState>((set, get) => {
               notes,
               blobs: live,
               folderName: picked.name,
+              folderIcons: mergeFolderIcons(picked.files),
               error: null,
               view:
                 home.type === "database"
@@ -557,15 +807,17 @@ export const useApp = create<AppState>((set, get) => {
             view: { kind: "note", id: "welcome" },
             openTabs: ["welcome"],
             folderName: dir.name,
+            folderIcons: mergeFolderIcons(DEMO_FILES),
             error: null,
           });
-          await writeVaultToDirectory(dir, filesFromNotes(seeded), live);
+          await writeVaultToDirectory(dir, vaultFiles(seeded, mergeFolderIcons(DEMO_FILES)), live);
         } else {
           const home = notes.find((n) => n.type === "page") ?? notes[0];
           set({
             notes,
             blobs: live,
             folderName: dir.name,
+            folderIcons: mergeFolderIcons(files),
             error: null,
             view:
               home.type === "database"
@@ -583,14 +835,22 @@ export const useApp = create<AppState>((set, get) => {
 
     saveToFolder: async () => {
       try {
+        const active = get().workspaces.find((w) => w.id === get().activeWorkspaceId);
+        if (isEncryptedWorkspace(active)) {
+          set({
+            error:
+              "Encrypted workspaces stay inside Klever. They are not written as readable markdown folders.",
+          });
+          return;
+        }
         const dir = dirHandle ?? (await pickVaultFolder());
         dirHandle = dir;
-        await writeVaultToDirectory(dir, filesFromNotes(get().notes), get().blobs);
+        await writeVaultToDirectory(dir, vaultFiles(get().notes, get().folderIcons), get().blobs);
         set({ folderName: dir.name, error: null });
         schedule();
       } catch (e) {
         if ((e as { name?: string }).name === "AbortError") return;
-        set({ error: e instanceof Error ? e.message : "Could not write folder" });
+        set({ error: e instanceof Error ? e.message : "Could not write to that folder" });
       }
     },
 
@@ -628,7 +888,7 @@ export const useApp = create<AppState>((set, get) => {
         schedule();
       } catch (e) {
         if ((e as { name?: string }).name === "AbortError") return;
-        set({ error: e instanceof Error ? e.message : "Could not import markdown" });
+        set({ error: e instanceof Error ? e.message : "Could not import those files" });
       }
     },
 
@@ -638,10 +898,22 @@ export const useApp = create<AppState>((set, get) => {
       if (!s.workspaces.some((w) => w.id === id)) return;
       window.clearTimeout(persistTimer);
       await flush(s);
-      dirHandle = null;
+      clearSessionDek();
+      const target = s.workspaces.find((w) => w.id === id);
+      const encrypted = isEncryptedWorkspace(target);
+      await bindVaultFolder(id, encrypted);
+      if (encrypted) {
+        set({
+          activeWorkspaceId: id,
+          ...lockedShell(target?.name ?? null),
+          error: null,
+        });
+        await saveWorkspacesRegistry({ activeId: id, workspaces: get().workspaces });
+        ping();
+        return;
+      }
       const loaded = await loadWorkspaceIntoState(id);
-      const tools =
-        s.workspaces.find((w) => w.id === id)?.tools ?? normalizeWorkspaceTools();
+      const tools = target?.tools ?? normalizeWorkspaceTools();
       set({
         activeWorkspaceId: id,
         ...loaded,
@@ -652,6 +924,7 @@ export const useApp = create<AppState>((set, get) => {
         workspaceSetupOpen: false,
         workspaceSetupId: null,
         error: null,
+        unlocked: true,
       });
       await saveWorkspacesRegistry({ activeId: id, workspaces: get().workspaces });
       ping();
@@ -662,16 +935,34 @@ export const useApp = create<AppState>((set, get) => {
       window.clearTimeout(persistTimer);
       if (s.activeWorkspaceId) await flush(s);
       dirHandle = null;
+      vaultRootPath = null;
       const ws = createWorkspaceDraft({
         name: input.name,
         tools: input.tools,
         aiMode: input.aiMode,
       });
+      let dek: CryptoKey | null = null;
+      if (input.password) {
+        const password = assertPassword(input.password);
+        dek = await generateDek();
+        let lock = lockFromWrap(await wrapDekWithPassword(dek, password));
+        if (input.touchId) {
+          lock = {
+            ...lock,
+            touchId: true,
+            touchWrappedB64: await touchEncryptSecret(await exportDekB64(dek)),
+          };
+        }
+        ws.lock = lock;
+        setSessionDek(ws.id, dek);
+      } else {
+        clearSessionDek();
+      }
       await saveWorkspaceVaultMeta(ws.id, { hasVault: false, recents: [], starred: [], openTabs: [] });
-      await saveFiles({}, ws.id);
-      await saveBlobs({}, ws.id);
-      await saveEvents([], ws.id);
-      await saveBoards([defaultFreeformBoard()], ws.id);
+      await saveFiles({}, ws.id, dek);
+      await saveBlobs({}, ws.id, dek);
+      await saveEvents([], ws.id, dek);
+      await saveBoards([defaultFreeformBoard()], ws.id, dek);
       const workspaces = [...s.workspaces, ws];
       set({
         workspaces,
@@ -685,12 +976,14 @@ export const useApp = create<AppState>((set, get) => {
         recents: [],
         starred: [],
         openTabs: [],
+        folderIcons: {},
         query: "",
         dumpOpen: false,
         plusOpen: false,
         workspaceSetupOpen: false,
         workspaceSetupId: null,
         error: null,
+        unlocked: true,
       });
       await saveWorkspacesRegistry({ activeId: ws.id, workspaces });
       await saveWorkspaceVaultMeta(ws.id, { hasVault: true, lastPath: ws.name, recents: [], starred: [], openTabs: [] });
@@ -700,11 +993,14 @@ export const useApp = create<AppState>((set, get) => {
     updateWorkspace: (id, patch) => {
       const workspaces = get().workspaces.map((w) => {
         if (w.id !== id) return w;
+        const lock =
+          patch.lock === null ? undefined : patch.lock !== undefined ? patch.lock : w.lock;
         return {
           ...w,
           name: patch.name !== undefined ? patch.name.trim() || w.name : w.name,
           tools: patch.tools ? normalizeWorkspaceTools({ ...w.tools, ...patch.tools }) : w.tools,
           aiMode: patch.aiMode ?? w.aiMode,
+          lock,
           updated: todayIso(),
         };
       });
@@ -718,6 +1014,149 @@ export const useApp = create<AppState>((set, get) => {
       schedule();
     },
 
+    enableWorkspaceLock: async (password, confirm, touchId) => {
+      const s = get();
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+      if (!ws) throw new Error("No workspace is selected.");
+      if (isEncryptedWorkspace(ws)) throw new Error("This workspace is already encrypted.");
+      if (!s.unlocked) throw new Error("Unlock this workspace first.");
+      const pw = assertPassword(password, confirm);
+      const dek = await generateDek();
+      let lock = lockFromWrap(await wrapDekWithPassword(dek, pw));
+      if (touchId) {
+        lock = {
+          ...lock,
+          touchId: true,
+          touchWrappedB64: await touchEncryptSecret(await exportDekB64(dek)),
+        };
+      }
+      setSessionDek(ws.id, dek);
+      dirHandle = null;
+      vaultRootPath = null;
+      const workspaces = s.workspaces.map((w) =>
+        w.id === ws.id ? { ...w, lock, updated: todayIso() } : w,
+      );
+      set({ workspaces });
+      await flush({ ...get(), workspaces });
+    },
+
+    disableWorkspaceLock: async (password) => {
+      const s = get();
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+      if (!ws?.lock?.enabled) throw new Error("This workspace is not encrypted.");
+      await unwrapDekWithPassword(wrapFromLock(ws.lock), assertPassword(password));
+      const workspaces = s.workspaces.map((w) => {
+        if (w.id !== ws.id) return w;
+        const next = { ...w, updated: todayIso() };
+        delete next.lock;
+        return next;
+      });
+      clearSessionDek();
+      set({ workspaces, unlocked: true });
+      await flush({ ...get(), workspaces });
+    },
+
+    changeWorkspacePassword: async (current, next, confirm) => {
+      const s = get();
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+      if (!ws?.lock?.enabled) throw new Error("This workspace is not encrypted.");
+      const dek = await unwrapDekWithPassword(wrapFromLock(ws.lock), assertPassword(current));
+      const pw = assertPassword(next, confirm);
+      let lock = lockFromWrap(await wrapDekWithPassword(dek, pw), {
+        touchId: ws.lock.touchId,
+        touchWrappedB64: ws.lock.touchWrappedB64,
+      });
+      if (lock.touchId) {
+        lock = {
+          ...lock,
+          touchWrappedB64: await touchEncryptSecret(await exportDekB64(dek)),
+        };
+      }
+      setSessionDek(ws.id, dek);
+      const workspaces = s.workspaces.map((w) =>
+        w.id === ws.id ? { ...w, lock, updated: todayIso() } : w,
+      );
+      set({ workspaces });
+      await saveWorkspacesRegistry({ activeId: ws.id, workspaces });
+    },
+
+    setWorkspaceTouchId: async (enabled) => {
+      const s = get();
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+      if (!ws?.lock?.enabled) throw new Error("This workspace is not encrypted.");
+      const dek = sessionDekFor(ws.id);
+      if (!dek) throw new Error("Unlock this workspace first.");
+      let lock: WorkspaceLock = { ...ws.lock };
+      if (enabled) {
+        lock = {
+          ...lock,
+          touchId: true,
+          touchWrappedB64: await touchEncryptSecret(await exportDekB64(dek)),
+        };
+      } else {
+        lock = { ...lock, touchId: false, touchWrappedB64: undefined };
+      }
+      const workspaces = s.workspaces.map((w) =>
+        w.id === ws.id ? { ...w, lock, updated: todayIso() } : w,
+      );
+      set({ workspaces });
+      await saveWorkspacesRegistry({ activeId: ws.id, workspaces });
+    },
+
+    lockWorkspace: async () => {
+      const s = get();
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+      if (!isEncryptedWorkspace(ws)) return;
+      window.clearTimeout(persistTimer);
+      await flush(s);
+      clearSessionDek();
+      set({
+        ...lockedShell(ws?.name ?? s.folderName),
+        error: null,
+      });
+    },
+
+    unlockWorkspace: async (password) => {
+      const s = get();
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+      if (!ws?.lock?.enabled) return;
+      const dek = await unwrapDekWithPassword(wrapFromLock(ws.lock), password);
+      setSessionDek(ws.id, dek);
+      const loaded = await loadWorkspaceIntoState(ws.id);
+      const tools = ws.tools;
+      set({
+        ...loaded,
+        view: clampViewToTools(loaded.view, tools, loaded.boards),
+        error: null,
+        unlocked: true,
+      });
+      ping();
+    },
+
+    unlockWorkspaceWithTouchId: async () => {
+      const s = get();
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+      if (!ws?.lock?.enabled || !ws.lock.touchWrappedB64) {
+        throw new Error("Touch ID is not set up for this workspace.");
+      }
+      try {
+        const raw = await touchUnlockSecret(ws.lock.touchWrappedB64, `Unlock ${ws.name}`);
+        const dek = await importDekB64(raw);
+        setSessionDek(ws.id, dek);
+        const loaded = await loadWorkspaceIntoState(ws.id);
+        set({
+          ...loaded,
+          view: clampViewToTools(loaded.view, ws.tools, loaded.boards),
+          error: null,
+          unlocked: true,
+        });
+        ping();
+      } catch (err) {
+        if (isTouchCancel(err)) return;
+        throw err;
+      }
+    },
+
     openWorkspaceSetup: (id = null) => {
       set({ workspaceSetupOpen: true, workspaceSetupId: id });
     },
@@ -726,9 +1165,13 @@ export const useApp = create<AppState>((set, get) => {
     },
 
     setView: (view) => {
-      const tools =
-        get().workspaces.find((w) => w.id === get().activeWorkspaceId)?.tools ??
-        normalizeWorkspaceTools();
+      const s = get();
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+      if (isEncryptedWorkspace(ws) && !s.unlocked) {
+        set({ view: { kind: "unlock" } });
+        return;
+      }
+      const tools = ws?.tools ?? normalizeWorkspaceTools();
       const next = clampViewToTools(view, tools, get().boards);
       const noteId = viewNoteId(next);
       if (noteId) {
@@ -767,6 +1210,16 @@ export const useApp = create<AppState>((set, get) => {
       set({ theme });
       schedule();
     },
+    setStrongFocus: (strongFocus) => {
+      applyStrongFocus(strongFocus);
+      set({ strongFocus });
+      schedule();
+    },
+    setLocale: (locale) => {
+      applyLocale(locale);
+      set({ locale, ai: { ...get().ai, locale } });
+      schedule();
+    },
     setMode: (mode) => set({ mode }),
     setDisplayName: (displayName) => {
       // Keep raw value while typing; callers commit trim/fallback on blur.
@@ -777,8 +1230,139 @@ export const useApp = create<AppState>((set, get) => {
       ping();
     },
     setAi: (ai) => {
-      set({ ai: { ...get().ai, ...ai } });
+      const next: AiSettings = { ...get().ai, ...ai };
+      if ("writingSystemPrompt" in ai && !ai.writingSystemPrompt) delete next.writingSystemPrompt;
+      if ("writingPrompts" in ai && !ai.writingPrompts) delete next.writingPrompts;
+      if ("lastCustomPrompt" in ai && !ai.lastCustomPrompt) delete next.lastCustomPrompt;
+      set({ ai: next });
       schedule();
+    },
+    setCal: (cal) => {
+      set({ cal: { ...get().cal, ...cal } });
+      schedule();
+    },
+    setDev: (p) => {
+      const next = normalizeDevSettings({ ...get().dev, ...p });
+      set({ dev: next });
+      const s = get();
+      void saveMeta({
+        theme: s.theme,
+        ai: { ...s.ai, locale: s.locale },
+        cal: s.cal,
+        calendarSources: s.calendarSources,
+        displayName: s.displayName.trim() || "You",
+        strongFocus: s.strongFocus,
+        locale: s.locale,
+        dev: next,
+      });
+      applyLocalApiConfig(next);
+    },
+    addCalendarSource: async (opts) => {
+      const url = normalizeFeedUrl(opts.url);
+      if (!url) {
+        set({ error: "Paste an iCal URL first." });
+        return;
+      }
+      try {
+        new URL(url);
+      } catch {
+        set({ error: "That calendar URL is not valid." });
+        return;
+      }
+      const kind = opts.kind ?? inferCalendarKind(url);
+      if (kind === "google" || kind === "apple") {
+        await get().connectCalendarProvider(kind, url);
+        return;
+      }
+      const source: CalendarSource = {
+        id: nid(),
+        kind,
+        url,
+        name: opts.name?.trim() || defaultSourceName(kind),
+      };
+      set({ calendarSources: [...get().calendarSources, source], error: null });
+      schedule();
+      await get().syncCalendarFeeds({ sourceId: source.id });
+    },
+    connectCalendarProvider: async (kind, url) => {
+      const href = normalizeFeedUrl(url);
+      if (!href) {
+        set({ error: "Paste a calendar URL first." });
+        return;
+      }
+      try {
+        new URL(href);
+      } catch {
+        set({ error: "That calendar URL is not valid." });
+        return;
+      }
+      const inferred = inferCalendarKind(href);
+      if (kind === "google" && inferred !== "google") {
+        set({
+          error: "Use a Google Calendar secret or public iCal URL (calendar.google.com).",
+        });
+        return;
+      }
+      if (kind === "apple" && inferred === "google") {
+        set({
+          error: "That looks like Google Calendar. Use the Google row instead.",
+        });
+        return;
+      }
+      const existing = get().calendarSources.find((s) => s.kind === kind);
+      const source: CalendarSource = existing
+        ? { ...existing, url: href, name: existing.name || defaultSourceName(kind), lastError: undefined }
+        : {
+            id: nid(),
+            kind,
+            url: href,
+            name: defaultSourceName(kind),
+          };
+      set({
+        calendarSources: existing
+          ? get().calendarSources.map((s) => (s.id === existing.id ? source : s))
+          : [...get().calendarSources, source],
+        error: null,
+      });
+      schedule();
+      await get().syncCalendarFeeds({ sourceId: source.id });
+    },
+    removeCalendarSource: (id) => {
+      set({
+        calendarSources: get().calendarSources.filter((s) => s.id !== id),
+        events: dropEventsForSource(get().events, id),
+      });
+      schedule();
+    },
+    syncCalendarFeeds: async (opts) => {
+      if (get().calendarSyncing) return;
+      const sources = opts?.sourceId
+        ? get().calendarSources.filter((s) => s.id === opts.sourceId)
+        : get().calendarSources;
+      if (sources.length === 0) return;
+      set({ calendarSyncing: true });
+      let events = get().events;
+      const nextSources = [...get().calendarSources];
+      const errors: string[] = [];
+      try {
+        for (const source of sources) {
+          const result = await syncOneFeed(source, events);
+          events = result.events;
+          const idx = nextSources.findIndex((s) => s.id === source.id);
+          if (idx >= 0) nextSources[idx] = result.source;
+          if (result.source.lastError) {
+            errors.push(`${result.source.name}: ${result.source.lastError}`);
+          }
+        }
+        set({
+          events,
+          calendarSources: nextSources,
+          error: errors.length ? errors.join(" ") : get().error,
+        });
+        schedule();
+      } finally {
+        set({ calendarSyncing: false });
+      }
     },
     setQuery: (query) => set({ query }),
     setError: (error) => set({ error }),
@@ -823,10 +1407,52 @@ export const useApp = create<AppState>((set, get) => {
     },
 
     patchNote: (id, patch) => {
+      if (typeof patch.body === "string") dirtyBodies.set(id, patch.body);
       const notes = get().notes.map((n) =>
         n.id === id ? { ...n, ...patch, updated: todayIso() } : n,
       );
       set({ notes });
+      const largeBody = typeof patch.body === "string" && patch.body.length > 80_000;
+      window.clearTimeout(persistTimer);
+      persistTimer = window.setTimeout(() => {
+        const s = get();
+        if (!s.activeWorkspaceId) return;
+        void flush(s);
+      }, largeBody ? 900 : 350);
+    },
+
+    deleteProperty: (schemaNoteId, key) => {
+      const notes = get().notes;
+      const owner = notes.find((n) => n.id === schemaNoteId);
+      if (!owner) return;
+      const schema = (owner.schema ?? []).filter((p) => p.key !== key);
+      const views = owner.views?.map((v) => ({
+        ...v,
+        groupBy: v.groupBy === key ? undefined : v.groupBy,
+        dateProp: v.dateProp === key ? undefined : v.dateProp,
+        endDateProp: v.endDateProp === key ? undefined : v.endDateProp,
+        visible: v.visible?.filter((k) => k !== key),
+        filters: v.filters?.filter((f) => f.key !== key),
+        filter: filterRemoveKey(v.filter, key),
+        sorts: v.sorts?.filter((s) => s.key !== key),
+      }));
+      const next = notes.map((n) => {
+        const ownsSchema = n.id === schemaNoteId;
+        const isRow = n.parent === schemaNoteId || n.id === schemaNoteId;
+        if (!ownsSchema && !isRow) return n;
+        let props = n.props;
+        if (isRow && key in n.props) {
+          const { [key]: _removed, ...rest } = n.props;
+          props = rest;
+        }
+        return {
+          ...n,
+          props,
+          ...(ownsSchema ? { schema, views } : {}),
+          updated: todayIso(),
+        };
+      });
+      set({ notes: next });
       schedule();
     },
 
@@ -867,6 +1493,7 @@ export const useApp = create<AppState>((set, get) => {
         title,
         body: opts?.body ?? "",
         type: "page",
+        icon: opts?.icon,
         tags: opts?.tags ?? [],
         parent,
         template: opts?.template,
@@ -886,11 +1513,11 @@ export const useApp = create<AppState>((set, get) => {
       const id = nid();
       const title = opts?.title?.trim() || "New database";
       const now = todayIso();
-      const views = defaultViews();
+      const baseViews = opts?.views?.length ? opts.views : defaultViews();
       const preferred = opts?.viewType
-        ? views.find((v) => v.type === opts.viewType) ?? newView(opts.viewType)
-        : views[0];
-      const all = views.some((v) => v.id === preferred.id) ? views : [preferred, ...views];
+        ? baseViews.find((v) => v.type === opts.viewType) ?? newView(opts.viewType)
+        : baseViews[0];
+      const all = baseViews.some((v) => v.id === preferred.id) ? baseViews : [preferred, ...baseViews];
       const basePath = opts?.path
         ? opts.path
         : opts?.folder
@@ -902,9 +1529,10 @@ export const useApp = create<AppState>((set, get) => {
         title,
         body: "",
         type: "database",
+        icon: opts?.icon,
         tags: [],
         props: {},
-        schema: [
+        schema: opts?.schema ?? [
           { key: "status", name: "Status", type: "select", options: ["Inbox", "Active", "Done"] },
           { key: "due", name: "Due", type: "date" },
           { key: "related", name: "Related", type: "relation" },
@@ -943,6 +1571,8 @@ export const useApp = create<AppState>((set, get) => {
         date,
         project: opts.project?.trim() || undefined,
         tags: opts.tags ?? [],
+        ...(opts.calUrl?.trim() ? { calUrl: opts.calUrl.trim() } : {}),
+        ...(opts.calBookingUid?.trim() ? { calBookingUid: opts.calBookingUid.trim() } : {}),
         created: now,
         updated: now,
       };
@@ -961,7 +1591,19 @@ export const useApp = create<AppState>((set, get) => {
     },
 
     deleteEvent: (id) => {
-      set({ events: get().events.filter((e) => e.id !== id) });
+      const event = get().events.find((e) => e.id === id);
+      if (event?.sourceId && event.uid) {
+        set({
+          events: get().events.filter((e) => e.id !== id),
+          calendarSources: get().calendarSources.map((s) =>
+            s.id === event.sourceId
+              ? { ...s, hiddenUids: [...new Set([...(s.hiddenUids ?? []), event.uid!])] }
+              : s,
+          ),
+        });
+      } else {
+        set({ events: get().events.filter((e) => e.id !== id) });
+      }
       schedule();
     },
 
@@ -1125,17 +1767,24 @@ export const useApp = create<AppState>((set, get) => {
 
     storeFileFromDrop: async (file) => {
       const localPath = localPathFromFile(file);
+      // Prefer linking the original path — never copy into assets/ when we know where it lives.
       if (localPath) {
         const vaultPath = `ext/${nid()}/${safeFileName(file.name)}`;
         set({
           blobs: {
             ...get().blobs,
-            [vaultPath]: externalFileBlob(file, { localPath }),
+            [vaultPath]: {
+              mime: file.type || mimeFromPath(file.name),
+              data: new ArrayBuffer(0),
+              external: true,
+              localPath,
+            },
           },
         });
         schedule();
         return vaultPath;
       }
+      // Browser / missing path — keep a vault copy so the attachment still works.
       const path = assetPathFor(file);
       await get().putBlob(file, path, file.type || mimeFromPath(file.name));
       return path;
@@ -1157,56 +1806,148 @@ export const useApp = create<AppState>((set, get) => {
       get().upsertNote(moved, { renameFrom: note.path });
     },
 
-    linkLocalFile: async (accept = "*/*") => {
-      const picked = await pickLocalFile(accept);
-      if (!picked) return null;
-      const { file, handle, localPath } = picked;
-      const mime = file.type || mimeFromPath(file.name);
-
-      if (localPath) {
-        const vaultPath = `ext/${nid()}/${safeFileName(file.name)}`;
-        set({
-          blobs: {
-            ...get().blobs,
-            [vaultPath]: externalFileBlob(file, { localPath }),
-          },
-        });
-        schedule();
-        return vaultPath;
+    moveFolder: (from, dest) => {
+      const oldPath = from.trim();
+      const destPath = dest.trim();
+      if (!canMoveFolder(oldPath, destPath)) return;
+      const occupied: string[] = [];
+      for (const p of existingFolderPaths(get().notes)) {
+        if (p === oldPath || p.startsWith(`${oldPath}/`)) continue;
+        occupied.push(p);
       }
-
-      if (handle && dirHandle && typeof dirHandle.resolve === "function") {
-        try {
-          const rel = await dirHandle.resolve(handle);
-          if (rel?.length) {
-            const vaultPath = rel.join("/");
-            set({
-              blobs: {
-                ...get().blobs,
-                [vaultPath]: {
-                  mime: mime || mimeFromPath(vaultPath),
-                  data: new ArrayBuffer(0),
-                  handle,
-                },
-              },
-            });
-            schedule();
-            return vaultPath;
-          }
-        } catch {
-          /* not in this vault */
-        }
+      for (const p of Object.keys(get().folderIcons)) {
+        if (p === oldPath || p.startsWith(`${oldPath}/`)) continue;
+        occupied.push(p);
       }
-
-      const vaultPath = `ext/${nid()}/${safeFileName(file.name)}`;
+      const nextFolder = uniqueFolderPath(occupied, nestedFolderPath(oldPath, destPath));
+      if (nextFolder === oldPath) return nextFolder;
+      const notes = get().notes;
+      const moving = notes.filter((n) => n.path.startsWith(`${oldPath}/`));
+      const staying = notes.filter((n) => !n.path.startsWith(`${oldPath}/`));
+      let acc = [...staying];
+      const updated = moving.map((n) => {
+        const rewritten = rewritePathPrefix(n.path, oldPath, nextFolder);
+        const nextPath = uniquePath(acc, rewritten, n.id);
+        const next = normalizeNote({ ...n, path: nextPath, updated: todayIso() });
+        acc = [...acc, next];
+        return next;
+      });
       set({
-        blobs: {
-          ...get().blobs,
-          [vaultPath]: externalFileBlob(file, { handle }),
-        },
+        notes: [...staying, ...updated].sort((a, b) => a.title.localeCompare(b.title)),
+        folderIcons: remapFolderIcons(get().folderIcons, oldPath, nextFolder),
       });
       schedule();
-      return vaultPath;
+      return nextFolder;
+    },
+
+    renameFolder: (path, name) => {
+      const oldPath = path.trim();
+      if (!oldPath) return;
+      const nextFolder = nextFolderPath(get().notes, oldPath, name);
+      if (nextFolder === oldPath) return nextFolder;
+      const notes = get().notes;
+      const moving = notes.filter((n) => n.path.startsWith(`${oldPath}/`));
+      const staying = notes.filter((n) => !n.path.startsWith(`${oldPath}/`));
+      let acc = [...staying];
+      const updated = moving.map((n) => {
+        const rewritten = rewritePathPrefix(n.path, oldPath, nextFolder);
+        const nextPath = uniquePath(acc, rewritten, n.id);
+        const next = normalizeNote({ ...n, path: nextPath, updated: todayIso() });
+        acc = [...acc, next];
+        return next;
+      });
+      set({
+        notes: [...staying, ...updated].sort((a, b) => a.title.localeCompare(b.title)),
+        folderIcons: remapFolderIcons(get().folderIcons, oldPath, nextFolder),
+      });
+      schedule();
+      return nextFolder;
+    },
+
+    deleteFolder: (path) => {
+      const folder = path.trim();
+      if (!folder) return;
+      const doomed = notesToDeleteWithFolder(get().notes, folder);
+      const ids = new Set(doomed.map((n) => n.id));
+      const notes = get().notes.filter((n) => !ids.has(n.id));
+      const openTabs = get().openTabs.filter((tid) => notes.some((n) => n.id === tid));
+      const view = get().view;
+      const lost =
+        (view.kind === "note" && ids.has(view.id)) ||
+        (view.kind === "database" && ids.has(view.id));
+      let nextView = view;
+      if (lost) {
+        const fallbackId = openTabs[0] ?? notes[0]?.id;
+        const fallback = fallbackId ? notes.find((n) => n.id === fallbackId) : undefined;
+        nextView = fallback ? noteAppView(fallback) : { kind: "graph" };
+      }
+      set({
+        notes,
+        openTabs,
+        view: nextView,
+        folderIcons: omitFolderIcons(get().folderIcons, folder),
+      });
+      schedule();
+    },
+
+    setFolderIcon: (path, icon) => {
+      const folder = path.trim();
+      if (!folder) return;
+      const folderIcons = { ...get().folderIcons };
+      if (icon?.trim()) folderIcons[folder] = icon.trim();
+      else delete folderIcons[folder];
+      set({ folderIcons });
+      schedule();
+    },
+
+    linkLocalFile: async (accept = "*/*") => {
+      const paths = await get().linkLocalFiles(accept);
+      return paths[0] ?? null;
+    },
+
+    linkLocalFiles: async (accept = "*/*") => {
+      const picked = await pickLocalFiles(accept, true);
+      if (!picked.length) return [];
+      const paths: string[] = [];
+      const nextBlobs = { ...get().blobs };
+
+      for (const item of picked) {
+        const { file, handle, localPath } = item;
+        const mime = file.type || mimeFromPath(file.name);
+
+        if (localPath) {
+          const vaultPath = `ext/${nid()}/${safeFileName(file.name)}`;
+          nextBlobs[vaultPath] = externalFileBlob(file, { localPath });
+          paths.push(vaultPath);
+          continue;
+        }
+
+        if (handle && dirHandle && typeof dirHandle.resolve === "function") {
+          try {
+            const rel = await dirHandle.resolve(handle);
+            if (rel?.length) {
+              const vaultPath = rel.join("/");
+              nextBlobs[vaultPath] = {
+                mime: mime || mimeFromPath(vaultPath),
+                data: new ArrayBuffer(0),
+                handle,
+              };
+              paths.push(vaultPath);
+              continue;
+            }
+          } catch {
+            /* not in this vault */
+          }
+        }
+
+        const vaultPath = `ext/${nid()}/${safeFileName(file.name)}`;
+        nextBlobs[vaultPath] = externalFileBlob(file, { handle });
+        paths.push(vaultPath);
+      }
+
+      set({ blobs: nextBlobs });
+      schedule();
+      return paths;
     },
   };
 });
@@ -1240,13 +1981,30 @@ function startCollab() {
       void (async () => {
         const wsId = useApp.getState().activeWorkspaceId;
         if (msg.workspaceId && msg.workspaceId !== wsId) return;
-        const files = await loadFiles(wsId);
-        const blobs = await refreshBlobsFromDisk(await loadBlobs(wsId));
-        const events = await loadEvents(wsId);
-        if (files && Object.keys(files).length) {
-          useApp.setState({ notes: notesFromFiles(files), blobs, events });
-        } else {
-          useApp.setState({ events });
+        const dek = sessionDekFor(wsId);
+        const ws = useApp.getState().workspaces.find((w) => w.id === wsId);
+        if (isEncryptedWorkspace(ws) && !dek) return;
+        try {
+          const files = await loadFiles(wsId, dek);
+          const blobs = await refreshBlobsFromDisk(await loadBlobs(wsId, dek));
+          const events = await loadEvents(wsId, dek);
+          if (files && Object.keys(files).length) {
+            const notes = notesFromFiles(files).map((n) => {
+              const dirty = dirtyBodies.get(n.id);
+              return dirty !== undefined ? { ...n, body: dirty } : n;
+            });
+            useApp.setState({
+              notes,
+              blobs,
+              events,
+              folderIcons: mergeFolderIcons(files, useApp.getState().folderIcons),
+            });
+          } else {
+            useApp.setState({ events });
+          }
+        } catch (err) {
+          if (err instanceof LockedVaultError) return;
+          console.error("Klever failed to apply vault update", err);
         }
       })();
     }

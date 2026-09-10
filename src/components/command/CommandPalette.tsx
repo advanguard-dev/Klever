@@ -1,14 +1,20 @@
 import { Kbd, Overlay, Panel } from "@/components/ui";
 import { Database, FileText, NoteIcon, noteKindIcon } from "@/lib/chrome-icons";
 import { searchNotes, searchSnippet } from "@/lib/search";
+import { createMeetingNote } from "@/lib/meetings";
 import { defaultWorkspaceTools } from "@/lib/workspaces";
+import { isEncryptedWorkspace } from "@/lib/workspace-lock";
+import { useT } from "@/lib/use-t";
 import { useApp } from "@/store";
 import type { Note } from "@/types";
 import type { LucideIcon } from "lucide-react";
 import {
+  AudioLines,
   Calendar,
   FolderOpen,
+  FileUp,
   LayoutDashboard,
+  Lock,
   Moon,
   Network,
   NotebookPen,
@@ -18,12 +24,14 @@ import {
   Sparkles,
   Sun,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 export function CommandPalette() {
+  const t = useT();
   const open = useApp((s) => s.commandOpen);
   const setOpen = useApp((s) => s.setCommandOpen);
   const notes = useApp((s) => s.notes);
+  const semanticSearch = useApp((s) => s.dev.semanticSearch);
   const setView = useApp((s) => s.setView);
   const createPage = useApp((s) => s.createPage);
   const createDatabase = useApp((s) => s.createDatabase);
@@ -33,17 +41,23 @@ export function CommandPalette() {
   const theme = useApp((s) => s.theme);
   const saveToFolder = useApp((s) => s.saveToFolder);
   const openFolder = useApp((s) => s.openFolder);
+  const importMarkdown = useApp((s) => s.importMarkdown);
   const createDaily = useApp((s) => s.createDaily);
   const boards = useApp((s) => s.boards);
   const createBoard = useApp((s) => s.createBoard);
   const recents = useApp((s) => s.recents);
   const workspaces = useApp((s) => s.workspaces);
   const activeWorkspaceId = useApp((s) => s.activeWorkspaceId);
+  const lockWorkspace = useApp((s) => s.lockWorkspace);
+  const unlocked = useApp((s) => s.unlocked);
   const tools =
     workspaces.find((w) => w.id === activeWorkspaceId)?.tools ?? defaultWorkspaceTools();
+  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
   const [q, setQ] = useState("");
   const [i, setI] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listId = useId();
+  const optionId = (id: string) => `${listId}-${id}`;
 
   const actions = useMemo(() => {
     type Action = {
@@ -54,14 +68,14 @@ export function CommandPalette() {
       icon: LucideIcon | typeof FileText;
     };
     const list: Action[] = [
-      { id: "new", label: "New note", run: () => void createPage(), hint: "⌘N", icon: FileText },
-      { id: "daily", label: "Today's note", run: () => void createDaily(), hint: "⌘⇧T", icon: NotebookPen },
-      { id: "db", label: "New database", run: () => void createDatabase(), icon: Database },
+      { id: "new", label: t("cmd.newPage"), run: () => void createPage(), hint: "⌘N", icon: FileText },
+      { id: "daily", label: t("cmd.daily"), run: () => void createDaily(), hint: "⌘⇧T", icon: NotebookPen },
+      { id: "db", label: t("cmd.newDatabase"), run: () => void createDatabase(), icon: Database },
     ];
     if (tools.graph) {
       list.push({
         id: "graph",
-        label: "Open graph",
+        label: t("cmd.openGraph"),
         run: () => setView({ kind: "graph" }),
         hint: "⌘⇧G",
         icon: Network,
@@ -70,15 +84,30 @@ export function CommandPalette() {
     if (tools.calendar) {
       list.push({
         id: "calendar",
-        label: "Open calendar",
+        label: t("cmd.openCalendar"),
         run: () => setView({ kind: "calendar" }),
         icon: Calendar,
+      });
+    }
+    if (tools.meeting) {
+      list.push({
+        id: "meeting",
+        label: t("cmd.openMeetings"),
+        run: () => setView({ kind: "meeting" }),
+        hint: "⌘⇧M",
+        icon: AudioLines,
+      });
+      list.push({
+        id: "new-meeting",
+        label: t("cmd.newMeeting"),
+        run: () => createMeetingNote(),
+        icon: AudioLines,
       });
     }
     if (tools.board) {
       list.push({
         id: "new-board",
-        label: "New board",
+        label: t("cmd.newBoard"),
         run: () => createBoard(),
         icon: LayoutDashboard,
       });
@@ -94,22 +123,35 @@ export function CommandPalette() {
     if (tools.brainDump) {
       list.push({
         id: "dump",
-        label: "Brain dump",
+        label: t("cmd.brainDump"),
         run: () => setDumpOpen(true),
         hint: "⌘⇧D",
         icon: Sparkles,
       });
     }
+    if (isEncryptedWorkspace(activeWorkspace) && unlocked) {
+      list.push({
+        id: "lock",
+        label: t("cmd.lockWorkspace"),
+        run: () => void lockWorkspace(),
+        icon: Lock,
+      });
+    }
+    if (!isEncryptedWorkspace(activeWorkspace)) {
+      list.push(
+        { id: "folder", label: t("cmd.openFolder"), run: () => void openFolder(), icon: FolderOpen },
+        { id: "import", label: t("cmd.importMarkdown"), run: () => void importMarkdown(), icon: FileUp },
+        { id: "save", label: t("cmd.saveVault"), run: () => void saveToFolder(), icon: Save },
+      );
+    }
     list.push(
-      { id: "folder", label: "Open folder", run: () => void openFolder(), icon: FolderOpen },
-      { id: "save", label: "Save vault to folder", run: () => void saveToFolder(), icon: Save },
       {
         id: "theme",
-        label: theme === "dark" ? "Use light theme" : "Use dark theme",
+        label: theme === "dark" ? t("shell.useLight") : t("shell.useDark"),
         run: () => setTheme(theme === "dark" ? "light" : "dark"),
         icon: theme === "dark" ? Sun : Moon,
       },
-      { id: "settings", label: "AI settings", run: () => setSettingsOpen(true), icon: Settings },
+      { id: "settings", label: t("cmd.settings"), run: () => setSettingsOpen(true), icon: Settings },
     );
     return list;
   }, [
@@ -117,6 +159,7 @@ export function CommandPalette() {
     createDaily,
     createDatabase,
     createPage,
+    importMarkdown,
     openFolder,
     saveToFolder,
     setDumpOpen,
@@ -125,15 +168,20 @@ export function CommandPalette() {
     setView,
     theme,
     boards,
+    lockWorkspace,
+    unlocked,
+    activeWorkspace,
     tools.board,
     tools.brainDump,
     tools.calendar,
     tools.graph,
+    tools.meeting,
+    t,
   ]);
 
   const noteHits = (
     q.trim()
-      ? searchNotes(notes, q)
+      ? searchNotes(notes, q, { semantic: semanticSearch !== false })
       : recents.map((id) => notes.find((n) => n.id === id)).filter((n): n is Note => Boolean(n))
   ).slice(0, 8);
   const actionHits = actions.filter((a) => a.label.toLowerCase().includes(q.trim().toLowerCase()));
@@ -180,13 +228,19 @@ export function CommandPalette() {
   };
 
   return (
-    <Overlay onClose={() => setOpen(false)}>
+    <Overlay onClose={() => setOpen(false)} title={t("shell.search")}>
       <Panel className="overflow-hidden">
         <div className="flex items-center gap-3 border-b border-line px-4">
           <Search size={15} strokeWidth={1.4} className="text-faint" aria-hidden />
           <input
             ref={inputRef}
             value={q}
+            role="combobox"
+            aria-label={t("shell.search")}
+            aria-expanded="true"
+            aria-controls={listId}
+            aria-autocomplete="list"
+            aria-activedescendant={items[i] ? optionId(items[i].id) : undefined}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "ArrowDown") {
@@ -202,22 +256,25 @@ export function CommandPalette() {
                 setOpen(false);
               }
             }}
-            placeholder="Go somewhere"
-            className="w-full bg-transparent py-4 font-serif text-base focus-visible:outline-none"
+            placeholder={t("shell.search")}
+            className="w-full bg-transparent py-4 text-base"
           />
           <span className="hidden sm:inline-flex">
             <Kbd>ESC</Kbd>
           </span>
         </div>
-        <ul className="max-h-80 overflow-y-auto py-2">
+        <ul id={listId} role="listbox" aria-label="Results" className="max-h-80 overflow-y-auto py-2">
           {items.map((item, idx) => (
             <li key={item.id}>
               <button
                 type="button"
+                id={optionId(item.id)}
+                role="option"
+                aria-selected={idx === i}
                 onMouseEnter={() => setI(idx)}
                 onClick={() => run(idx)}
-                className={`flex w-full items-center justify-between gap-3 border-l-2 px-4 py-2 text-left font-serif text-sm max-md:py-3 ${
-                  idx === i ? "border-ink bg-paper-2 text-ink" : "border-transparent text-mute hover:bg-paper-2"
+                className={`flex w-full items-center justify-between gap-3 border-l-2 px-4 py-2 text-left text-sm max-md:py-3 ${
+                  idx === i ? "border-ring bg-paper-2 text-ink" : "border-transparent text-mute hover:bg-paper-2"
                 }`}
               >
                 <span className="flex min-w-0 items-center gap-2">
@@ -242,7 +299,7 @@ export function CommandPalette() {
               </button>
             </li>
           ))}
-          {!items.length && <li className="px-4 py-6 text-sm text-mute">Nothing here.</li>}
+          {!items.length && <li className="px-4 py-6 text-sm text-mute">{t("insert.nothing")}</li>}
         </ul>
       </Panel>
     </Overlay>

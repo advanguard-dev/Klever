@@ -73,7 +73,8 @@ export function ImageBlock({
               <input
                 value={caption}
                 onChange={(e) => onCaption(e.target.value)}
-                className="w-full bg-transparent focus-visible:outline-none"
+                className="klever-focus w-full rounded-md bg-transparent"
+                aria-label="Image caption"
               />
             ) : (
               caption
@@ -99,7 +100,7 @@ export function ImageBlock({
         )}
       </figure>
       {zoom && (
-        <Overlay onClose={() => setZoom(false)}>
+        <Overlay onClose={() => setZoom(false)} title="Image">
           <Panel className="p-4">
             <div className="mb-3 flex items-center justify-between">
               <MonoLabel>Zoom</MonoLabel>
@@ -181,7 +182,7 @@ function CropModal({
   }, []);
 
   return (
-    <Overlay onClose={onClose}>
+    <Overlay onClose={onClose} title="Crop">
       <Panel className="p-4">
         <MonoLabel>Crop</MonoLabel>
         <div

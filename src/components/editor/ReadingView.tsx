@@ -135,7 +135,7 @@ export function ReadingView({ note }: { note: Note }) {
   const folderLabel = (path: string) => noteFolder(path) || "Vault";
 
   return (
-    <div ref={rootRef} className="flex h-dvh flex-col bg-paper text-ink">
+    <div ref={rootRef} className="flex h-dvh flex-col bg-blotter text-ink">
       <TitleBar className="relative">
         <div className="flex min-w-0 flex-1 justify-start">
           <ToolbarBtn label="Write" showLabel shortcut="Esc" onClick={leaveRead}>
@@ -144,7 +144,7 @@ export function ReadingView({ note }: { note: Note }) {
         </div>
 
         <div className="relative flex min-w-0 justify-center" ref={menuRef}>
-          <div className="flex min-w-0 items-center rounded-xl border border-line bg-paper">
+          <div className="flex min-w-0 items-center rounded-md border border-line bg-paper">
             <IconButton
               aria-label="Previous page"
               title="Previous page"
@@ -160,7 +160,7 @@ export function ReadingView({ note }: { note: Note }) {
               aria-label="Pages"
               title="Pages"
               className={cn(
-                "flex min-w-0 max-w-[min(28rem,calc(100vw-8rem))] items-center gap-1.5 border-x border-line px-3 py-1.5 font-serif text-sm text-ink md:max-w-[min(28rem,calc(100vw-16rem))]",
+                "flex min-w-0 max-w-[min(28rem,calc(100vw-8rem))] items-center gap-1.5 border-x border-line px-3 py-1.5 text-sm text-ink md:max-w-[min(28rem,calc(100vw-16rem))]",
                 "hover:bg-paper-2",
                 menuOpen && "bg-paper-2",
               )}
@@ -172,7 +172,7 @@ export function ReadingView({ note }: { note: Note }) {
                 size={14}
                 className="shrink-0 text-mute"
               />
-              <span className="truncate italic tracking-tight">{note.title || "Untitled"}</span>
+              <span className="truncate font-medium">{note.title || "Untitled"}</span>
               <ChevronDown
                 size={14}
                 strokeWidth={1.4}
@@ -220,7 +220,7 @@ export function ReadingView({ note }: { note: Note }) {
                         size={13}
                         className="shrink-0 text-faint"
                       />
-                      <span className="min-w-0 flex-1 truncate font-serif text-sm">{p.title || "Untitled"}</span>
+                      <span className="min-w-0 flex-1 truncate text-sm">{p.title || "Untitled"}</span>
                       <span className="max-w-[7rem] truncate font-mono text-[10px] text-faint">
                         {folderLabel(p.path)}
                       </span>
@@ -248,7 +248,7 @@ export function ReadingView({ note }: { note: Note }) {
         </div>
       </TitleBar>
 
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+      <div ref={scrollRef} className="klever-sheet min-h-0 flex-1 overflow-y-auto">
         <NotePage key={note.id} note={note} />
       </div>
     </div>

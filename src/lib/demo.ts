@@ -15,7 +15,7 @@ Klever is a local garden. Notes are markdown. Databases are markdown. The graph 
 > [!note]
 > Type \`[[\` to link, \`/\` for blocks, \`⌘⇧T\` for today. Hover a wikilink to peek.
 
-Open the command palette with \`⌘K\`. Capture a mess with **Brain dump**. See the lattice in **Graph**.
+Open the command palette with \`⌘K\`. Capture a mess with **Brain dump**. Take notes in **Meetings**. See the lattice in **Graph**.
 
 ## Start here
 
@@ -210,7 +210,7 @@ created: 2026-08-14T09:24:00.000Z
 updated: 2026-08-14T09:24:00.000Z
 ---
 
-Instrument Sans for the page. Instrument Serif for menus. IBM Plex Mono for metadata that should stay in the background.
+Geist for the chrome. Instrument Serif for the page. Fira Code for metadata that should stay in the background.
 `,
 
   "People.database.md": `---
@@ -308,5 +308,122 @@ Morning: opened a blank vault and refused another cloud.
 Afternoon: [[Atlas]] started to look like a place.
 
 #daily
+`,
+
+  "Meetings.database.md": `---
+id: meetings
+title: Meetings
+type: database
+icon: lucide:audio-lines
+schema:
+  - key: date
+    name: Date
+    type: date
+  - key: attendees
+    name: Attendees
+    type: people
+  - key: status
+    name: Status
+    type: select
+    options:
+      - Scheduled
+      - In progress
+      - Done
+views:
+  - id: list
+    name: List
+    type: list
+    sorts:
+      - key: date
+        dir: desc
+    visible:
+      - date
+      - attendees
+      - status
+  - id: table
+    name: Table
+    type: table
+    visible:
+      - date
+      - attendees
+      - status
+  - id: calendar
+    name: Calendar
+    type: calendar
+    dateProp: date
+created: 2026-08-14T09:40:00.000Z
+updated: 2026-08-14T09:40:00.000Z
+---
+`,
+
+  "Meetings/Weekly standup.md": `---
+id: weekly-standup
+title: Weekly standup
+icon: lucide:audio-lines
+parent: meetings
+tags:
+  - meeting
+date: "2026-08-31"
+attendees:
+  - Ada
+  - Nara
+status: Scheduled
+kleverKind: meeting
+created: 2026-08-31T08:00:00.000Z
+updated: 2026-08-31T08:00:00.000Z
+---
+
+- Ship the meetings hub
+- Confirm who owns the north star copy
+`,
+
+  "Meetings/North star review.md": `---
+id: north-star-review
+title: North star review
+icon: lucide:audio-lines
+parent: meetings
+tags:
+  - meeting
+  - product
+date: "2026-08-28"
+attendees:
+  - Ada
+status: Done
+kleverKind: meeting
+summary: |-
+  ## Discussion
+
+  The notebook-that-learned-databases line still holds. Klever should feel like a page, not a dashboard.
+
+  ## Decisions
+
+  Keep meeting notes as pages in a Meetings database, with transcription on the page.
+actions:
+  - title: Rewrite the Meetings empty state
+    owner: Ada
+created: 2026-08-28T15:00:00.000Z
+updated: 2026-08-28T16:10:00.000Z
+---
+
+Prep: read [[North star]] and [[Principles]] before the call.
+`,
+
+  "Meetings/1-1 with Ada.md": `---
+id: ada-1-1
+title: 1:1 with Ada
+icon: lucide:audio-lines
+parent: meetings
+tags:
+  - meeting
+date: "2026-09-02"
+attendees:
+  - Ada
+status: Scheduled
+kleverKind: meeting
+created: 2026-08-31T09:00:00.000Z
+updated: 2026-08-31T09:00:00.000Z
+---
+
+- What should Meetings feel like on a Tuesday?
 `,
 };

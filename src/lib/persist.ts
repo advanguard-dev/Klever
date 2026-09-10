@@ -1,8 +1,19 @@
 import { get, set, del } from "idb-keyval";
-import type { AiSettings, BlobRecord, FreeformBoard, FreeformConnection, FreeformObject, VaultEvent, Workspace } from "@/types";
+import type { AiSettings, BlobRecord, CalendarSource, CalSettings, DevSettings, FreeformBoard, FreeformConnection, FreeformObject, VaultEvent, Workspace } from "@/types";
 import { defaultAi, migrateAiSettings } from "@/lib/ai";
+import { normalizeDevSettings } from "@/lib/dev-settings";
+import { parseLocale, type Locale } from "@/lib/i18n";
+import { migrateCalendarSources } from "@/lib/calendar-sync";
+import { migrateCalSettings } from "@/lib/calcom";
 import { mimeFromPath, persistableBlobs } from "@/lib/assets";
+import { FOLDER_META_FILE } from "@/lib/folders";
 import { nid } from "@/lib/ids";
+import {
+  decryptJson,
+  encryptJson,
+  isEncryptedEnvelope,
+  LockedVaultError,
+} from "@/lib/vault-crypto";
 import { createWorkspaceDraft, normalizeWorkspace } from "@/lib/workspaces";
 
 const FILES_KEY = "klever.files";
@@ -28,11 +39,100 @@ function wsVaultMetaKey(id: string) {
   return `klever.ws.${id}.meta`;
 }
 
+function bytesToB64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
+function b64ToBuf(b64: string): ArrayBuffer {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out.buffer;
+}
+
+type StorableBlob = {
+  mime: string;
+  dataB64: string;
+  external?: boolean;
+  localPath?: string;
+};
+
+function blobsToStorable(blobs: Record<string, BlobRecord>): Record<string, StorableBlob> {
+  const stored = persistableBlobs(blobs);
+  const out: Record<string, StorableBlob> = {};
+  for (const [path, rec] of Object.entries(stored)) {
+    out[path] = {
+      mime: rec.mime,
+      dataB64: rec.data?.byteLength ? bytesToB64(rec.data) : "",
+      ...(rec.external ? { external: true } : {}),
+      ...(rec.localPath ? { localPath: rec.localPath } : {}),
+    };
+  }
+  return out;
+}
+
+function blobsFromStorable(raw: unknown): Record<string, BlobRecord> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, BlobRecord> = {};
+  for (const [path, rec] of Object.entries(raw as Record<string, unknown>)) {
+    if (!rec || typeof rec !== "object") continue;
+    const r = rec as Record<string, unknown>;
+    const dataB64 = typeof r.dataB64 === "string" ? r.dataB64 : "";
+    const data =
+      dataB64
+        ? b64ToBuf(dataB64)
+        : r.data instanceof ArrayBuffer
+          ? r.data
+          : new ArrayBuffer(0);
+    out[path] = {
+      mime: typeof r.mime === "string" && r.mime ? r.mime : mimeFromPath(path),
+      data,
+      ...(r.external ? { external: true } : {}),
+      ...(typeof r.localPath === "string" && r.localPath ? { localPath: r.localPath } : {}),
+    };
+  }
+  return out;
+}
+
+async function writeEncrypted(key: string, data: unknown, dek: CryptoKey | null | undefined) {
+  if (dek) await set(key, await encryptJson(data, dek));
+  else await set(key, data);
+}
+
+async function readEncrypted<T>(
+  key: string,
+  dek: CryptoKey | null | undefined,
+  fallback: T,
+  decode: (raw: unknown) => T,
+): Promise<T> {
+  const raw = await get(key);
+  if (raw == null) return fallback;
+  if (isEncryptedEnvelope(raw)) {
+    if (!dek) throw new LockedVaultError();
+    return decode(await decryptJson(raw, dek));
+  }
+  return decode(raw);
+}
+
 /** Global app prefs (shared across workspaces). */
 export interface PersistedMeta {
   theme: "light" | "dark";
   ai: AiSettings;
+  cal: CalSettings;
+  calendarSources?: CalendarSource[];
   displayName?: string;
+  /** Stronger :focus-visible rings. Off by default so titles stay quiet. */
+  strongFocus?: boolean;
+  /** UI chrome locale. Falls back to `ai.locale`, then the browser language. */
+  locale?: Locale;
+  /** Local developer automation (API, webhooks, semantic search). */
+  dev?: DevSettings;
   /** @deprecated migrated into workspaces */
   hasVault?: boolean;
   lastPath?: string;
@@ -48,6 +148,8 @@ export interface WorkspaceVaultMeta {
   recents?: string[];
   starred?: string[];
   openTabs?: string[];
+  /** Folder path → icon (emoji or `lucide:{name}`), same values as page `icon` frontmatter. */
+  folderIcons?: Record<string, string>;
 }
 
 export interface WorkspacesRegistry {
@@ -67,22 +169,35 @@ function asIdList(v: unknown, max: number) {
 
 export async function loadMeta(): Promise<PersistedMeta> {
   const meta = (await get(META_KEY)) as PersistedMeta | undefined;
+  const ai = migrateAiSettings({ ...defaultAi(), ...meta?.ai });
+  const locale = parseLocale(meta?.locale) ?? parseLocale(ai.locale);
   return {
     hasVault: Boolean(meta?.hasVault),
     theme: meta?.theme === "dark" ? "dark" : "light",
-    ai: migrateAiSettings({ ...defaultAi(), ...meta?.ai }),
-    lastPath: meta?.lastPath,
+    ai: locale ? { ...ai, locale } : ai,
+    cal: migrateCalSettings(meta?.cal),
+    calendarSources: migrateCalendarSources(meta?.calendarSources),
     displayName: meta?.displayName || "You",
+    strongFocus: Boolean(meta?.strongFocus),
+    locale,
+    dev: normalizeDevSettings(meta?.dev),
+    lastPath: meta?.lastPath,
     recents: asIdList(meta?.recents, 3),
     starred: asIdList(meta?.starred, 32),
   };
 }
 
 export async function saveMeta(meta: PersistedMeta) {
+  const locale = parseLocale(meta.locale) ?? parseLocale(meta.ai.locale);
   await set(META_KEY, {
     theme: meta.theme,
-    ai: meta.ai,
+    ai: locale ? { ...meta.ai, locale } : meta.ai,
+    cal: meta.cal,
+    calendarSources: meta.calendarSources ?? [],
     displayName: meta.displayName,
+    strongFocus: Boolean(meta.strongFocus),
+    ...(locale ? { locale } : {}),
+    dev: normalizeDevSettings(meta.dev),
   } satisfies PersistedMeta);
 }
 
@@ -95,34 +210,71 @@ export async function loadWorkspaceVaultMeta(workspaceId: string): Promise<Works
     recents: asIdList(meta?.recents, 3),
     starred: asIdList(meta?.starred, 32),
     openTabs: asIdList(meta?.openTabs, 16),
+    folderIcons: asFolderIcons(meta?.folderIcons),
   };
+}
+
+function asFolderIcons(v: unknown): Record<string, string> | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [path, icon] of Object.entries(v as Record<string, unknown>)) {
+    if (typeof path === "string" && path && typeof icon === "string" && icon.trim()) {
+      out[path] = icon.trim();
+    }
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 export async function saveWorkspaceVaultMeta(workspaceId: string, meta: WorkspaceVaultMeta) {
   await set(wsVaultMetaKey(workspaceId), meta);
 }
 
-export async function loadFiles(workspaceId?: string): Promise<Record<string, string> | null> {
-  if (workspaceId) {
-    return ((await get(wsFilesKey(workspaceId))) as Record<string, string> | undefined) ?? null;
+export async function loadFiles(
+  workspaceId?: string,
+  dek?: CryptoKey | null,
+): Promise<Record<string, string> | null> {
+  const key = workspaceId ? wsFilesKey(workspaceId) : FILES_KEY;
+  const raw = await get(key);
+  if (raw == null) return null;
+  if (isEncryptedEnvelope(raw)) {
+    if (!dek) throw new LockedVaultError();
+    const data = await decryptJson<Record<string, string>>(raw, dek);
+    return data && typeof data === "object" ? data : {};
   }
-  return (await get(FILES_KEY)) ?? null;
+  return (raw as Record<string, string>) ?? null;
 }
 
-export async function saveFiles(files: Record<string, string>, workspaceId?: string) {
-  if (workspaceId) await set(wsFilesKey(workspaceId), files);
-  else await set(FILES_KEY, files);
+export async function saveFiles(
+  files: Record<string, string>,
+  workspaceId?: string,
+  dek?: CryptoKey | null,
+) {
+  const key = workspaceId ? wsFilesKey(workspaceId) : FILES_KEY;
+  await writeEncrypted(key, files, dek);
 }
 
-export async function loadBlobs(workspaceId?: string): Promise<Record<string, BlobRecord>> {
+export async function loadBlobs(
+  workspaceId?: string,
+  dek?: CryptoKey | null,
+): Promise<Record<string, BlobRecord>> {
   const key = workspaceId ? wsBlobsKey(workspaceId) : BLOBS_KEY;
-  return ((await get(key)) as Record<string, BlobRecord> | undefined) ?? {};
+  const raw = await get(key);
+  if (raw == null) return {};
+  if (isEncryptedEnvelope(raw)) {
+    if (!dek) throw new LockedVaultError();
+    return blobsFromStorable(await decryptJson(raw, dek));
+  }
+  return (raw as Record<string, BlobRecord>) ?? {};
 }
 
-export async function saveBlobs(blobs: Record<string, BlobRecord>, workspaceId?: string) {
-  const stored = persistableBlobs(blobs);
-  if (workspaceId) await set(wsBlobsKey(workspaceId), stored);
-  else await set(BLOBS_KEY, stored);
+export async function saveBlobs(
+  blobs: Record<string, BlobRecord>,
+  workspaceId?: string,
+  dek?: CryptoKey | null,
+) {
+  const key = workspaceId ? wsBlobsKey(workspaceId) : BLOBS_KEY;
+  if (dek) await set(key, await encryptJson(blobsToStorable(blobs), dek));
+  else await set(key, persistableBlobs(blobs));
 }
 
 export async function clearFiles(workspaceId?: string) {
@@ -135,22 +287,50 @@ export async function clearFiles(workspaceId?: string) {
   await del(BLOBS_KEY);
 }
 
-export async function loadEvents(workspaceId?: string): Promise<VaultEvent[]> {
-  const key = workspaceId ? wsEventsKey(workspaceId) : EVENTS_KEY;
-  const raw = (await get(key)) as VaultEvent[] | undefined;
-  if (!Array.isArray(raw)) return [];
-  return raw.filter(
-    (e) =>
-      e &&
-      typeof e.id === "string" &&
-      typeof e.title === "string" &&
-      typeof e.date === "string",
-  );
+function normalizeEvent(raw: unknown): VaultEvent | null {
+  if (!raw || typeof raw !== "object") return null;
+  const e = raw as Record<string, unknown>;
+  if (typeof e.id !== "string" || typeof e.title !== "string" || typeof e.date !== "string") return null;
+  const calUrl = typeof e.calUrl === "string" && e.calUrl.trim() ? e.calUrl.trim() : undefined;
+  const calBookingUid =
+    typeof e.calBookingUid === "string" && e.calBookingUid.trim() ? e.calBookingUid.trim() : undefined;
+  const sourceId = typeof e.sourceId === "string" && e.sourceId.trim() ? e.sourceId.trim() : undefined;
+  const uid = typeof e.uid === "string" && e.uid.trim() ? e.uid.trim() : undefined;
+  const sourceKind = e.sourceKind === "google" || e.sourceKind === "ics" ? e.sourceKind : undefined;
+  return {
+    id: e.id,
+    title: e.title,
+    body: typeof e.body === "string" ? e.body : "",
+    date: e.date,
+    project: typeof e.project === "string" && e.project.trim() ? e.project : undefined,
+    tags: Array.isArray(e.tags) ? e.tags.filter((t): t is string => typeof t === "string") : [],
+    ...(calUrl ? { calUrl } : {}),
+    ...(calBookingUid ? { calBookingUid } : {}),
+    ...(sourceId ? { sourceId } : {}),
+    ...(uid ? { uid } : {}),
+    ...(sourceKind ? { sourceKind } : {}),
+    created: typeof e.created === "string" ? e.created : "",
+    updated: typeof e.updated === "string" ? e.updated : "",
+  };
 }
 
-export async function saveEvents(events: VaultEvent[], workspaceId?: string) {
-  if (workspaceId) await set(wsEventsKey(workspaceId), events);
-  else await set(EVENTS_KEY, events);
+export async function loadEvents(
+  workspaceId?: string,
+  dek?: CryptoKey | null,
+): Promise<VaultEvent[]> {
+  const key = workspaceId ? wsEventsKey(workspaceId) : EVENTS_KEY;
+  const raw = await readEncrypted<unknown>(key, dek, [], (v) => v);
+  if (!Array.isArray(raw)) return [];
+  return raw.map(normalizeEvent).filter((e): e is VaultEvent => Boolean(e));
+}
+
+export async function saveEvents(
+  events: VaultEvent[],
+  workspaceId?: string,
+  dek?: CryptoKey | null,
+) {
+  const key = workspaceId ? wsEventsKey(workspaceId) : EVENTS_KEY;
+  await writeEncrypted(key, events, dek);
 }
 
 function isFreeformObject(o: unknown): o is FreeformObject {
@@ -206,7 +386,7 @@ function normalizeBoard(raw: unknown): FreeformBoard | null {
     camera: {
       x: typeof cam.x === "number" ? cam.x : 0,
       y: typeof cam.y === "number" ? cam.y : 0,
-      zoom: typeof cam.zoom === "number" && cam.zoom > 0 ? cam.zoom : 1,
+      zoom: typeof cam.zoom === "number" && cam.zoom > 0 ? Math.min(5, Math.max(0.25, cam.zoom)) : 1,
     },
     updated: typeof b.updated === "string" ? b.updated : new Date().toISOString(),
   };
@@ -236,15 +416,28 @@ export function normalizeBoards(raw: unknown): FreeformBoard[] {
   return [defaultFreeformBoard()];
 }
 
-export async function loadBoards(workspaceId?: string): Promise<FreeformBoard[]> {
+export async function loadBoards(
+  workspaceId?: string,
+  dek?: CryptoKey | null,
+): Promise<FreeformBoard[]> {
   const key = workspaceId ? wsBoardKey(workspaceId) : BOARD_KEY;
-  return normalizeBoards(await get(key));
+  const raw = await get(key);
+  if (raw == null) return [defaultFreeformBoard()];
+  if (isEncryptedEnvelope(raw)) {
+    if (!dek) throw new LockedVaultError();
+    return normalizeBoards(await decryptJson(raw, dek));
+  }
+  return normalizeBoards(raw);
 }
 
-export async function saveBoards(boards: FreeformBoard[], workspaceId?: string) {
+export async function saveBoards(
+  boards: FreeformBoard[],
+  workspaceId?: string,
+  dek?: CryptoKey | null,
+) {
   const list = boards.length ? boards : [defaultFreeformBoard()];
-  if (workspaceId) await set(wsBoardKey(workspaceId), list);
-  else await set(BOARD_KEY, list);
+  const key = workspaceId ? wsBoardKey(workspaceId) : BOARD_KEY;
+  await writeEncrypted(key, list, dek);
 }
 
 export async function deleteWorkspaceStorage(workspaceId: string) {
@@ -333,7 +526,7 @@ export async function walkVault(
   const files: Record<string, string> = {};
   const blobs: Record<string, BlobRecord> = {};
   for await (const [name, handle] of dirEntries(dir)) {
-    if (name.startsWith(".") && name !== ".originals") continue;
+    if (name.startsWith(".") && name !== ".originals" && name !== FOLDER_META_FILE) continue;
     const path = prefix ? `${prefix}/${name}` : name;
     if (handle.kind === "directory") {
       const nested = await walkVault(handle as FileSystemDirectoryHandle, path);

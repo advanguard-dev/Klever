@@ -1,25 +1,34 @@
 import type { Workspace, WorkspaceAiMode, WorkspaceToolId, WorkspaceTools } from "@/types";
 import { nid } from "@/lib/ids";
+import { normalizeWorkspaceLock } from "@/lib/workspace-lock";
 
 export const WORKSPACE_TOOL_OPTIONS: {
   id: WorkspaceToolId;
   label: string;
   hint: string;
 }[] = [
-  { id: "brainDump", label: "Brain Dump", hint: "Organize messy notes into pages and events" },
-  { id: "board", label: "Board", hint: "Freeform whiteboards" },
+  { id: "brainDump", label: "Brain Dump", hint: "Turn a dump into pages, lists, and events" },
+  { id: "meeting", label: "Meetings", hint: "A list of meeting pages, with transcription on each page" },
+  { id: "board", label: "Board", hint: "A freeform canvas" },
   { id: "calendar", label: "Calendar", hint: "Dates and events" },
-  { id: "graph", label: "Graph", hint: "Link map of notes" },
-  { id: "writingTools", label: "Writing tools", hint: "Rewrite / polish in the editor (remote AI)" },
+  { id: "graph", label: "Graph", hint: "A map of linked pages" },
+  { id: "writingTools", label: "Writing tools", hint: "Rewrite and polish in the editor" },
+  {
+    id: "suggestions",
+    label: "Suggestions",
+    hint: "Read a page for events, reminders, lists, and proofreading",
+  },
 ];
 
 export function defaultWorkspaceTools(): WorkspaceTools {
   return {
     brainDump: true,
+    meeting: true,
     board: true,
     calendar: true,
     graph: true,
     writingTools: true,
+    suggestions: true,
   };
 }
 
@@ -28,10 +37,12 @@ export function normalizeWorkspaceTools(tools?: Partial<WorkspaceTools> | null):
   if (!tools) return base;
   return {
     brainDump: tools.brainDump !== false,
+    meeting: tools.meeting !== false,
     board: tools.board !== false,
     calendar: tools.calendar !== false,
     graph: tools.graph !== false,
     writingTools: tools.writingTools !== false,
+    suggestions: tools.suggestions !== false,
   };
 }
 
@@ -67,5 +78,6 @@ export function normalizeWorkspace(raw: unknown): Workspace | null {
     aiMode: normalizeAiMode(typeof w.aiMode === "string" ? w.aiMode : null),
     created: typeof w.created === "string" ? w.created : now,
     updated: typeof w.updated === "string" ? w.updated : now,
+    lock: normalizeWorkspaceLock(w.lock),
   };
 }

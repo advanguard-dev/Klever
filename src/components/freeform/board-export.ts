@@ -3,7 +3,10 @@ import {
   defaultTextVAlign,
   fillValue,
   inkStrokeValue,
+  isNonePaint,
+  resolveShapeTextColor,
   resolveStickyTextColor,
+  shapeOutline,
   stickyBgHex,
   STICKY_COLORS,
   textColorHex,
@@ -56,9 +59,9 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
 function fontFor(family: PageFont | undefined, size: number, bold?: boolean, italic?: boolean) {
   const stack =
     family === "sans"
-      ? '"Instrument Sans", sans-serif'
+      ? '"Geist Variable", sans-serif'
       : family === "mono"
-        ? '"IBM Plex Mono", monospace'
+        ? '"Fira Code", monospace'
         : '"Instrument Serif", serif';
   const weight = bold ? "700" : "400";
   const style = italic ? "italic" : "normal";
@@ -108,36 +111,27 @@ function drawShapePath(
   kind: FreeformShapeKind,
   strokeWidth: number,
 ) {
-  const pad = strokeWidth / 2;
+  const geom = shapeOutline(kind, w, h, strokeWidth);
   ctx.beginPath();
-  if (kind === "ellipse") {
-    ctx.ellipse(
-      x + w / 2,
-      y + h / 2,
-      Math.max(0, w / 2 - pad),
-      Math.max(0, h / 2 - pad),
-      0,
-      0,
-      Math.PI * 2,
-    );
+  if (geom.tag === "ellipse") {
+    ctx.ellipse(x + geom.cx, y + geom.cy, geom.rx, geom.ry, 0, 0, Math.PI * 2);
     return;
   }
-  if (kind === "diamond") {
-    ctx.moveTo(x + w / 2, y + pad);
-    ctx.lineTo(x + w - pad, y + h / 2);
-    ctx.lineTo(x + w / 2, y + h - pad);
-    ctx.lineTo(x + pad, y + h / 2);
-    ctx.closePath();
+  if (geom.tag === "rect") {
+    if (geom.rx > 0 && typeof ctx.roundRect === "function") {
+      ctx.roundRect(x + geom.x, y + geom.y, geom.w, geom.h, geom.rx);
+    } else {
+      ctx.rect(x + geom.x, y + geom.y, geom.w, geom.h);
+    }
     return;
   }
-  if (kind === "triangle") {
-    ctx.moveTo(x + w / 2, y + pad);
-    ctx.lineTo(x + w - pad, y + h - pad);
-    ctx.lineTo(x + pad, y + h - pad);
-    ctx.closePath();
-    return;
-  }
-  ctx.rect(x + pad, y + pad, Math.max(0, w - strokeWidth), Math.max(0, h - strokeWidth));
+  geom.points.forEach((p, i) => {
+    const px = x + p.x;
+    const py = y + p.y;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  });
+  ctx.closePath();
 }
 
 function strokeColor(id: string, ink: string) {
@@ -283,17 +277,19 @@ async function paintObject(
   }
 
   if (obj.type === "shape") {
+    const noneStroke = isNonePaint(obj.stroke);
+    const sw = noneStroke ? 0 : obj.strokeWidth;
     ctx.fillStyle = fillValue(obj.fill);
     ctx.strokeStyle = strokeColor(obj.stroke, ink);
-    ctx.lineWidth = obj.strokeWidth;
-    ctx.setLineDash(canvasDash(obj.strokeDash));
-    drawShapePath(ctx, x, y, w, h, obj.shape, obj.strokeWidth);
+    ctx.lineWidth = sw;
+    ctx.setLineDash(noneStroke ? [] : canvasDash(obj.strokeDash));
+    drawShapePath(ctx, x, y, w, h, obj.shape, sw);
     if (obj.fill && obj.fill !== "none") ctx.fill();
-    ctx.stroke();
+    if (!noneStroke) ctx.stroke();
     ctx.setLineDash([]);
-    if (obj.text) {
-      ctx.fillStyle = /^#/.test(obj.color ?? "") ? obj.color! : textColorHex(obj.color);
-      ctx.font = fontFor(obj.fontFamily, obj.fontSize ?? 14, obj.bold, obj.italic);
+    if (obj.showLabel !== false && obj.text) {
+      ctx.fillStyle = resolveShapeTextColor(obj.color, obj.fill).color;
+      ctx.font = fontFor(obj.fontFamily ?? "sans", obj.fontSize ?? 14, obj.bold, obj.italic);
       ctx.textBaseline = "top";
       const fs = obj.fontSize ?? 14;
       const lh = fs * 1.45;
@@ -408,7 +404,7 @@ async function paintObject(
     const rows = Math.max(1, obj.rows);
     const cw = w / cols;
     const rh = h / rows;
-    ctx.font = '400 11px "IBM Plex Mono", monospace';
+    ctx.font = '400 11px "Fira Code", monospace';
     ctx.textBaseline = "middle";
     ctx.fillStyle = ink;
     for (let r = 0; r < rows; r++) {
@@ -416,9 +412,9 @@ async function paintObject(
         ctx.fillStyle = cssToken("--color-paper-2", "#ebe8e0");
         ctx.fillRect(x, y + r * rh, w, rh);
         ctx.fillStyle = ink;
-        ctx.font = '600 11px "IBM Plex Mono", monospace';
+        ctx.font = '600 11px "Fira Code", monospace';
       } else {
-        ctx.font = '400 11px "IBM Plex Mono", monospace';
+        ctx.font = '400 11px "Fira Code", monospace';
       }
       for (let c = 0; c < cols; c++) {
         ctx.strokeStyle = line;

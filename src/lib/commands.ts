@@ -1,4 +1,5 @@
 import type { DbViewType, InsertCommand, InsertContext, Note } from "@/types";
+import { insertCommandKey, insertSectionKey, t, type Locale } from "@/lib/i18n";
 
 const BLOCKS: InsertCommand[] = [
   { id: "h1", label: "Heading 1", section: "blocks", slash: true, action: "snippet", snippet: "# " },
@@ -9,7 +10,7 @@ const BLOCKS: InsertCommand[] = [
   { id: "todo", label: "To-do", section: "blocks", slash: true, action: "snippet", snippet: "- [ ] " },
   { id: "quote", label: "Quote", section: "blocks", slash: true, action: "snippet", snippet: "> " },
   { id: "callout", label: "Callout", section: "blocks", slash: true, action: "snippet", snippet: "> [!note]\n> " },
-  { id: "transclude", label: "Embed note", section: "blocks", slash: true, action: "snippet", snippet: "![[]]" },
+  { id: "transclude", label: "Embed page", section: "blocks", slash: true, action: "snippet", snippet: "![[]]" },
   { id: "code", label: "Code", section: "blocks", slash: true, action: "snippet", snippet: "```\n\n```\n" },
   { id: "divider", label: "Divider", section: "blocks", slash: true, action: "snippet", snippet: "\n---\n\n" },
   { id: "table", label: "Table", section: "blocks", slash: true, action: "snippet", snippet: "|   |   |\n| --- | --- |\n|   |   |\n" },
@@ -25,12 +26,13 @@ const MEDIA: InsertCommand[] = [
 
 const AI: InsertCommand[] = [
   { id: "dump", label: "Brain dump", section: "ai", slash: true, action: "dump", hint: "⌘⇧D" },
+  { id: "meeting", label: "Meeting notes", section: "ai", slash: true, action: "meeting-notes" },
   { id: "transcribe", label: "Transcribe", section: "ai", slash: true, action: "transcribe" },
 ];
 
 const PAGES: InsertCommand[] = [
-  { id: "page", label: "Blank page", section: "pages", action: "page", hint: "⌘N" },
-  { id: "daily", label: "Daily note", section: "pages", action: "daily" },
+  { id: "page", label: "New page", section: "pages", action: "page", hint: "⌘N" },
+  { id: "daily", label: "Today's note", section: "pages", action: "daily" },
   { id: "new-template", label: "Template page", section: "pages", action: "new-template" },
 ];
 
@@ -49,7 +51,7 @@ export const SECTION_ORDER: Record<InsertContext, InsertCommand["section"][]> = 
   database: ["current", "pages", "databases", "media", "ai", "blocks"],
 };
 
-export function buildCommands(notes: Note[], context: InsertContext): InsertCommand[] {
+export function buildCommands(notes: Note[], context: InsertContext, locale: Locale = "en"): InsertCommand[] {
   const templates = notes.filter((n) => n.template && n.type === "page");
   const dbs: InsertCommand[] = DB_TYPES.map((d) => ({
     id: `db-${d.type}`,
@@ -58,12 +60,12 @@ export function buildCommands(notes: Note[], context: InsertContext): InsertComm
     action: "database",
     viewType: d.type,
   }));
-  const fromTemplates: InsertCommand[] = templates.map((t) => ({
-    id: `tpl-${t.id}`,
-    label: `Template: ${t.title}`,
+  const fromTemplates: InsertCommand[] = templates.map((tpl) => ({
+    id: `tpl-${tpl.id}`,
+    label: t(locale, "insert.template", { title: tpl.title }),
     section: "pages",
     action: "from-template",
-    templateId: t.id,
+    templateId: tpl.id,
   }));
   const current: InsertCommand[] =
     context === "database"
@@ -77,11 +79,14 @@ export function buildCommands(notes: Note[], context: InsertContext): InsertComm
           { id: "view-cal", label: "Calendar view", section: "current", action: "add-view", viewType: "calendar" },
         ]
       : [];
-  return [...current, ...PAGES, ...fromTemplates, ...dbs, ...BLOCKS, ...MEDIA, ...AI];
+  return [...current, ...PAGES, ...fromTemplates, ...dbs, ...BLOCKS, ...MEDIA, ...AI].map((cmd) => {
+    const key = insertCommandKey(cmd.id);
+    return key ? { ...cmd, label: t(locale, key) } : cmd;
+  });
 }
 
-export function slashCommands(notes: Note[]) {
-  return buildCommands(notes, "editor").filter((c) => c.slash);
+export function slashCommands(notes: Note[], locale: Locale = "en") {
+  return buildCommands(notes, "editor", locale).filter((c) => c.slash);
 }
 
 export function filterCommands(cmds: InsertCommand[], q: string) {
@@ -98,6 +103,10 @@ export function grouped(
   return order
     .map((section) => ({ section, items: cmds.filter((c) => c.section === section) }))
     .filter((g) => g.items.length);
+}
+
+export function sectionLabel(section: InsertCommand["section"], locale: Locale) {
+  return t(locale, insertSectionKey(section));
 }
 
 export const SECTION_LABEL: Record<InsertCommand["section"], string> = {

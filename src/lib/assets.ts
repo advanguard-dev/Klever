@@ -281,33 +281,44 @@ export function pickFile(accept: string) {
 
 export type PickedLocalFile = { file: File; handle?: FileSystemFileHandle; localPath?: string };
 
-/** Open a disk/cloud file. Prefer a live handle so we can read in place. */
-export async function pickLocalFile(accept: string): Promise<PickedLocalFile | null> {
+/** Open one or more disk files. Prefer live paths / handles so we can open in place. */
+export async function pickLocalFiles(accept: string, multiple = true): Promise<PickedLocalFile[]> {
   if (window.kleverDesktop?.pickLocalFile) {
     const picked = await window.kleverDesktop.pickLocalFile(accept);
-    if (!picked) return null;
-    return {
-      file: new File([], picked.name, { type: picked.mime }),
-      localPath: picked.localPath,
-    };
+    if (!picked) return [];
+    const list = Array.isArray(picked) ? picked : [picked];
+    return list.map((p) => ({
+      file: new File([], p.name, { type: p.mime }),
+      localPath: p.localPath,
+    }));
   }
   if (typeof window.showOpenFilePicker === "function") {
     try {
       const opts: OpenFilePickerOptions = {
-        multiple: false,
+        multiple,
         excludeAcceptAllOption: false,
       };
       const types = pickerTypes(accept);
       if (types) opts.types = types;
-      const [handle] = await window.showOpenFilePicker(opts);
-      const file = await handle.getFile();
-      return { file, handle };
+      const handles = await window.showOpenFilePicker(opts);
+      const out: PickedLocalFile[] = [];
+      for (const handle of handles) {
+        const file = await handle.getFile();
+        out.push({ file, handle });
+      }
+      return out;
     } catch (e) {
-      if ((e as { name?: string }).name === "AbortError") return null;
+      if ((e as { name?: string }).name === "AbortError") return [];
     }
   }
-  const file = await pickFile(accept);
-  return file ? { file } : null;
+  const files = await pickFiles(inputAccept(accept) || "*/*", multiple);
+  return files.map((file) => ({ file }));
+}
+
+/** @deprecated use pickLocalFiles — kept for single-file callers */
+export async function pickLocalFile(accept: string): Promise<PickedLocalFile | null> {
+  const list = await pickLocalFiles(accept, false);
+  return list[0] ?? null;
 }
 
 function inputAccept(accept: string) {

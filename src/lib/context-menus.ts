@@ -1,6 +1,17 @@
+import { noteFolder } from "@/lib/folders";
 import { normalizeWorkspaceTools } from "@/lib/workspaces";
+import { isEncryptedWorkspace } from "@/lib/workspace-lock";
+import {
+  eventGoogleHref,
+  openExternalCalendar,
+  providerOpenHref,
+} from "@/lib/calendar-sync";
+import { downloadEventIcs } from "@/lib/ics";
+import { openOrCreateNotesForEvent } from "@/lib/meetings";
+import { schemaTarget, schemaWithItemColor } from "@/lib/prop-schema";
 import { useApp } from "@/store";
 import type { Note, VaultEvent } from "@/types";
+import { wikiDisplayOptions, type WikiDisplay } from "@/lib/wiki-display";
 import type { LucideIcon } from "lucide-react";
 
 export type ContextMenuAction = {
@@ -15,7 +26,14 @@ export type ContextMenuAction = {
   onSelect: () => void;
 };
 
-export type ContextMenuItem = ContextMenuAction | { type: "sep" };
+export type ContextMenuSwatches = {
+  type: "swatches";
+  id: string;
+  value?: string;
+  onPick: (id: string | undefined) => void;
+};
+
+export type ContextMenuItem = ContextMenuAction | { type: "sep" } | ContextMenuSwatches;
 
 export async function copyText(text: string) {
   try {
@@ -31,10 +49,13 @@ function openNote(note: Note) {
   );
 }
 
-function deleteConfirm(name: string): NonNullable<Extract<ContextMenuItem, { id: string }>["confirm"]> {
+function deleteConfirm(
+  name: string,
+  description = "This cannot be undone.",
+): NonNullable<ContextMenuAction["confirm"]> {
   return {
     title: `Delete ${name}?`,
-    description: "This cannot be undone.",
+    description,
     confirmLabel: "Delete",
   };
 }
@@ -77,6 +98,7 @@ export function noteMenuItems(note: Note, opts?: { closeTab?: boolean }): Contex
       label: "Copy path",
       onSelect: () => void copyText(note.path),
     },
+    ...moveFolderItems(note),
     {
       id: "close",
       label: "Close",
@@ -98,14 +120,47 @@ export function noteMenuItems(note: Note, opts?: { closeTab?: boolean }): Contex
       id: "delete",
       label: "Delete",
       danger: true,
-      confirm: deleteConfirm(note.title || "this page"),
+      confirm: deleteConfirm(
+        note.title || "this page",
+        "The file is removed from the vault. This cannot be undone.",
+      ),
       onSelect: () => s.deleteNote(note.id),
     },
   ];
 }
 
-export function folderMenuItems(path: string): ContextMenuItem[] {
+function moveFolderItems(note: Note): ContextMenuItem[] {
   const s = useApp.getState();
+  const current = noteFolder(note.path);
+  const folders = [...new Set(s.notes.map((n) => noteFolder(n.path)).filter(Boolean))].sort();
+  const items: ContextMenuItem[] = [
+    {
+      id: "move-root",
+      label: "Move to vault root",
+      hidden: !current,
+      onSelect: () => s.moveNoteToFolder(note.id, ""),
+    },
+  ];
+  for (const f of folders.slice(0, 8)) {
+    if (f === current) continue;
+    items.push({
+      id: `move-${f}`,
+      label: `Move to ${f}`,
+      onSelect: () => s.moveNoteToFolder(note.id, f),
+    });
+  }
+  const visible = items.filter((i) => !("type" in i) && !i.hidden);
+  if (!visible.length) return [];
+  return [{ type: "sep" }, ...items];
+}
+
+export function folderMenuItems(
+  path: string,
+  ui?: { onRename?: () => void; onChangeIcon?: () => void },
+): ContextMenuItem[] {
+  const s = useApp.getState();
+  const name = path.includes("/") ? path.slice(path.lastIndexOf("/") + 1) : path;
+  const nested = s.notes.filter((n) => n.path.startsWith(`${path}/`)).length;
   return [
     {
       id: "page",
@@ -119,9 +174,57 @@ export function folderMenuItems(path: string): ContextMenuItem[] {
     },
     { type: "sep" },
     {
+      id: "rename",
+      label: "Rename",
+      onSelect: () => ui?.onRename?.(),
+    },
+    {
+      id: "icon",
+      label: "Change icon",
+      onSelect: () => ui?.onChangeIcon?.(),
+    },
+    {
       id: "copy-path",
       label: "Copy path",
       onSelect: () => void copyText(path),
+    },
+    { type: "sep" },
+    {
+      id: "delete",
+      label: "Delete",
+      danger: true,
+      confirm: deleteConfirm(
+        name || "this folder",
+        nested
+          ? `${nested} page${nested === 1 ? "" : "s"} in this folder will be removed from the vault. This cannot be undone.`
+          : "This folder is removed from the vault. This cannot be undone.",
+      ),
+      onSelect: () => s.deleteFolder(path),
+    },
+  ];
+}
+
+export function propValueMenuItems(note: Note, field: string, item: string): ContextMenuItem[] {
+  const s = useApp.getState();
+  const host = schemaTarget(note, s.notes);
+  const spec = (host.schema ?? []).find((p) => p.key === field);
+  const current = spec?.itemColors?.[item];
+  return [
+    {
+      type: "swatches",
+      id: `hue-${field}-${item}`,
+      value: current,
+      onPick: (id) => {
+        s.patchNote(host.id, {
+          schema: schemaWithItemColor(host.schema ?? [], field, item, id),
+        });
+      },
+    },
+    { type: "sep" },
+    {
+      id: "copy-value",
+      label: "Copy",
+      onSelect: () => void copyText(item),
     },
   ];
 }
@@ -176,7 +279,10 @@ export function boardMenuItems(id: string, title: string): ContextMenuItem[] {
       label: "Delete",
       danger: true,
       hidden: s.boards.length <= 1,
-      confirm: deleteConfirm(title || "this board"),
+      confirm: deleteConfirm(
+        title || "this board",
+        "This board is removed. This cannot be undone.",
+      ),
       onSelect: () => s.deleteBoard(id),
     },
   ];
@@ -197,12 +303,38 @@ export function duplicateBoard(id: string) {
 
 export function eventMenuItems(event: VaultEvent, onOpen?: () => void): ContextMenuItem[] {
   const s = useApp.getState();
+  const source = event.sourceId ? s.calendarSources.find((c) => c.id === event.sourceId) : undefined;
+  const googleHref = eventGoogleHref(event, source);
+  const appleHref = event.sourceKind === "apple" && source ? providerOpenHref(source) : null;
   return [
     {
       id: "open",
       label: "Open",
       hidden: !onOpen,
       onSelect: () => onOpen?.(),
+    },
+    {
+      id: "notes",
+      label: "Take notes",
+      onSelect: () => openOrCreateNotesForEvent(event),
+    },
+    {
+      id: "google",
+      label: "Open in Google Calendar",
+      hidden: !googleHref,
+      onSelect: () => googleHref && openExternalCalendar(googleHref),
+    },
+    {
+      id: "apple-open",
+      label: "Open in Apple Calendar",
+      hidden: !appleHref,
+      onSelect: () => appleHref && openExternalCalendar(appleHref),
+    },
+    {
+      id: "apple-ics",
+      label: "Add to Apple Calendar",
+      hidden: Boolean(event.sourceId),
+      onSelect: () => downloadEventIcs(event),
     },
     {
       id: "copy",
@@ -212,18 +344,42 @@ export function eventMenuItems(event: VaultEvent, onOpen?: () => void): ContextM
     { type: "sep" },
     {
       id: "delete",
-      label: "Delete",
+      label: event.sourceId ? "Hide locally" : "Delete",
       danger: true,
-      confirm: deleteConfirm(event.title || "this event"),
+      confirm: deleteConfirm(
+        event.title || "this event",
+        event.sourceId
+          ? "Removed from Klever only. The event stays on the remote calendar."
+          : "This local event is removed from the calendar. This cannot be undone.",
+      ),
       onSelect: () => s.deleteEvent(event.id),
     },
   ];
 }
 
-export function wikiMenuItems(target: string, hit?: Note | null): ContextMenuItem[] {
+export function wikiMenuItems(
+  target: string,
+  hit?: Note | null,
+  opts?: {
+    display?: WikiDisplay;
+    onDisplay?: (display: WikiDisplay) => void;
+  },
+): ContextMenuItem[] {
   const s = useApp.getState();
-  if (hit) return noteMenuItems(hit);
+  const displayItems: ContextMenuItem[] = opts?.onDisplay
+    ? [
+        ...wikiDisplayOptions().map((o) => ({
+          id: `display-${o.value}`,
+          label: o.label,
+          hint: opts.display === o.value ? "●" : undefined,
+          onSelect: () => opts.onDisplay!(o.value),
+        })),
+        { type: "sep" as const },
+      ]
+    : [];
+  if (hit) return [...displayItems, ...noteMenuItems(hit)];
   return [
+    ...displayItems,
     {
       id: "create",
       label: `Create “${target}”`,
@@ -263,10 +419,23 @@ export function appMenuItems(): ContextMenuItem[] {
       onSelect: () => s.setView({ kind: "calendar" }),
     },
     {
+      id: "meeting",
+      label: "Meetings",
+      hint: "⌘⇧M",
+      hidden: !tools.meeting,
+      onSelect: () => s.setView({ kind: "meeting" }),
+    },
+    {
       id: "graph",
       label: "Graph",
       hidden: !tools.graph,
       onSelect: () => s.setView({ kind: "graph" }),
+    },
+    {
+      id: "lock",
+      label: "Lock workspace",
+      hidden: !isEncryptedWorkspace(s.workspaces.find((w) => w.id === s.activeWorkspaceId)) || !s.unlocked,
+      onSelect: () => void s.lockWorkspace(),
     },
     {
       id: "sidebar",

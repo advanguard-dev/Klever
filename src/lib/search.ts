@@ -1,4 +1,5 @@
 import Fuse from "fuse.js";
+import { semanticSearch } from "@/lib/semantic-search";
 import type { Note } from "@/types";
 
 export function searchSnippet(body: string, q: string, radius = 72) {
@@ -13,9 +14,22 @@ export function searchSnippet(body: string, q: string, radius = 72) {
   return `${from > 0 ? "…" : ""}${slice}${to < body.length ? "…" : ""}`;
 }
 
-export function searchNotes(notes: Note[], q: string) {
+export function searchNotes(notes: Note[], q: string, opts?: { semantic?: boolean }) {
   const query = q.trim();
   if (!query) return notes;
+
+  if (opts?.semantic) {
+    const hits = semanticSearch(
+      notes.map((n) => ({ id: n.id, title: n.title, text: `${n.tags.join(" ")} ${n.body}` })),
+      query,
+      40,
+    );
+    if (hits.length) {
+      const byId = new Map(notes.map((n) => [n.id, n]));
+      return hits.map((h) => byId.get(h.id)).filter((n): n is Note => Boolean(n));
+    }
+  }
+
   const fuse = new Fuse(notes, {
     keys: [
       { name: "title", weight: 0.5 },

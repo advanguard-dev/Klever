@@ -42,6 +42,20 @@ export function boxesIntersect(a: Box, b: Box) {
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
+export function pointInBox(x: number, y: number, box: Box) {
+  return x >= box.x && y >= box.y && x <= box.x + box.w && y <= box.y + box.h;
+}
+
+/** Topmost object whose bounds contain the world point (shape/mind bodies included). */
+export function hitBoardObjectAt(objects: FreeformObject[], x: number, y: number): FreeformObject | null {
+  let best: FreeformObject | null = null;
+  for (const o of objects) {
+    if (!pointInBox(x, y, o)) continue;
+    if (!best || o.z >= best.z) best = o;
+  }
+  return best;
+}
+
 export function unionBoxes(objects: Box[]): Box | null {
   if (!objects.length) return null;
   let l = objects[0].x;
@@ -61,6 +75,55 @@ export function marqueeBox(x0: number, y0: number, x1: number, y1: number): Box 
   const x = Math.min(x0, x1);
   const y = Math.min(y0, y1);
   return { x, y, w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
+}
+
+/** Drag-to-draw a shape. Shift locks square; Option/Alt expands from the click origin. */
+export function shapeDraftBox(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  opts: { shift?: boolean; fromCenter?: boolean } = {},
+): Box {
+  let dx = x1 - x0;
+  let dy = y1 - y0;
+  if (opts.shift) {
+    const s = Math.max(Math.abs(dx), Math.abs(dy));
+    dx = Math.sign(dx || 1) * s;
+    dy = Math.sign(dy || 1) * s;
+  }
+  if (opts.fromCenter) {
+    return { x: x0 - Math.abs(dx), y: y0 - Math.abs(dy), w: Math.abs(dx) * 2, h: Math.abs(dy) * 2 };
+  }
+  return marqueeBox(x0, y0, x0 + dx, y0 + dy);
+}
+
+/** Swap selected objects one z-step toward the front (1) or back (-1). */
+export function nudgeZ(objects: FreeformObject[], ids: string[], dir: 1 | -1): FreeformObject[] {
+  const idSet = new Set(ids);
+  const order = [...objects].sort((a, b) => a.z - b.z).map((o) => o.id);
+  if (dir === 1) {
+    for (let i = order.length - 2; i >= 0; i--) {
+      if (idSet.has(order[i]) && !idSet.has(order[i + 1])) {
+        const tmp = order[i];
+        order[i] = order[i + 1];
+        order[i + 1] = tmp;
+      }
+    }
+  } else {
+    for (let i = 1; i < order.length; i++) {
+      if (idSet.has(order[i]) && !idSet.has(order[i - 1])) {
+        const tmp = order[i];
+        order[i] = order[i - 1];
+        order[i - 1] = tmp;
+      }
+    }
+  }
+  const zOf = new Map(order.map((id, i) => [id, i]));
+  return objects.map((o) => {
+    const z = zOf.get(o.id);
+    return z === undefined || z === o.z ? o : { ...o, z };
+  });
 }
 
 function clampSize(w: number, h: number) {
@@ -329,13 +392,13 @@ export function cloneSelection(
   return { objects: cloned, connections: nextConnections };
 }
 
-export const RESIZE_HANDLES: { handle: ResizeHandle; className: string }[] = [
-  { handle: "nw", className: "left-0 top-0 -translate-x-1/2 -translate-y-1/2 cursor-nwse-resize" },
-  { handle: "n", className: "left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 cursor-ns-resize" },
-  { handle: "ne", className: "right-0 top-0 translate-x-1/2 -translate-y-1/2 cursor-nesw-resize" },
-  { handle: "e", className: "right-0 top-1/2 translate-x-1/2 -translate-y-1/2 cursor-ew-resize" },
-  { handle: "se", className: "right-0 bottom-0 translate-x-1/2 translate-y-1/2 cursor-nwse-resize" },
-  { handle: "s", className: "left-1/2 bottom-0 -translate-x-1/2 translate-y-1/2 cursor-ns-resize" },
-  { handle: "sw", className: "left-0 bottom-0 -translate-x-1/2 translate-y-1/2 cursor-nesw-resize" },
-  { handle: "w", className: "left-0 top-1/2 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize" },
+export const RESIZE_HANDLES: { handle: ResizeHandle; className: string; hx: string; hy: string }[] = [
+  { handle: "nw", className: "left-0 top-0 cursor-nwse-resize", hx: "-50%", hy: "-50%" },
+  { handle: "n", className: "left-1/2 top-0 cursor-ns-resize", hx: "-50%", hy: "-50%" },
+  { handle: "ne", className: "right-0 top-0 cursor-nesw-resize", hx: "50%", hy: "-50%" },
+  { handle: "e", className: "right-0 top-1/2 cursor-ew-resize", hx: "50%", hy: "-50%" },
+  { handle: "se", className: "right-0 bottom-0 cursor-nwse-resize", hx: "50%", hy: "50%" },
+  { handle: "s", className: "left-1/2 bottom-0 cursor-ns-resize", hx: "-50%", hy: "50%" },
+  { handle: "sw", className: "left-0 bottom-0 cursor-nesw-resize", hx: "-50%", hy: "50%" },
+  { handle: "w", className: "left-0 top-1/2 cursor-ew-resize", hx: "-50%", hy: "-50%" },
 ];

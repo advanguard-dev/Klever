@@ -10,7 +10,7 @@ function attr(el: HTMLElement, key: string) {
 
 function VaultFileView({ node, updateAttributes, editor }: ReactNodeViewProps) {
   return (
-    <NodeViewWrapper>
+    <NodeViewWrapper data-drag-handle="" className="vault-file-node">
       <FileAttachment
         src={String(node.attrs.src ?? "")}
         name={String(node.attrs.name ?? "")}
@@ -22,7 +22,7 @@ function VaultFileView({ node, updateAttributes, editor }: ReactNodeViewProps) {
   );
 }
 
-/** Local attachments with link / preview / card display. */
+/** Local attachments as link or card — opens on disk, no in-app preview. */
 export const VaultFile = Node.create({
   name: "vaultFile",
   group: "block",
@@ -33,7 +33,7 @@ export const VaultFile = Node.create({
       src: { default: null },
       name: { default: "" },
       kind: { default: "file" },
-      display: { default: "preview" },
+      display: { default: "card" },
     };
   },
   parseHTML() {
@@ -55,7 +55,7 @@ export const VaultFile = Node.create({
           src: (el as HTMLElement).getAttribute("src"),
           name: "audio",
           kind: "audio",
-          display: "preview",
+          display: "card",
         }),
       },
       {
@@ -64,7 +64,7 @@ export const VaultFile = Node.create({
           src: (el as HTMLElement).getAttribute("src"),
           name: "video",
           kind: "video",
-          display: "preview",
+          display: "card",
         }),
       },
       {
@@ -73,7 +73,7 @@ export const VaultFile = Node.create({
           src: (el as HTMLElement).getAttribute("src"),
           name: (el as HTMLElement).getAttribute("title") || "PDF",
           kind: "pdf",
-          display: "preview",
+          display: "card",
         }),
       },
     ];
@@ -92,8 +92,9 @@ export const VaultFile = Node.create({
         "data-src": src ?? "",
         "data-name": name ?? "",
         "data-kind": kind ?? "file",
-        "data-display": display ?? "preview",
+        "data-display": display === "link" ? "link" : "card",
       }),
+      "\u200b",
     ];
   },
   addNodeView() {

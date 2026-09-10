@@ -1,6 +1,6 @@
 import { assetKindFromPath } from "@/lib/assets";
 import { defaultFileDisplay, serializeFileMarkdown } from "@/lib/file-display";
-import { insertInEditor } from "@/lib/editor-bridge";
+import { insertOrAppendToOpenNote } from "@/lib/editor-bridge";
 import { fileToNote, normalizeNote } from "@/lib/parse";
 import { noteFolder } from "@/lib/folders";
 import { nid, slugify } from "@/lib/ids";
@@ -19,7 +19,7 @@ function uniquePathLocal(notes: Note[], path: string, id: string) {
 /** Import / attach files dropped from Finder or the OS file manager. */
 export async function handleDroppedFiles(
   files: FileList | File[],
-  opts?: { folder?: string; attachToNoteId?: string },
+  opts?: { folder?: string; attachToNoteId?: string; at?: { clientX: number; clientY: number } },
 ) {
   const list = [...files].filter((f) => f.name && f.size >= 0);
   if (!list.length) return;
@@ -65,7 +65,15 @@ export async function handleDroppedFiles(
   if (!snippets.length) return;
 
   const joined = `${snippets.join("\n\n")}\n`;
+  const dropAt = opts?.at;
   const targetId = opts?.attachToNoteId ?? (app.view.kind === "note" ? app.view.id : null);
+
+  // Insert into the live editor at drop point / cursor — patching the store loses to dirty local body.
+  if (targetId && app.view.kind === "note" && app.view.id === targetId) {
+    if (insertOrAppendToOpenNote(joined, dropAt)) return;
+  } else if (!targetId && insertOrAppendToOpenNote(joined, dropAt)) {
+    return;
+  }
 
   if (targetId) {
     const note = app.notes.find((n) => n.id === targetId);
@@ -75,7 +83,8 @@ export async function handleDroppedFiles(
       return;
     }
   }
-  if (insertInEditor(joined)) return;
+
+  if (insertOrAppendToOpenNote(joined, dropAt)) return;
 
   app.createPage({
     title: assetFiles[0]?.name?.replace(/\.[^.]+$/, "") || "Attachments",
@@ -90,8 +99,12 @@ export function dropNoteToFolder(draggedId: string, folder: string) {
   const app = useApp.getState();
   const dragged = app.notes.find((n) => n.id === draggedId);
   if (!dragged) return;
-  if (dragged.id === draggedId && noteFolder(dragged.path) === folder && !folder) return;
   app.moveNoteToFolder(draggedId, folder);
+}
+
+export function dropFolderToFolder(from: string, dest: string) {
+  if (!from) return;
+  useApp.getState().moveFolder(from, dest);
 }
 
 export function dropNoteNearNote(draggedId: string, target: Note) {

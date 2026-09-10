@@ -1,22 +1,30 @@
+import { ProofreadPanel, SuggestionsPanel } from "@/components/ai/SuggestionsRail";
 import { MarkdownPreview } from "@/components/editor/MarkdownPreview";
 import { WikiPeek } from "@/components/editor/WikiPeek";
 import { EmptyState, IconButton, MonoLabel, TextArea, TextButton } from "@/components/ui";
 import { useContextMenu } from "@/components/ContextMenu";
 import { ChromeIcon, NoteLabel } from "@/lib/chrome-icons";
 import { noteMenuItems, tagMenuItems } from "@/lib/context-menus";
+import { estimatePageAiCost, formatUsd } from "@/lib/ai-cost";
+import { resolveAiModel } from "@/lib/ai";
 import { backlinks, relationsTo, unlinkedMentions } from "@/lib/graph";
+import { useT } from "@/lib/use-t";
+import { defaultWorkspaceTools } from "@/lib/workspaces";
 import { extractOutline, extractWikilinks, resolveLink, scrollToHeading } from "@/lib/parse";
 import { useApp } from "@/store";
 import type { Note, NoteComment } from "@/types";
 import {
   AtSign,
   Check,
+  Coins,
   CornerDownLeft,
   GitBranch,
   Link2,
   List,
   MessageSquare,
   RotateCcw,
+  Sparkles,
+  SpellCheck2,
   Users,
   X,
 } from "lucide-react";
@@ -32,6 +40,16 @@ export function RightRail() {
   const addComment = useApp((s) => s.addComment);
   const resolveComment = useApp((s) => s.resolveComment);
   const removeComment = useApp((s) => s.removeComment);
+  const ai = useApp((s) => s.ai);
+  const aiModel = resolveAiModel(ai, "writing");
+  const aiEndpoint = ai.endpoint;
+  const workspaces = useApp((s) => s.workspaces);
+  const activeWorkspaceId = useApp((s) => s.activeWorkspaceId);
+  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
+  const tools = activeWorkspace?.tools ?? defaultWorkspaceTools();
+  // Suggestions need a remote model; local workspaces stay offline.
+  const suggestionsEnabled = tools.suggestions && (activeWorkspace?.aiMode ?? "remote") === "remote";
+  const t = useT();
   const { open } = useContextMenu();
 
   const id = view.kind === "note" || view.kind === "database" ? view.id : null;
@@ -47,20 +65,30 @@ export function RightRail() {
     }
     let mo: MutationObserver | null = null;
     let rootMo: MutationObserver | null = null;
+    let t = 0;
     const syncFrom = (el: HTMLElement) => {
-      setEditorText(el.innerText || el.textContent || "");
+      const raw = el.textContent || "";
+      setEditorText(raw);
+      if (raw.length > 80_000) {
+        setLiveWiki("");
+        return;
+      }
       const marks = [...el.querySelectorAll<HTMLElement>("[data-wiki]")]
         .map((node) => node.getAttribute("data-wiki")?.trim())
         .filter((t): t is string => Boolean(t));
-      setLiveWiki(marks.map((t) => `[[${t}]]`).join("\n"));
+      setLiveWiki(marks.map((title) => `[[${title}]]`).join("\n"));
     };
     const attach = () => {
       const el = document.querySelector<HTMLElement>(".ProseMirror, .cm-content");
       if (!el) return false;
+      const syncSoon = () => {
+        window.clearTimeout(t);
+        t = window.setTimeout(() => syncFrom(el), 400);
+      };
       syncFrom(el);
       mo?.disconnect();
-      mo = new MutationObserver(() => syncFrom(el));
-      mo.observe(el, { childList: true, subtree: true, characterData: true, attributes: true });
+      mo = new MutationObserver(syncSoon);
+      mo.observe(el, { childList: true, subtree: true, characterData: true });
       return true;
     };
     if (!attach()) {
@@ -71,6 +99,7 @@ export function RightRail() {
       rootMo.observe(root, { childList: true, subtree: true });
     }
     return () => {
+      window.clearTimeout(t);
       mo?.disconnect();
       rootMo?.disconnect();
     };
@@ -90,10 +119,10 @@ export function RightRail() {
       <button
         type="button"
         aria-label="Close context"
-        className="absolute inset-0 z-30 bg-ink/15 lg:hidden"
+        className="absolute inset-0 z-30 bg-ink/20 lg:hidden"
         onClick={toggleProps}
       />
-      <aside className="absolute inset-y-0 right-0 z-40 flex h-full w-[min(100%,20rem)] shrink-0 flex-col overflow-y-auto border-l border-line bg-paper p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] lg:static lg:w-64">
+      <aside className="absolute inset-y-0 right-0 z-40 flex h-full w-[min(100%,20rem)] shrink-0 flex-col overflow-y-auto border-l border-line bg-blotter p-5 pb-[max(1.25rem,env(safe-area-inset-bottom))] lg:static lg:w-64">
         {children}
       </aside>
     </>
@@ -104,7 +133,7 @@ export function RightRail() {
     return frame(
       <>
         <MonoLabel>Context</MonoLabel>
-        <p className="mt-4 text-sm text-mute">Open a note for outline, links, and comments.</p>
+        <p className="mt-4 text-sm text-mute">Open a page for outline, links, and comments.</p>
       </>,
     );
   }
@@ -152,7 +181,7 @@ export function RightRail() {
             <button
               key={`${h.level}-${h.text}`}
               type="button"
-              className="block w-full truncate py-0.5 text-left text-sm text-mute hover:bg-paper-2 hover:text-ink"
+              className="klever-focus block w-full truncate rounded-md py-0.5 text-left text-sm text-mute hover:bg-ink/[0.06] hover:text-ink"
               style={{ paddingLeft: (h.level - 1) * 10 }}
               onClick={() => scrollToHeading(h.text)}
             >
@@ -160,7 +189,7 @@ export function RightRail() {
             </button>
           ))
         ) : (
-          <p className="text-sm text-faint">No headings. Add # in the page.</p>
+          <p className="text-sm text-faint">No headings yet. Start a line with #.</p>
         )}
       </Rail>
       <Rail title="Links" icon={Link2}>
@@ -173,7 +202,7 @@ export function RightRail() {
             </div>
           ))
         ) : (
-          <p className="text-sm text-faint">No outgoing links. Type [[ to add one.</p>
+          <p className="text-sm text-faint">No links out. Type [[ to add one.</p>
         )}
       </Rail>
       <Rail title="Backlinks" icon={CornerDownLeft}>
@@ -195,7 +224,7 @@ export function RightRail() {
             <button
               key={n.id}
               type="button"
-              className="block truncate py-0.5 text-left font-serif text-sm text-mute hover:bg-paper-2 hover:text-ink"
+              className="klever-focus block truncate rounded-md py-0.5 text-left text-sm text-mute hover:bg-ink/[0.06] hover:text-ink"
               onClick={() => setView({ kind: "note", id: n.id })}
               onContextMenu={(e) => open(e, noteMenuItems(n))}
             >
@@ -203,7 +232,7 @@ export function RightRail() {
             </button>
           ))
         ) : (
-          <p className="text-sm text-faint">No unlinked mentions.</p>
+          <p className="text-sm text-faint">No unlinked mentions of this title.</p>
         )}
       </Rail>
       <Rail title="Relations" icon={GitBranch}>
@@ -212,7 +241,7 @@ export function RightRail() {
             <button
               key={n.id}
               type="button"
-              className="block truncate py-0.5 text-left font-serif text-sm text-mute hover:bg-paper-2 hover:text-ink"
+              className="klever-focus block truncate rounded-md py-0.5 text-left text-sm text-mute hover:bg-ink/[0.06] hover:text-ink"
               onClick={() => setView({ kind: "note", id: n.id })}
               onContextMenu={(e) => open(e, noteMenuItems(n))}
             >
@@ -223,6 +252,17 @@ export function RightRail() {
           <p className="text-sm text-faint">No database relations.</p>
         )}
       </Rail>
+      {suggestionsEnabled && (
+        <>
+          <Rail title={t("suggest.title")} icon={Sparkles}>
+            <SuggestionsPanel note={note} />
+          </Rail>
+          <Rail title={t("proof.title")} icon={SpellCheck2}>
+            <ProofreadPanel note={note} />
+          </Rail>
+        </>
+      )}
+      <AiUsageRail note={note} liveBody={editorText} model={aiModel} endpoint={aiEndpoint} />
       {here.length > 0 && (
         <Rail title="Here" icon={Users}>
           <p className="text-sm text-mute">
@@ -245,6 +285,42 @@ export function RightRail() {
         }}
       />
     </>,
+  );
+}
+
+function AiUsageRail({
+  note,
+  liveBody,
+  model,
+  endpoint,
+}: {
+  note: Note;
+  liveBody: string;
+  model: string;
+  endpoint: string;
+}) {
+  const estimate = useMemo(
+    () => estimatePageAiCost(note, model, endpoint, liveBody),
+    [note, model, endpoint, liveBody],
+  );
+  const tokenLabel = estimate.tokens.toLocaleString();
+  const costLine =
+    estimate.costUsd == null
+      ? "rate unknown"
+      : estimate.costUsd === 0
+        ? "est. $0"
+        : `est. ${formatUsd(estimate.costUsd)}`;
+
+  return (
+    <Rail title="AI usage" icon={Coins}>
+      <p className="text-sm text-mute">
+        {tokenLabel} tokens · {costLine}
+      </p>
+      <p className="mt-0.5 truncate font-mono text-[10px] text-faint">{estimate.model}</p>
+      <p className="mt-2 text-[12px] leading-relaxed text-faint">
+        Page size if sent as context, not live API billing. Tokens ≈ characters ÷ 4.
+      </p>
+    </Rail>
   );
 }
 
@@ -302,7 +378,7 @@ function CommentsRail({
   return (
     <Rail title="Comments" icon={MessageSquare}>
       {open.length === 0 && done.length === 0 && (
-        <p className="text-sm text-faint">Leave a note. Use @ to mention a page.</p>
+        <p className="text-sm text-faint">Leave a comment. Use @ to mention a page.</p>
       )}
       {open.map((c) => (
         <CommentItem
@@ -336,17 +412,17 @@ function CommentsRail({
             submit();
           }
         }}
-        placeholder="Comment…  @ to mention"
+        placeholder="Comment… @ to mention a page"
         rows={2}
         className="mt-3 resize-none text-sm"
       />
       {mentionHits.length > 0 && (
-        <ul className="mt-1 overflow-hidden rounded-xl border border-line">
+        <ul className="mt-1 overflow-hidden rounded-lg border border-line">
           {mentionHits.map((n) => (
             <li key={n.id}>
               <button
                 type="button"
-                className="flex w-full items-center gap-2 truncate px-2 py-1 text-left font-serif text-[11px] text-mute hover:bg-paper-2 hover:text-ink"
+                className="klever-focus flex w-full items-center gap-2 truncate px-2 py-1 text-left text-[11px] text-mute hover:bg-ink/[0.06] hover:text-ink"
                 onClick={() => setDraft((d) => d.replace(/@([^\s@]*)$/, `@${n.title} `))}
               >
                 <AtSign size={12} strokeWidth={1.4} className="shrink-0 text-faint" />
@@ -427,7 +503,7 @@ export function TagPage({ tag }: { tag: string }) {
       }}
     >
       <MonoLabel>Tag</MonoLabel>
-      <h1 className="mt-3 font-serif text-4xl italic tracking-tight text-tag">#{tag}</h1>
+      <h1 className="mt-3 font-serif text-4xl font-semibold tracking-tight text-tag">#{tag}</h1>
       {hits.length === 0 ? (
         <EmptyState
           className="px-0 py-8"

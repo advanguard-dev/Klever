@@ -4,9 +4,13 @@ import {
   boardFontClass,
   fillValue,
   inkStrokeValue,
+  isNonePaint,
+  polyToPointsAttr,
+  resolveShapeTextColor,
   resolveStickyTextColor,
   resizeTableCells,
-  stickyClass,
+  shapeOutline,
+  stickyBgHex,
   strokeDashArray,
   textAlignClass,
   textColorClass,
@@ -57,9 +61,9 @@ export function BoardObject({
   const notes = useApp((s) => s.notes);
 
   const shell = cn(
-    "absolute select-none",
+    "absolute overflow-visible select-none",
     !interactive && "pointer-events-none",
-    selected && "ring-2 ring-ink/30 ring-offset-2 ring-offset-transparent",
+    selected && "is-board-sel",
   );
 
   const handlePointerDown = (e: ReactPointerEvent) => {
@@ -80,7 +84,12 @@ export function BoardObject({
       <button
         type="button"
         aria-label="Remove"
-        className="absolute -right-2 -top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-line bg-paper text-mute shadow-sm hover:text-ink"
+        data-board-ui=""
+        className="klever-focus pointer-events-auto absolute left-full top-0 z-30 flex h-7 w-7 items-center justify-center rounded-full border border-line bg-paper text-mute shadow-sm hover:text-ink"
+        style={{
+          transform: "translate(6px, calc(-100% - 6px)) scale(var(--board-ui-scale))",
+          transformOrigin: "bottom left",
+        }}
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();
@@ -103,6 +112,7 @@ export function BoardObject({
       <div
         className={shell}
         style={{ left: obj.x, top: obj.y, width: obj.w, height: obj.h, zIndex: obj.z }}
+        data-board-object=""
         onPointerDown={handlePointerDown}
         onContextMenu={handleContextMenu}
       >
@@ -137,11 +147,12 @@ export function BoardObject({
     return (
       <div
         className={cn(
-          "absolute select-none",
+          "absolute overflow-visible select-none",
           !interactive && "pointer-events-none",
-          selected && !editing && "outline outline-1 outline-dashed outline-ink/25 outline-offset-4",
+          selected && !editing && "is-board-sel-dash",
         )}
         style={{ left: obj.x, top: obj.y, width: obj.w, height: obj.h, minHeight: obj.h, zIndex: obj.z }}
+        data-board-object=""
         onPointerDown={handlePointerDown}
         onContextMenu={handleContextMenu}
         onDoubleClick={(e) => {
@@ -161,7 +172,7 @@ export function BoardObject({
           <textarea
             autoFocus
             className={cn(
-              "w-full min-h-[1.5em] resize-none bg-transparent outline-none",
+              "h-full min-h-[2.75rem] w-full min-w-[12rem] resize-none rounded-md bg-paper/70 px-1.5 py-1 outline-none ring-1 ring-ink/25",
               fontCls,
               emphCls,
               colorCls,
@@ -180,11 +191,11 @@ export function BoardObject({
         ) : (
           <p
             className={cn(
-              "min-h-[1.5em] w-full whitespace-pre-wrap break-words",
+              "min-h-[2.75rem] w-full min-w-[12rem] whitespace-pre-wrap break-words rounded-md px-1.5 py-1",
               fontCls,
               emphCls,
               colorCls,
-              !obj.text && "min-w-[3rem]",
+              !obj.text && "ring-1 ring-ink/20 bg-paper/50",
             )}
             style={textStyle}
           >
@@ -211,10 +222,17 @@ export function BoardObject({
       <div
         className={cn(
           shell,
-          "rounded-sm border border-ink/10 px-3 py-3 shadow-[2px_3px_0_rgba(0,0,0,0.06)]",
-          stickyClass(obj.color),
+          "rounded-xl px-3 py-3 shadow-[0_1px_0_rgba(21,23,22,0.06),0_14px_28px_-18px_rgba(21,23,22,0.35)]",
         )}
-        style={{ left: obj.x, top: obj.y, width: obj.w, height: obj.h, zIndex: obj.z }}
+        style={{
+          left: obj.x,
+          top: obj.y,
+          width: obj.w,
+          height: obj.h,
+          zIndex: obj.z,
+          backgroundColor: stickyBgHex(obj.color),
+        }}
+        data-board-object=""
         onPointerDown={handlePointerDown}
         onContextMenu={handleContextMenu}
         onDoubleClick={(e) => {
@@ -271,6 +289,7 @@ export function BoardObject({
       <div
         className={cn(shell, "rounded-xl border border-line bg-paper-2")}
         style={{ left: obj.x, top: obj.y, width: obj.w, height: obj.h, zIndex: obj.z }}
+        data-board-object=""
         onPointerDown={handlePointerDown}
         onContextMenu={handleContextMenu}
       >
@@ -287,6 +306,7 @@ export function BoardObject({
       <div
         className={cn(shell, "rounded-xl border border-line bg-paper px-3 py-2.5")}
         style={{ left: obj.x, top: obj.y, width: obj.w, height: obj.h, minHeight: obj.h, zIndex: obj.z }}
+        data-board-object=""
         onPointerDown={handlePointerDown}
         onContextMenu={handleContextMenu}
         onDoubleClick={(e) => {
@@ -356,6 +376,7 @@ export function BoardObject({
       <div
         className={cn(shell, "rounded-xl border border-line bg-paper")}
         style={{ left: obj.x, top: obj.y, width: obj.w, height: obj.h, zIndex: obj.z }}
+        data-board-object=""
         onPointerDown={handlePointerDown}
         onContextMenu={handleContextMenu}
         onDoubleClick={(e) => {
@@ -457,6 +478,7 @@ export function BoardObject({
           minHeight: obj.h,
           zIndex: obj.z,
         }}
+        data-board-object=""
         onPointerDown={handlePointerDown}
         onContextMenu={handleContextMenu}
         onDoubleClick={(e) => {
@@ -469,7 +491,11 @@ export function BoardObject({
           <button
             type="button"
             title="Add child node"
-            className="absolute -bottom-2 left-1/2 z-10 flex h-5 w-5 -translate-x-1/2 items-center justify-center rounded-full border border-line bg-paper font-mono text-[10px] text-mute hover:text-ink"
+            className="absolute -bottom-2 left-1/2 z-10 flex h-5 w-5 items-center justify-center rounded-full border border-line bg-paper font-mono text-[10px] text-mute hover:text-ink"
+            style={{
+              transform: "translateX(-50%) scale(var(--board-ui-scale))",
+              transformOrigin: "center top",
+            }}
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
@@ -526,34 +552,40 @@ export function BoardObject({
 
   if (obj.type === "shape") {
     const fontSize = obj.fontSize ?? 14;
-    const fontCls = boardFontClass(obj.fontFamily);
+    const fontCls = boardFontClass(obj.fontFamily, "sans");
     const emphCls = boardEmphasisClass(obj);
-    const colorCls = textColorClass(obj.color);
-    const customHex = obj.color && /^#[0-9a-fA-F]{6}$/.test(obj.color) ? obj.color : undefined;
+    const shapePaint = resolveShapeTextColor(obj.color, obj.fill);
     const textStyle = {
       fontSize: `${fontSize}px`,
       lineHeight: 1.45,
-      ...(customHex ? { color: customHex } : {}),
+      color: shapePaint.color,
     } as const;
 
     return (
       <div
         className={shell}
         style={{ left: obj.x, top: obj.y, width: obj.w, height: obj.h, zIndex: obj.z }}
+        data-board-object=""
+        data-board-shape=""
         onPointerDown={handlePointerDown}
         onContextMenu={handleContextMenu}
         onDoubleClick={(e) => {
+          e.preventDefault();
           e.stopPropagation();
+          if (obj.showLabel === false) {
+            onPatch(obj.id, { showLabel: true } as Partial<FreeformObject>);
+          }
           onEdit(obj.id);
         }}
       >
         {chrome}
         <svg
-          className="pointer-events-none absolute inset-0"
+          className="pointer-events-auto absolute inset-0"
           width={obj.w}
           height={obj.h}
           aria-hidden
         >
+          <rect width={obj.w} height={obj.h} fill="transparent" />
           <ShapeGraphic
             kind={obj.shape}
             w={obj.w}
@@ -564,9 +596,10 @@ export function BoardObject({
             strokeDash={obj.strokeDash}
           />
         </svg>
+        {(editing || obj.showLabel !== false) && (
         <div
           className={cn(
-            "relative flex h-full w-full flex-col px-2 py-1.5",
+            "pointer-events-auto absolute inset-0 flex min-h-0 min-w-0 flex-col items-center overflow-hidden px-2 py-1.5",
             textAlignClass(obj.align, "shape"),
             textVAlignClass(obj.valign, "shape"),
           )}
@@ -575,14 +608,15 @@ export function BoardObject({
             <textarea
               autoFocus
               className={cn(
-                "h-full w-full resize-none bg-transparent outline-none",
+                "field-sizing-content h-auto max-h-full w-full resize-none overflow-hidden bg-transparent p-0 text-center outline-none placeholder:text-center placeholder:text-current placeholder:opacity-100",
                 fontCls,
                 emphCls,
-                colorCls,
                 textAlignClass(obj.align, "shape"),
               )}
               style={textStyle}
+              rows={Math.max(1, (obj.text || "Label").split("\n").length)}
               value={obj.text}
+              placeholder="Label"
               onChange={(e) => onPatch(obj.id, { text: e.target.value } as Partial<FreeformObject>)}
               onBlur={() => onEdit(null)}
               onPointerDown={(e) => e.stopPropagation()}
@@ -593,17 +627,18 @@ export function BoardObject({
           ) : (
             <p
               className={cn(
-                "w-full whitespace-pre-wrap break-words",
+                "w-full text-center whitespace-pre-wrap break-words",
                 fontCls,
                 emphCls,
-                colorCls,
+                textAlignClass(obj.align, "shape"),
               )}
               style={textStyle}
             >
-              {obj.text || <span className="opacity-35">Label</span>}
+              {obj.text || "Label"}
             </p>
           )}
         </div>
+        )}
       </div>
     );
   }
@@ -666,7 +701,7 @@ export function BoardObject({
   return null;
 }
 
-function ShapeGraphic({
+export function ShapeGraphic({
   kind,
   w,
   h,
@@ -674,6 +709,7 @@ function ShapeGraphic({
   stroke,
   strokeWidth,
   strokeDash,
+  preview,
 }: {
   kind: FreeformShapeKind;
   w: number;
@@ -682,54 +718,32 @@ function ShapeGraphic({
   stroke: string;
   strokeWidth: number;
   strokeDash: FreeformStrokeDash;
+  preview?: boolean;
 }) {
-  const pad = strokeWidth / 2;
   const fillPaint = fillValue(fill);
-  const strokePaint = inkStrokeValue(stroke);
-  const dash = strokeDashArray(strokeDash);
+  const noneStroke = isNonePaint(stroke);
+  const strokePaint = noneStroke ? "none" : inkStrokeValue(stroke);
+  const dash = noneStroke ? undefined : strokeDashArray(strokeDash);
+  const lineWidth = noneStroke ? 0 : strokeWidth;
+  const geom = shapeOutline(kind, w, h, lineWidth);
   const common = {
-    fill: fillPaint,
+    fill: fillPaint === "transparent" ? "none" : fillPaint,
+    fillOpacity: preview ? (fillPaint === "transparent" ? 0.08 : 0.55) : 1,
     stroke: strokePaint,
-    strokeWidth,
+    strokeWidth: lineWidth,
     strokeDasharray: dash,
+    strokeOpacity: preview ? 0.85 : 1,
   };
-
-  if (kind === "ellipse") {
+  const hit = { ...common, pointerEvents: "all" as const };
+  if (geom.tag === "ellipse") {
+    return <ellipse cx={geom.cx} cy={geom.cy} rx={geom.rx} ry={geom.ry} {...hit} />;
+  }
+  if (geom.tag === "rect") {
     return (
-      <ellipse
-        cx={w / 2}
-        cy={h / 2}
-        rx={Math.max(0, w / 2 - pad)}
-        ry={Math.max(0, h / 2 - pad)}
-        {...common}
-      />
+      <rect x={geom.x} y={geom.y} width={geom.w} height={geom.h} rx={geom.rx} ry={geom.rx} {...hit} />
     );
   }
-  if (kind === "diamond") {
-    return (
-      <polygon
-        points={`${w / 2},${pad} ${w - pad},${h / 2} ${w / 2},${h - pad} ${pad},${h / 2}`}
-        {...common}
-      />
-    );
-  }
-  if (kind === "triangle") {
-    return (
-      <polygon
-        points={`${w / 2},${pad} ${w - pad},${h - pad} ${pad},${h - pad}`}
-        {...common}
-      />
-    );
-  }
-  return (
-    <rect
-      x={pad}
-      y={pad}
-      width={Math.max(0, w - strokeWidth)}
-      height={Math.max(0, h - strokeWidth)}
-      {...common}
-    />
-  );
+  return <polygon points={polyToPointsAttr(geom.points)} {...hit} />;
 }
 
 function TableChrome({
@@ -754,8 +768,12 @@ function TableChrome({
   return (
     <>
       <div
-        className="absolute left-1/2 z-30 flex -translate-x-1/2 items-center gap-1 rounded-full border border-line bg-paper px-1 py-0.5 shadow-sm"
-        style={{ top: -38 }}
+        className="absolute left-1/2 z-30 flex items-center gap-1 rounded-full border border-line bg-paper px-1 py-0.5 shadow-sm"
+        style={{
+          top: -38,
+          transform: "translateX(-50%) scale(var(--board-ui-scale))",
+          transformOrigin: "center bottom",
+        }}
         title="Columns"
         onPointerDown={stop}
         onDoubleClick={(e) => e.stopPropagation()}
@@ -783,8 +801,12 @@ function TableChrome({
         </button>
       </div>
       <div
-        className="absolute top-1/2 z-30 flex -translate-y-1/2 flex-col items-center gap-0.5 rounded-full border border-line bg-paper px-0.5 py-1 shadow-sm"
-        style={{ right: -38 }}
+        className="absolute top-1/2 z-30 flex flex-col items-center gap-0.5 rounded-full border border-line bg-paper px-0.5 py-1 shadow-sm"
+        style={{
+          right: -38,
+          transform: "translateY(-50%) scale(var(--board-ui-scale))",
+          transformOrigin: "left center",
+        }}
         title="Rows"
         onPointerDown={stop}
         onDoubleClick={(e) => e.stopPropagation()}
@@ -808,15 +830,17 @@ function ResizeHandles({
 }) {
   return (
     <>
-      {RESIZE_HANDLES.map(({ handle, className }) => (
+      {RESIZE_HANDLES.map(({ handle, className, hx, hy }) => (
         <button
           key={handle}
           type="button"
           aria-label={`Resize ${handle}`}
+          data-board-handle=""
           className={cn(
             "absolute z-20 flex h-11 w-11 items-center justify-center md:h-2.5 md:w-2.5",
             className,
           )}
+          style={{ ["--hx" as string]: hx, ["--hy" as string]: hy }}
           onPointerDown={(e) => {
             e.stopPropagation();
             e.preventDefault();
@@ -863,6 +887,7 @@ function MentionChip({
 
   return (
     <div
+      data-board-object=""
       className={cn(shell, "flex items-center gap-2 rounded-xl border border-line bg-paper-2 px-3 py-2")}
       style={style}
       onPointerDown={onPointerDown}

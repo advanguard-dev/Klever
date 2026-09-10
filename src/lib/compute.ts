@@ -342,6 +342,44 @@ function call(name: string, args: unknown[], ctx: ComputeCtx): unknown {
   }
   if (n === "lower") return String(args[0] ?? "").toLowerCase();
   if (n === "upper") return String(args[0] ?? "").toUpperCase();
+  if (n === "slice") {
+    const s = String(args[0] ?? "");
+    const start = Number(args[1] ?? 0);
+    const end = args[2] === undefined ? undefined : Number(args[2]);
+    return s.slice(start, end);
+  }
+  if (n === "replace") {
+    const s = String(args[0] ?? "");
+    const pattern = String(args[1] ?? "");
+    const repl = String(args[2] ?? "");
+    try {
+      return s.replace(new RegExp(pattern, "g"), repl);
+    } catch {
+      return s.split(pattern).join(repl);
+    }
+  }
+  if (n === "match") {
+    const s = String(args[0] ?? "");
+    const pattern = String(args[1] ?? "");
+    try {
+      return new RegExp(pattern).test(s);
+    } catch {
+      return s.includes(pattern);
+    }
+  }
+  if (n === "formatdate" || n === "format_date") {
+    const t = toTime(args[0]);
+    if (t == null) return "";
+    const fmt = String(args[1] ?? "YYYY-MM-DD");
+    const d = new Date(t);
+    const pad = (x: number) => String(x).padStart(2, "0");
+    return fmt
+      .replace(/YYYY/g, String(d.getFullYear()))
+      .replace(/MM/g, pad(d.getMonth() + 1))
+      .replace(/DD/g, pad(d.getDate()))
+      .replace(/HH/g, pad(d.getHours()))
+      .replace(/mm/g, pad(d.getMinutes()));
+  }
   throw new Error(`Unknown ${name}`);
 }
 

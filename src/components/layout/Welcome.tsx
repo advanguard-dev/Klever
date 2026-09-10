@@ -9,18 +9,17 @@ export function Welcome() {
   const setError = useApp((s) => s.setError);
 
   return (
-    <main className="relative flex min-h-dvh flex-col items-center justify-center overflow-hidden px-5 py-12 md:px-8">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_20%_0%,color-mix(in_srgb,var(--color-paper-2)_90%,transparent),transparent_55%),radial-gradient(ellipse_at_90%_80%,color-mix(in_srgb,var(--color-line)_55%,transparent),transparent_45%)]"
-      />
-      <div className="relative w-full max-w-md">
+    <main className="flex min-h-dvh flex-col items-center justify-center bg-paper px-5 py-12 md:px-8">
+      <div className="klever-folio relative w-full max-w-md pl-6 md:pl-8">
         <MonoLabel>Local · Markdown · Private</MonoLabel>
-        <h1 className="mt-5 font-serif text-[3.25rem] italic leading-[0.88] tracking-tight sm:text-[4.75rem]">Klever</h1>
-        <p className="mt-8 max-w-sm text-[1.05rem] leading-relaxed text-mute">
-          Notes, databases, tags, and a graph. Files on disk. Nothing leaves the machine unless you send it to a model you choose.
+        <h1 className="mt-4 font-serif text-5xl font-semibold leading-[0.95] tracking-tight sm:text-6xl">
+          Klever
+        </h1>
+        <p className="mt-6 max-w-sm text-base leading-7 text-mute">
+          Notes, databases, tags, and a graph. Files stay on disk. Nothing leaves the machine unless
+          you send it to a model you choose.
         </p>
-        <div className="mt-10 flex flex-wrap gap-3">
+        <div className="mt-8 flex flex-wrap gap-2">
           <SolidButton onClick={() => void startDemo()}>Open sample vault</SolidButton>
           <GhostButton onClick={() => void openFolder()}>Open folder</GhostButton>
           <GhostButton onClick={() => startEmpty()}>Start empty</GhostButton>
@@ -30,9 +29,9 @@ export function Welcome() {
             {error}
           </Alert>
         )}
-        <div className="mt-16 space-y-3 border-t border-line pt-8 font-serif text-sm text-mute">
+        <div className="mt-12 grid grid-cols-1 gap-x-8 gap-y-3 border-t border-line pt-8 text-sm text-mute sm:grid-cols-2">
           <p className="flex items-center gap-3">
-            <Kbd>⌘K</Kbd> command palette
+            <Kbd>⌘K</Kbd> search
           </p>
           <p className="flex items-center gap-3">
             <Kbd>⌘E</Kbd> block / source / read
@@ -42,6 +41,9 @@ export function Welcome() {
           </p>
           <p className="flex items-center gap-3">
             <Kbd>⌘⇧D</Kbd> brain dump
+          </p>
+          <p className="flex items-center gap-3">
+            <Kbd>⌘⇧M</Kbd> meetings
           </p>
           <p className="flex items-center gap-3">
             <Kbd>⌘⇧G</Kbd> graph

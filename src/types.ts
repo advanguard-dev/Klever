@@ -7,6 +7,8 @@ export type PropType =
   | "checkbox"
   | "url"
   | "relation"
+  | "people"
+  | "location"
   | "tags"
   | "files"
   | "formula"
@@ -21,6 +23,8 @@ export const PROP_TYPES: PropType[] = [
   "checkbox",
   "url",
   "relation",
+  "people",
+  "location",
   "tags",
   "files",
   "formula",
@@ -73,9 +77,11 @@ export interface SchemaProp {
   hidden?: boolean;
   formula?: string;
   rollup?: RollupConfig;
+  /** Swatch id per item/option label (select, tags, people, location). */
+  itemColors?: Record<string, string>;
 }
 
-export type DbViewType = "table" | "board" | "gallery" | "list" | "calendar" | "card";
+export type DbViewType = "table" | "board" | "gallery" | "list" | "calendar" | "card" | "timeline";
 
 export const DB_VIEW_TYPES: DbViewType[] = [
   "table",
@@ -84,15 +90,22 @@ export const DB_VIEW_TYPES: DbViewType[] = [
   "card",
   "list",
   "calendar",
+  "timeline",
 ];
 
-export type FilterOp = "eq" | "neq" | "contains" | "empty" | "not_empty";
+export type FilterOp = "eq" | "neq" | "contains" | "empty" | "not_empty" | "gt" | "lt" | "gte" | "lte";
 
+/** Legacy flat filter (still accepted; normalized to FilterNode). */
 export interface ViewFilter {
   key: string;
   op: FilterOp;
   value?: unknown;
 }
+
+/** Nested boolean filter tree (max depth ~3 in UI). */
+export type FilterNode =
+  | { type: "rule"; key: string; op: FilterOp; value?: unknown }
+  | { type: "group"; op: "and" | "or"; children: FilterNode[] };
 
 export interface ViewSort {
   key: string;
@@ -108,11 +121,16 @@ export interface DbView {
   type: DbViewType;
   groupBy?: string;
   dateProp?: string;
+  /** Timeline end date property (optional range). */
+  endDateProp?: string;
   cover?: CoverSource;
   cardSize?: CardSize;
   visible?: string[];
   wrap?: boolean;
+  /** @deprecated Prefer `filter` tree; flat list = implicit AND. */
   filters?: ViewFilter[];
+  /** Nested filter tree. */
+  filter?: FilterNode;
   sorts?: ViewSort[];
 }
 
@@ -180,6 +198,8 @@ export type AppView =
   | { kind: "database"; id: string; viewId?: string }
   | { kind: "graph" }
   | { kind: "calendar" }
+  | { kind: "meeting" }
+  | { kind: "unlock" }
   | { kind: "freeform"; id?: string }
   | { kind: "tag"; tag: string };
 
@@ -201,7 +221,14 @@ export interface InsertCommand {
 
 export interface AiSettings {
   endpoint: string;
+  /** Legacy / fallback chat model when a per-tool field is empty. */
   model: string;
+  /** Chat model for note writing tools. */
+  writingModel?: string;
+  /** Chat model for Brain dump structuring. */
+  brainDumpModel?: string;
+  /** Chat model for Meeting summarize. */
+  meetingModel?: string;
   apiKey: string;
   /** Override system prompt for writing tools. */
   writingSystemPrompt?: string;
@@ -209,6 +236,42 @@ export interface AiSettings {
   writingPrompts?: Record<string, string>;
   /** Last custom one-off prompt in the note editor. */
   lastCustomPrompt?: string;
+  /** UI chrome locale (`en` | `fr`). Mirrored on persisted meta. */
+  locale?: "en" | "fr";
+}
+
+/** Local developer automation (no cloud). Persisted with prefs. */
+export interface DevSettings {
+  /** Enable localhost REST API (Electron). */
+  localApiEnabled: boolean;
+  /** Port bound to 127.0.0.1 only. */
+  localApiPort: number;
+  /** Bearer token for localhost API. */
+  localApiToken: string;
+  /** POST targets on vault save — localhost only. */
+  webhookUrls: string[];
+  /** Prefer TF-IDF semantic ranking in search. */
+  semanticSearch: boolean;
+}
+
+/** Cal.com embed: public username + event type slug. Stored with other prefs. */
+export interface CalSettings {
+  username: string;
+  eventTypeSlug: string;
+}
+
+export type CalendarSourceKind = "ics" | "google" | "apple";
+
+/** Subscribed calendar feed (ICS / Google / Apple iCal). Local prefs only — not written to the vault. */
+export interface CalendarSource {
+  id: string;
+  kind: CalendarSourceKind;
+  url: string;
+  name: string;
+  lastSync?: string;
+  lastError?: string;
+  /** UIDs hidden locally; they stay on the remote feed. */
+  hiddenUids?: string[];
 }
 
 /** Per-workspace AI preference: remote uses Gemini settings; local uses heuristics / on-device only. */
@@ -216,17 +279,34 @@ export type WorkspaceAiMode = "local" | "remote";
 
 export type WorkspaceToolId =
   | "brainDump"
+  | "meeting"
   | "board"
   | "calendar"
   | "graph"
-  | "writingTools";
+  | "writingTools"
+  | "suggestions";
 
 export interface WorkspaceTools {
   brainDump: boolean;
+  meeting: boolean;
   board: boolean;
   calendar: boolean;
   graph: boolean;
   writingTools: boolean;
+  suggestions: boolean;
+}
+
+export interface WorkspaceLock {
+  enabled: true;
+  kdf: "pbkdf2-sha256";
+  iterations: number;
+  saltB64: string;
+  wrappedDekB64: string;
+  wrappedDekIvB64: string;
+  /** Touch ID / Keychain wrap is stored. */
+  touchId?: boolean;
+  /** safeStorage ciphertext of the raw DEK (base64). */
+  touchWrappedB64?: string;
 }
 
 export interface Workspace {
@@ -236,6 +316,7 @@ export interface Workspace {
   aiMode: WorkspaceAiMode;
   created: string;
   updated: string;
+  lock?: WorkspaceLock;
 }
 
 /** Calendar-only item — not a vault page. */
@@ -248,6 +329,17 @@ export interface VaultEvent {
   /** Project folder label for context */
   project?: string;
   tags: string[];
+  /** Public Cal.com booking page URL. */
+  calUrl?: string;
+  /** @deprecated API bookings; kept when loading older events. */
+  calBookingUid?: string;
+  /** Subscribed feed id when this event was pulled (local events omit this). */
+  sourceId?: string;
+  /** ICS UID (plus instance date for recurrences). */
+  uid?: string;
+  sourceKind?: CalendarSourceKind;
+  /** Event page from the feed (Google htmlLink, webcal, or ICS URL). */
+  htmlLink?: string;
   created: string;
   updated: string;
 }
@@ -266,9 +358,18 @@ export type FreeformTool =
   | "mention"
   | "shape";
 
-export type FreeformStickyColor = "amber" | "sage" | "rose" | "sky" | "paper";
+/** Named pigment id (see board-model PIGMENTS) or `#rrggbb`. */
+export type FreeformStickyColor = string;
 
-export type FreeformShapeKind = "rect" | "ellipse" | "diamond" | "triangle";
+export type FreeformShapeKind =
+  | "rect"
+  | "roundrect"
+  | "ellipse"
+  | "diamond"
+  | "triangle"
+  | "hexagon"
+  | "star"
+  | "arrow";
 
 export type FreeformStrokeDash = "solid" | "dashed" | "dotted";
 
@@ -365,10 +466,13 @@ export type FreeformObject =
       shape: FreeformShapeKind;
       /** Named sticky id, ink id, `none`, or #hex. */
       fill: string;
+      /** Named ink id, `none` / `transparent` for no outline, or #hex. */
       stroke: string;
       strokeWidth: number;
       strokeDash: FreeformStrokeDash;
       text: string;
+      /** When false, hide the in-shape label. Defaults to true. */
+      showLabel?: boolean;
       fontSize?: number;
       color?: string;
       fontFamily?: PageFont;
@@ -380,10 +484,16 @@ export type FreeformObject =
     });
 
 /** Vault freeform board — not a markdown page. Multiple boards per workspace. */
+export type FreeformConnectorKind = "straight" | "elbow" | "curve";
+export type FreeformAnchor = "n" | "e" | "s" | "w";
+
 export interface FreeformConnection {
   id: string;
   from: string;
   to: string;
+  kind?: FreeformConnectorKind;
+  fromAnchor?: FreeformAnchor;
+  toAnchor?: FreeformAnchor;
 }
 
 export interface FreeformBoard {

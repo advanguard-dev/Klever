@@ -1,4 +1,4 @@
-import { EmptyState, MonoLabel, Segmented, Toggle } from "@/components/ui";
+import { EmptyState, Segmented, Toggle } from "@/components/ui";
 import { useContextMenu } from "@/components/ContextMenu";
 import { noteMenuItems, tagMenuItems } from "@/lib/context-menus";
 import { buildGraph } from "@/lib/graph";
@@ -127,10 +127,7 @@ export function GraphView() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-wrap items-center gap-4 px-4 py-5 md:px-8 md:py-6">
-        <div>
-          <MonoLabel>Graph</MonoLabel>
-          <h1 className="mt-1 font-serif text-2xl italic tracking-tight md:text-3xl">Atlas</h1>
-        </div>
+        <h1 className="font-serif text-2xl font-semibold tracking-tight md:text-3xl">Graph</h1>
         <div className="ml-auto flex flex-wrap items-center gap-3">
           <Segmented
             aria-label="Graph edges"
@@ -149,7 +146,7 @@ export function GraphView() {
         {visNodes.length === 0 ? (
           <EmptyState
             title="No connections yet"
-            description="Link pages with [[wikilinks]] or database relations to populate the atlas."
+            description="Link pages with [[wikilinks]] or database relations to see them here."
           />
         ) : (
         <svg width={size.w} height={size.h} className="absolute inset-0">
@@ -220,6 +217,30 @@ export function GraphView() {
         </svg>
         )}
       </div>
+      {visNodes.length > 0 && (
+        <nav
+          aria-label="Pages in graph"
+          className="max-h-40 shrink-0 overflow-y-auto border-t border-line px-4 py-3 md:px-8"
+        >
+          <ul className="flex flex-wrap gap-1.5">
+            {visNodes.map((n) => (
+              <li key={n.id}>
+                <button
+                  type="button"
+                  className="klever-focus max-w-[12rem] truncate rounded-md px-2 py-1 text-left text-sm text-mute hover:bg-paper-2 hover:text-ink"
+                  onClick={() => {
+                    if (n.kind === "tag") setView({ kind: "tag", tag: n.title.replace(/^#/, "") });
+                    else if (n.kind === "database") setView({ kind: "database", id: n.id });
+                    else setView({ kind: "note", id: n.id });
+                  }}
+                >
+                  {n.title}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      )}
     </div>
   );
 }

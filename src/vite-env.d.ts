@@ -25,14 +25,22 @@ interface FileSystemDirectoryHandle {
   resolve?: (possibleDescendant: FileSystemHandle) => Promise<string[] | null>;
 }
 
+type KleverGitStatus = import("@/lib/git-status").GitStatus;
+
 interface KleverDesktopApi {
+  /** Resolve absolute path for a dropped/picked File (Electron webUtils). */
+  getPathForFile: (file: File) => string;
   pickVault: () => Promise<{
     path: string;
     name: string;
     files: Record<string, string>;
     blobs: Record<string, { mime: string; dataBase64?: string; external?: boolean; localPath?: string }>;
   } | null>;
-  pickLocalFile: (accept: string) => Promise<{ localPath: string; name: string; mime: string } | null>;
+  pickLocalFile: (accept: string) => Promise<
+    | { localPath: string; name: string; mime: string }
+    | { localPath: string; name: string; mime: string }[]
+    | null
+  >;
   setVaultRoot: (rootPath: string) => Promise<boolean>;
   writeVault: (
     rootPath: string,
@@ -45,6 +53,18 @@ interface KleverDesktopApi {
   openAbsolute: (absPath: string) => Promise<{ ok: boolean; error?: string }>;
   revealBytes: (name: string, dataBase64: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
   openBytes: (name: string, dataBase64: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
+  touchAvailable: () => Promise<boolean>;
+  touchEncrypt: (plaintext: string) => Promise<string>;
+  touchUnlock: (cipherB64: string, reason: string) => Promise<string>;
+  startDictation: () => Promise<{ ok: boolean; error?: string }>;
+  stopDictation: () => Promise<{ ok: boolean; error?: string }>;
+  fetchText: (url: string) => Promise<{ ok: boolean; text: string; status?: number; error?: string }>;
+  gitStatus: () => Promise<KleverGitStatus>;
+  configureLocalApi: (opts: {
+    enabled: boolean;
+    port: number;
+    token: string;
+  }) => Promise<{ ok: boolean; enabled: boolean; port: number; token: string }>;
 }
 
 interface Window {

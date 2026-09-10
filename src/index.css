@@ -1,31 +1,37 @@
 @import "tailwindcss";
 
 @theme {
-  --klever-titlebar-inset: 4.75rem;
+  --klever-titlebar-inset: 4.5rem;
 
-  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
   --font-serif: "Instrument Serif", ui-serif, Georgia, "Times New Roman", serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-mono: "Fira Code", ui-monospace, "SF Mono", Menlo, monospace;
 
-  --color-paper: #f3f1eb;
-  --color-paper-2: #ebe8e0;
-  --color-ink: #1b1a16;
-  --color-mute: #5f5a52;
-  --color-faint: #9a948a;
-  --color-line: #ddd8ce;
-  --color-accent: #1b1a16;
-  --color-tag: #6a7864;
-  --color-prop: #7d6b56;
-  --color-smart: #5a6b76;
+  --color-paper: #f4f5f2;
+  --color-paper-2: #e9ebe6;
+  --color-blotter: #e3e5e0;
+  --color-ink: #151716;
+  --color-mute: #585c59;
+  --color-faint: #5a5e5a;
+  --color-line: #d5d8d2;
+  --color-accent: #151716;
+  --color-ring: #3a5674;
+  --color-tag: #4f6b58;
+  --color-prop: #6b5e4e;
+  --color-smart: #3a5674;
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-danger: #dc2626;
 
-  --radius-sm: 0.5rem;
-  --radius-md: 0.75rem;
-  --radius-lg: 1rem;
-  --radius-xl: 1.25rem;
-  --radius-2xl: 1.5rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.75rem;
+  --radius-2xl: 1rem;
 
-  --animate-blotter: klever-blotter 0.2s ease-out both;
-  --animate-sheet: klever-sheet 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-blotter: klever-blotter 0.15s ease-out both;
+  --animate-sheet: klever-sheet 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-rewrite: klever-rewrite 1.15s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 @keyframes klever-blotter {
@@ -40,7 +46,7 @@
 @keyframes klever-sheet {
   from {
     opacity: 0;
-    transform: translateY(12px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
@@ -48,17 +54,47 @@
   }
 }
 
+@keyframes klever-rewrite {
+  0% {
+    background-color: color-mix(in srgb, var(--color-smart) 16%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-smart) 28%, transparent);
+  }
+  35% {
+    background-color: color-mix(in srgb, var(--color-smart) 9%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-smart) 16%, transparent);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: inset 0 0 0 1px transparent;
+  }
+}
+
+.writing-rewrite-flash {
+  animation: var(--animate-rewrite);
+  border-radius: var(--radius-lg);
+}
+
+/* Spans a proofread run flagged. Decoration only — the text is unchanged. */
+.klever-grammar {
+  text-decoration: underline wavy var(--color-smart);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-skip-ink: none;
+}
+
 html.dark {
-  --color-paper: #141311;
-  --color-paper-2: #1c1b18;
-  --color-ink: #eceae3;
-  --color-mute: #9b958b;
-  --color-faint: #5c5850;
-  --color-line: #2c2a26;
-  --color-accent: #eceae3;
-  --color-tag: #9aa892;
+  --color-paper: #121413;
+  --color-paper-2: #1a1c1a;
+  --color-blotter: #0c0d0c;
+  --color-ink: #eceeea;
+  --color-mute: #9aa09b;
+  --color-faint: #808480;
+  --color-line: #2a2d2a;
+  --color-accent: #eceeea;
+  --color-ring: #8fa6c4;
+  --color-tag: #8fa892;
   --color-prop: #c4b09a;
-  --color-smart: #9aadb8;
+  --color-smart: #8fa6c4;
 }
 
 @layer base {
@@ -67,9 +103,10 @@ html.dark {
   }
 
   html {
-    background-color: var(--color-paper);
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.12  0 0 0 0 0.11  0 0 0 0 0.09  0 0 0 0.12 0'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.22'/></svg>");
+    background-color: var(--color-blotter);
     color: var(--color-ink);
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--color-ink) 22%, transparent) transparent;
   }
 
   body {
@@ -106,9 +143,17 @@ html.dark {
     color: inherit;
   }
 
-  :focus,
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
   :focus-visible {
     outline: none;
+  }
+
+  html.klever-a11y-focus :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
   }
 }
 
@@ -131,32 +176,72 @@ input[type="checkbox"]:hover {
 input[type="checkbox"]:checked {
   background-color: var(--color-ink);
   border-color: var(--color-ink);
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path fill='none' stroke='%23f3f1eb' stroke-width='1.6' d='M3.5 8.5 6.5 11.5 12.5 4.5'/></svg>");
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path fill='none' stroke='%23f4f5f2' stroke-width='1.6' d='M3.5 8.5 6.5 11.5 12.5 4.5'/></svg>");
   background-size: 12px 12px;
   background-position: center;
   background-repeat: no-repeat;
 }
 
 html.dark input[type="checkbox"]:checked {
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path fill='none' stroke='%23141311' stroke-width='1.6' d='M3.5 8.5 6.5 11.5 12.5 4.5'/></svg>");
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path fill='none' stroke='%23121413' stroke-width='1.6' d='M3.5 8.5 6.5 11.5 12.5 4.5'/></svg>");
 }
 
 ::selection {
   background: color-mix(in srgb, var(--color-ink) 16%, transparent);
 }
 
-.klever-focus:focus-visible {
+html.klever-a11y-focus input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+html.klever-a11y-focus .klever-focus:focus-visible {
   outline: none;
   box-shadow:
     0 0 0 2px var(--color-paper),
-    0 0 0 3.5px color-mix(in srgb, var(--color-ink) 42%, transparent);
+    0 0 0 4px var(--color-ring);
 }
 
-.klever-focus-solid:focus-visible {
+html.klever-a11y-focus .klever-focus-solid:focus-visible {
   outline: none;
   box-shadow:
     0 0 0 2px var(--color-ink),
-    0 0 0 3.5px color-mix(in srgb, var(--color-paper) 85%, transparent);
+    0 0 0 4px var(--color-ring);
+}
+
+html.klever-a11y-focus .klever-focus-within:focus-within {
+  box-shadow:
+    0 0 0 2px var(--color-paper),
+    0 0 0 4px var(--color-ring);
+}
+
+/* Page actions stay visible on touch; recede until hover on a pointer. */
+.klever-reveal {
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .klever-reveal {
+    opacity: 0;
+    transition: opacity 150ms ease-out;
+  }
+
+  .group\/page:hover .klever-reveal,
+  .group\/page:focus-within .klever-reveal,
+  .klever-reveal:focus,
+  .klever-reveal:focus-visible,
+  .klever-reveal:focus-within,
+  .klever-reveal[data-open="true"] {
+    opacity: 1;
+  }
+}
+
+.klever-sheet {
+  background-color: var(--color-paper);
+}
+
+.klever-folio {
+  border-left: 2px solid var(--color-ring);
 }
 
 button::-moz-focus-inner,
@@ -221,7 +306,7 @@ li.ProseMirror-selectednode::after {
 }
 
 .cm-scroller {
-  font-family: var(--font-sans) !important;
+  font-family: inherit !important;
   line-height: 1.7 !important;
   overflow: visible !important;
 }
@@ -273,7 +358,7 @@ li.ProseMirror-selectednode::after {
   border-radius: 1px;
 }
 
-/* Calm long-form Read mode — Instrument Serif, generous leading, paper/ink. */
+/* Long-form Read mode — Instrument Serif, generous leading. */
 .prose-klever-read {
   font-family: var(--font-serif);
   font-size: 1.125rem;
@@ -566,7 +651,7 @@ li.ProseMirror-selectednode::after {
   float: left;
   height: 0;
   pointer-events: none;
-  font-family: var(--font-sans);
+  font-family: inherit;
 }
 
 .ProseMirror ul[data-type="taskList"] {
@@ -576,56 +661,44 @@ li.ProseMirror-selectednode::after {
 
 .ProseMirror ul[data-type="taskList"] li {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
 }
 
 .ProseMirror ul[data-type="taskList"] li > label {
-  margin-top: 0.35em;
+  display: flex;
+  align-items: center;
+  margin: 0;
 }
 
 .ProseMirror ul[data-type="taskList"] li > div {
   flex: 1;
+  min-width: 0;
+}
+
+.ProseMirror ul[data-type="taskList"] li > div > p {
+  margin: 0;
+}
+
+.prose-klever ul.contains-task-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.prose-klever li.task-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.prose-klever li.task-list-item input[type="checkbox"] {
+  margin: 0;
 }
 
 .ProseMirror img {
   max-width: 100%;
   height: auto;
   border-radius: var(--radius-lg);
-}
-
-.prose-klever .vault-audio,
-.ProseMirror .vault-audio,
-.prose-klever audio,
-.ProseMirror audio {
-  display: block;
-  width: 100%;
-  margin: 1.25rem 0;
-}
-
-.prose-klever .vault-video,
-.ProseMirror .vault-video,
-.prose-klever video,
-.ProseMirror video {
-  display: block;
-  width: 100%;
-  max-width: 40rem;
-  margin: 1.25rem 0;
-  border-radius: var(--radius-lg);
-  background: var(--color-paper-2);
-}
-
-.prose-klever .vault-pdf,
-.ProseMirror .vault-pdf,
-.prose-klever iframe[data-vault-pdf],
-.ProseMirror iframe[data-vault-pdf] {
-  display: block;
-  width: 100%;
-  height: 28rem;
-  margin: 1.25rem 0;
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-lg);
-  background: var(--color-paper-2);
 }
 
 .prose-klever .file-card,
@@ -653,10 +726,52 @@ li.ProseMirror-selectednode::after {
   border-top: 1px solid var(--color-ink) !important;
 }
 
+/* Board camera: world layer scales; screen chrome stays constant via --board-ui-scale. */
+[data-board-layer] {
+  --board-zoom: 1;
+  --board-ui-scale: calc(1 / var(--board-zoom));
+}
+
+[data-board-ui] {
+  transform: scale(var(--board-ui-scale));
+}
+
+[data-board-handle] {
+  transform: translate(var(--hx, -50%), var(--hy, -50%)) scale(var(--board-ui-scale));
+}
+
+[data-board-layer] .is-board-sel {
+  outline: calc(2px * var(--board-ui-scale, 1)) solid color-mix(in oklab, var(--color-ink) 30%, transparent);
+  outline-offset: calc(2px * var(--board-ui-scale, 1));
+}
+
+[data-board-layer] .is-board-sel-dash {
+  outline: calc(1px * var(--board-ui-scale, 1)) dashed color-mix(in oklab, var(--color-ink) 25%, transparent);
+  outline-offset: calc(4px * var(--board-ui-scale, 1));
+}
+
+/* Shape labels: keep edit field centered like display text (not UA textarea top-left). */
+[data-board-shape] textarea {
+  resize: none;
+  padding: 0;
+  margin: 0;
+  text-align: inherit;
+  field-sizing: content;
+  overflow: hidden;
+  height: auto;
+  max-height: 100%;
+}
+
 /* macOS Electron — native window drag + traffic-light safe area (hiddenInset). */
 html.electron-mac .klever-titlebar {
   -webkit-app-region: drag;
-  padding-left: var(--klever-titlebar-inset);
+  padding-left: calc(var(--klever-titlebar-inset) + 0.75rem);
+}
+
+@media (min-width: 768px) {
+  html.electron-mac .klever-titlebar {
+    padding-left: calc(var(--klever-titlebar-inset) + 1rem);
+  }
 }
 
 html.electron-mac .klever-titlebar :is(

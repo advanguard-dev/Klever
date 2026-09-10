@@ -1,4 +1,4 @@
-import { refreshBlobFromHandle, resolveAssetSrc } from "@/lib/assets";
+import { resolveAssetSrc } from "@/lib/assets";
 import { isMacOS } from "@/lib/electron";
 import type { BlobRecord } from "@/types";
 
@@ -16,7 +16,7 @@ export function revealFileLabel() {
   return isMacOS() ? "Reveal in Finder" : "Show in folder";
 }
 
-/** Open the original file on disk — not a Klever copy. */
+/** Open the original file on disk — not a Klever copy / temp folder. */
 export async function openLocalFile(
   vaultPath: string,
   rec: BlobRecord | undefined,
@@ -26,6 +26,7 @@ export async function openLocalFile(
   const mode = opts?.mode ?? "open";
   const desktop = window.kleverDesktop;
 
+  // 1) Absolute path from Finder drop / native picker
   if (desktop && rec?.localPath) {
     const abs =
       mode === "open"
@@ -34,23 +35,14 @@ export async function openLocalFile(
     if (abs?.ok) return;
   }
 
+  // 2) File inside linked vault folder
   if (desktop) {
     const disk =
       mode === "open" ? await desktop.openFile(path) : await desktop.revealFile(path);
     if (disk?.ok) return;
   }
 
-  if (rec?.handle) {
-    const refreshed = await refreshBlobFromHandle(rec);
-    if (refreshed.localPath && desktop) {
-      const abs =
-        mode === "open"
-          ? await desktop.openAbsolute(refreshed.localPath)
-          : await desktop.revealAbsolute(refreshed.localPath);
-      if (abs?.ok) return;
-    }
-  }
-
+  // 3) Last resort for browser / missing path — blob URL (never write klever-open copies)
   const url = rec?.data?.byteLength ? resolveAssetSrc(path, { [path]: rec }) : "";
   if (url) window.open(url, "_blank", "noreferrer");
 }

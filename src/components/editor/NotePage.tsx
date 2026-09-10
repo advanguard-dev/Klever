@@ -2,39 +2,45 @@ import { BlockEditor } from "@/components/editor/BlockEditor";
 import { IconChooser } from "@/components/editor/IconChooser";
 import { ImageBlock } from "@/components/editor/ImageBlock";
 import { MarkdownPreview } from "@/components/editor/MarkdownPreview";
-import { PropertyManager, schemaTarget } from "@/components/db/PropertyManager";
-import { PropInput } from "@/components/editor/PropInput";
+import { PropertyStrip } from "@/components/editor/PropertyStrip";
 import { SlashStack } from "@/components/insert/PlusMenu";
 import { Chip, ConfirmDialog, MonoLabel, Panel, Segmented, TextButton, Toggle, ToolbarBtn } from "@/components/ui";
 import { useContextMenu } from "@/components/ContextMenu";
 import { copyFromCodeMirror, cutFromCodeMirror, pasteIntoCodeMirror } from "@/lib/clipboard-editing";
 import { noteMenuItems, tagMenuItems } from "@/lib/context-menus";
-import { ChromeIcon, ICON_LG, NoteIcon, accentIconClass, noteKindIcon, PROP_ICONS } from "@/lib/chrome-icons";
+import { ICON_LG, NoteIcon, noteKindIcon } from "@/lib/chrome-icons";
 import { extractImages, replaceImageSrc, setImageWidth } from "@/lib/assets";
 import { cn } from "@/lib/cn";
-import { filterCommands, slashCommands } from "@/lib/commands";
-import { registerEditorInsert, setSlashRange } from "@/lib/editor-bridge";
+import {
+  registerBodyAppend,
+  registerBodyRead,
+  registerBodyReplace,
+  registerEditorInsert,
+  setSlashRange,
+} from "@/lib/editor-bridge";
+import { pageFontClass } from "@/lib/page-fonts";
 import { slugify } from "@/lib/ids";
 import { runCommand } from "@/lib/run-command";
 import { registerBeforeFlush } from "@/lib/save-hooks";
 import { useApp } from "@/store";
-import type { Note, PageFont, PageWidth } from "@/types";
+import type { InsertCommand, Note, PageFont, PageWidth } from "@/types";
 import { markdown } from "@codemirror/lang-markdown";
 import { autocompletion, type CompletionContext } from "@codemirror/autocomplete";
 import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
 import { ChevronDown, ChevronRight, Mic, Plus, Star, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { startTranscription, speechSupported } from "@/lib/speech";
 import { WritingToolsBar } from "@/components/editor/WritingToolsBar";
+import { MeetingNotesBlock } from "@/components/ai/MeetingNotesBlock";
+import { isMeetingNote } from "@/lib/meetings";
 import { defaultWorkspaceTools } from "@/lib/workspaces";
 
 const cmTheme = EditorView.theme({
   "&": { fontSize: "16px", color: "var(--color-ink)", backgroundColor: "transparent" },
   ".cm-content": {
     caretColor: "var(--color-ink)",
-    fontFamily: "Instrument Sans, sans-serif",
     minHeight: "50vh",
     color: "var(--color-ink)",
   },
@@ -58,6 +64,7 @@ export function NotePage({ note }: { note: Note }) {
   const tools = activeWorkspace?.tools ?? defaultWorkspaceTools();
   const aiMode = activeWorkspace?.aiMode ?? "remote";
   const writingEnabled = tools.writingTools && aiMode === "remote";
+  const meetingPage = isMeetingNote(note, notes);
   const setError = useApp((s) => s.setError);
   const setView = useApp((s) => s.setView);
   const setPlusOpen = useApp((s) => s.setPlusOpen);
@@ -77,10 +84,21 @@ export function NotePage({ note }: { note: Note }) {
   const [listening, setListening] = useState(false);
   const [slash, setSlash] = useState<{ from: number; to: number; query: string } | null>(null);
   const [slashI, setSlashI] = useState(0);
-  const [manageProps, setManageProps] = useState(false);
   const [pageOpen, setPageOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(false);
   const [coverHover, setCoverHover] = useState(false);
+  const [rewriteFlash, setRewriteFlash] = useState(false);
+  const rewriteFlashTimer = useRef<number | undefined>(undefined);
+  const pageMenuRef = useRef<HTMLSpanElement>(null);
+
+  const triggerRewriteFlash = () => {
+    window.clearTimeout(rewriteFlashTimer.current);
+    setRewriteFlash(false);
+    requestAnimationFrame(() => {
+      setRewriteFlash(true);
+      rewriteFlashTimer.current = window.setTimeout(() => setRewriteFlash(false), 1200);
+    });
+  };
   const { open } = useContextMenu();
   const [draftTitle, setDraftTitle] = useState(note.title);
   const [titleSeenId, setTitleSeenId] = useState(note.id);
@@ -88,13 +106,43 @@ export function NotePage({ note }: { note: Note }) {
     setTitleSeenId(note.id);
     setDraftTitle(note.title);
   }
-  // Keep draft in sync when title changes externally (not while focused — blur commits).
-  const titleInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (!pageOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (pageMenuRef.current?.contains(e.target as Node)) return;
+      setPageOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPageOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [pageOpen]);
+  const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const fitTitleHeight = (el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    el.style.height = "0px";
+    el.style.height = `${el.scrollHeight}px`;
+  };
   useEffect(() => {
     if (document.activeElement === titleInputRef.current) return;
     if (draftTitle === note.title) return;
     setDraftTitle(note.title);
   }, [note.title, note.id, draftTitle]);
+  useLayoutEffect(() => {
+    const el = titleInputRef.current;
+    if (!el) return;
+    fitTitleHeight(el);
+    const parent = el.parentElement;
+    if (!parent || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => fitTitleHeight(el));
+    ro.observe(parent);
+    return () => ro.disconnect();
+  }, [draftTitle, note.id]);
   const recRef = useRef<{ stop: () => void } | null>(null);
   const bodyUserRef = useRef("");
   const bodySpeechRef = useRef("");
@@ -110,12 +158,7 @@ export function NotePage({ note }: { note: Note }) {
   const slashIRef = useRef(slashI);
   slashRef.current = slash;
   slashIRef.current = slashI;
-  const slashHits = useMemo(
-    () => (slash ? filterCommands(slashCommands(notes), slash.query) : []),
-    [notes, slash],
-  );
-  const slashHitsRef = useRef(slashHits);
-  slashHitsRef.current = slashHits;
+  const slashHitsRef = useRef<InsertCommand[]>([]);
 
   useEffect(() => setSlashI(0), [slash?.query]);
 
@@ -137,7 +180,7 @@ export function NotePage({ note }: { note: Note }) {
     const t = window.setTimeout(() => {
       patchNote(note.id, { body });
       setBaseline(body);
-    }, 220);
+    }, body.length > 80_000 ? 700 : 220);
     return () => window.clearTimeout(t);
   }, [body, note.body, note.id, patchNote]);
 
@@ -152,7 +195,7 @@ export function NotePage({ note }: { note: Note }) {
       if (pendingBody !== pendingBaseline) {
         patchNote(noteId, { body: pendingBody });
       }
-      const pendingTitle = draftTitleRef.current;
+      const pendingTitle = draftTitleRef.current.replace(/\s+/g, " ").trim();
       if (pendingTitle !== noteTitle) {
         const current = useApp.getState().notes.find((n) => n.id === noteId);
         if (!current) return;
@@ -185,12 +228,32 @@ export function NotePage({ note }: { note: Note }) {
         setBody(view.state.doc.toString());
         view.focus();
       } else {
-        setBody((b) => b + snippet);
+        setBody((b) => {
+          const base = b.trimEnd();
+          return base ? `${base}\n\n${snippet}` : snippet;
+        });
       }
       setSlash(null);
       setSlashRange(null);
     });
-    return () => registerEditorInsert(null);
+    registerBodyAppend((snippet) => {
+      setBody((b) => {
+        const base = b.trimEnd();
+        return base ? `${base}\n\n${snippet}` : snippet;
+      });
+      return true;
+    });
+    registerBodyReplace((next) => {
+      setBody(next);
+      return true;
+    });
+    registerBodyRead(() => bodyRef.current);
+    return () => {
+      registerEditorInsert(null);
+      registerBodyAppend(null);
+      registerBodyReplace(null);
+      registerBodyRead(null);
+    };
   }, [note.id]);
 
   const detectSlash = (view: EditorView) => {
@@ -338,13 +401,10 @@ export function NotePage({ note }: { note: Note }) {
       : pageWidth === "m"
         ? "max-w-[720px]"
         : "max-w-5xl";
-  const font = isRead
-    ? "font-serif"
-    : note.font === "serif"
-      ? "font-serif"
-      : note.font === "mono"
-        ? "font-mono text-[15px]"
-        : "font-sans";
+  const font = cn(
+    isRead ? "font-serif" : pageFontClass(note.font) || "font-sans",
+    !isRead && note.font === "mono" && "text-[15px]",
+  );
 
   return (
     <article
@@ -376,6 +436,7 @@ export function NotePage({ note }: { note: Note }) {
               className={cn(
                 "flex h-10 items-end px-4 transition-opacity duration-150 md:px-8",
                 coverHover ? "opacity-100" : "opacity-0",
+                "focus-within:opacity-100",
               )}
             >
               <TextButton onClick={() => patchNote(note.id, { cover: "#cfc8b8" })}>
@@ -388,134 +449,135 @@ export function NotePage({ note }: { note: Note }) {
 
       <div
         className={cn(
-          "mx-auto px-4 pb-32 md:px-6 lg:px-8",
+          "relative mx-auto px-4 pb-32 md:px-6 lg:px-8",
+          font,
           note.cover ? (isRead ? "pt-10" : "pt-8") : isRead ? "pt-10" : "pt-4",
           width,
           isRead && "motion-safe:animate-sheet",
         )}
       >
-        {(note.parent || !isRead) && (
+        {note.parent && (
         <div
           className={cn(
             "mb-2 flex flex-wrap items-center gap-1 text-[11px] text-mute",
             isRead && "opacity-70",
           )}
         >
-          {note.parent ? (
-            <>
-              <button
-                type="button"
-                className="font-serif hover:bg-paper-2 hover:text-ink"
-                onClick={() => setView({ kind: "database", id: note.parent! })}
-              >
-                {parentTitle(notes, note.parent)}
-              </button>
-              <ChevronRight size={12} strokeWidth={1.4} className="text-faint" aria-hidden />
-              <span className="truncate text-faint">{note.title || "Untitled"}</span>
-            </>
-          ) : (
-            !isRead && <MonoLabel>{note.template ? "Template" : "Page"}</MonoLabel>
-          )}
-          {!isRead && (
-            <span className="relative ml-auto flex flex-wrap items-center gap-1">
-              <span className="relative">
-                <ToolbarBtn
-                  label="Display settings"
-                  aria-label="Display settings"
-                  aria-expanded={pageOpen}
-                  active={pageOpen}
-                  onClick={() => setPageOpen((o) => !o)}
-                >
-                  <ChevronDown size={15} strokeWidth={1.4} />
-                </ToolbarBtn>
-                {pageOpen && (
-                  <Panel className="absolute right-0 top-full z-30 mt-1 w-[min(20rem,calc(100vw-2rem))] px-3 py-3 shadow-[0_16px_40px_-18px_rgba(0,0,0,0.28)] md:right-full md:top-0 md:mt-0 md:mr-2">
-                    <div className="mb-2">
-                      <MonoLabel>Display</MonoLabel>
-                    </div>
-                    <div className="flex flex-col gap-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <MonoLabel>Font</MonoLabel>
-                        <Segmented<PageFont>
-                          size="sm"
-                          aria-label="Page font"
-                          value={note.font ?? "sans"}
-                          onChange={(f) => patchNote(note.id, { font: f })}
-                          options={[
-                            { value: "sans", label: "Sans" },
-                            { value: "serif", label: "Serif" },
-                            { value: "mono", label: "Mono" },
-                          ]}
-                        />
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <MonoLabel>Width</MonoLabel>
-                        <Segmented<PageWidth>
-                          size="sm"
-                          aria-label="Page width"
-                          value={note.width ?? "l"}
-                          onChange={(w) => patchNote(note.id, { width: w })}
-                          options={[
-                            { value: "s", label: "Narrow" },
-                            { value: "m", label: "Medium" },
-                            { value: "l", label: "Wide" },
-                          ]}
-                        />
-                      </div>
-                      <Toggle
-                        checked={Boolean(note.smallText)}
-                        onChange={(on) => patchNote(note.id, { smallText: on })}
-                        label="Small text"
-                      />
-                      <label className="inline-flex items-center gap-2 font-serif text-sm text-mute">
-                        Cover
-                        <input
-                          type="color"
-                          className="h-7 w-8 cursor-pointer rounded-lg border border-line bg-paper p-0.5"
-                          value={toHex(note.cover)}
-                          onChange={(e) => patchNote(note.id, { cover: e.target.value })}
-                        />
-                      </label>
-                      {note.cover && (
-                        <TextButton onClick={() => patchNote(note.id, { cover: undefined })}>
-                          Remove cover
-                        </TextButton>
-                      )}
-                    </div>
-                  </Panel>
-                )}
-              </span>
-              <ToolbarBtn
-                label={starred.includes(note.id) ? "Starred" : "Star"}
-                aria-label={starred.includes(note.id) ? "Unstar" : "Star"}
-                active={starred.includes(note.id)}
-                onClick={() => toggleStar(note.id)}
-              >
-                <Star
-                  size={15}
-                  strokeWidth={1.4}
-                  fill={starred.includes(note.id) ? "currentColor" : "none"}
-                />
-              </ToolbarBtn>
-              <ToolbarBtn label="Insert" aria-label="Insert" onClick={() => setPlusOpen(true, "editor")}>
-                <Plus size={15} strokeWidth={1.4} />
-              </ToolbarBtn>
-              {speechSupported() && (
-                <ToolbarBtn
-                  label={listening ? "Listening" : "Transcribe"}
-                  aria-label="Transcribe"
-                  active={listening}
-                  onClick={toggleMic}
-                >
-                  <Mic size={15} strokeWidth={1.4} />
-                </ToolbarBtn>
-              )}
-              <ToolbarBtn label="Delete" aria-label="Delete note" onClick={() => setPendingDelete(true)}>
-                <Trash2 size={15} strokeWidth={1.4} />
-              </ToolbarBtn>
-            </span>
-          )}
+          <button
+            type="button"
+            className="klever-focus rounded-md px-1 hover:bg-ink/[0.06] hover:text-ink"
+            onClick={() => setView({ kind: "database", id: note.parent! })}
+          >
+            {parentTitle(notes, note.parent)}
+          </button>
+          <ChevronRight size={12} strokeWidth={1.4} className="text-faint" aria-hidden />
+          <span className="truncate text-faint">{note.title || "Untitled"}</span>
         </div>
+        )}
+        {!isRead && (
+          <div className="mb-1 flex flex-wrap items-center justify-end gap-2 font-sans text-base">
+          <span
+            ref={pageMenuRef}
+            className="klever-reveal relative z-10 flex flex-wrap items-center justify-end gap-0.5"
+            data-open={pageOpen ? "true" : undefined}
+          >
+            <span className="relative">
+              <ToolbarBtn
+                label="Display settings"
+                aria-label="Display settings"
+                aria-expanded={pageOpen}
+                active={pageOpen}
+                onClick={() => setPageOpen((o) => !o)}
+              >
+                <ChevronDown size={15} strokeWidth={1.4} />
+              </ToolbarBtn>
+              {pageOpen && (
+                <Panel className="absolute right-0 top-full z-30 mt-1 w-[min(20rem,calc(100vw-2rem))] px-3 py-3 md:right-full md:top-0 md:mt-0 md:mr-2">
+                  <div className="mb-2">
+                    <MonoLabel>Display</MonoLabel>
+                  </div>
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <MonoLabel>Font</MonoLabel>
+                      <Segmented<PageFont>
+                        size="sm"
+                        aria-label="Page font"
+                        value={note.font ?? "sans"}
+                        onChange={(f) => patchNote(note.id, { font: f })}
+                        options={[
+                          { value: "sans", label: "Sans" },
+                          { value: "serif", label: "Serif" },
+                          { value: "mono", label: "Mono" },
+                        ]}
+                      />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <MonoLabel>Width</MonoLabel>
+                      <Segmented<PageWidth>
+                        size="sm"
+                        aria-label="Page width"
+                        value={note.width ?? "l"}
+                        onChange={(w) => patchNote(note.id, { width: w })}
+                        options={[
+                          { value: "s", label: "Narrow" },
+                          { value: "m", label: "Medium" },
+                          { value: "l", label: "Wide" },
+                        ]}
+                      />
+                    </div>
+                    <Toggle
+                      checked={Boolean(note.smallText)}
+                      onChange={(on) => patchNote(note.id, { smallText: on })}
+                      label="Small text"
+                    />
+                    <label className="inline-flex items-center gap-2 text-sm text-mute">
+                      Cover
+                      <input
+                        type="color"
+                        className="h-7 w-8 cursor-pointer rounded-lg border border-line bg-paper p-0.5"
+                        value={toHex(note.cover)}
+                        onChange={(e) => patchNote(note.id, { cover: e.target.value })}
+                      />
+                    </label>
+                    {note.cover && (
+                      <TextButton onClick={() => patchNote(note.id, { cover: undefined })}>
+                        Remove cover
+                      </TextButton>
+                    )}
+                  </div>
+                </Panel>
+              )}
+            </span>
+            <ToolbarBtn
+              label={starred.includes(note.id) ? "Starred" : "Star"}
+              aria-label={starred.includes(note.id) ? "Unstar" : "Star"}
+              active={starred.includes(note.id)}
+              onClick={() => toggleStar(note.id)}
+            >
+              <Star
+                size={15}
+                strokeWidth={1.4}
+                fill={starred.includes(note.id) ? "currentColor" : "none"}
+              />
+            </ToolbarBtn>
+            <ToolbarBtn label="Insert" aria-label="Insert" onClick={() => setPlusOpen(true, "editor")}>
+              <Plus size={15} strokeWidth={1.4} />
+            </ToolbarBtn>
+            {speechSupported() && (
+              <ToolbarBtn
+                label={listening ? "Listening" : "Transcribe"}
+                aria-label="Transcribe"
+                active={listening}
+                onClick={toggleMic}
+              >
+                <Mic size={15} strokeWidth={1.4} />
+              </ToolbarBtn>
+            )}
+            <ToolbarBtn label="Delete" aria-label="Delete page" onClick={() => setPendingDelete(true)}>
+              <Trash2 size={15} strokeWidth={1.4} />
+            </ToolbarBtn>
+          </span>
+          </div>
         )}
 
         <div className={cn("mb-3", isRead && "mb-5")}>
@@ -541,16 +603,22 @@ export function NotePage({ note }: { note: Note }) {
         </div>
 
         {isRead ? (
-          <h1 className="w-full font-serif text-[2rem] leading-[1.15] tracking-tight text-ink md:text-[2.75rem]">
+          <h1 className="w-full break-words text-[2rem] font-semibold leading-[1.15] tracking-tight text-ink md:text-[2.75rem]">
             {note.title || "Untitled"}
           </h1>
         ) : (
-          <input
+          <textarea
             ref={titleInputRef}
+            rows={1}
+            wrap="soft"
             value={draftTitle}
-            onChange={(e) => setDraftTitle(e.target.value)}
+            onChange={(e) => {
+              setDraftTitle(e.target.value);
+              fitTitleHeight(e.target);
+            }}
             onBlur={() => {
-              const title = draftTitle;
+              const title = draftTitle.replace(/\s+/g, " ").trim();
+              if (title !== draftTitle) setDraftTitle(title);
               if (title === note.title) return;
               const folder = note.path.includes("/")
                 ? note.path.split("/").slice(0, -1).join("/")
@@ -567,11 +635,12 @@ export function NotePage({ note }: { note: Note }) {
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
-                (e.target as HTMLInputElement).blur();
+                (e.target as HTMLTextAreaElement).blur();
               }
             }}
-            className="w-full bg-transparent font-sans text-3xl leading-tight tracking-tight text-ink placeholder:text-faint focus-visible:outline-none md:text-4xl"
+            className="klever-focus field-sizing-content h-auto w-full resize-none overflow-hidden break-words rounded-md bg-transparent text-3xl font-semibold leading-[1.15] tracking-tight text-ink placeholder:text-faint md:text-4xl"
             placeholder="Untitled"
+            aria-label="Page title"
           />
         )}
 
@@ -593,16 +662,27 @@ export function NotePage({ note }: { note: Note }) {
             </div>
           )
         ) : (
-          <PropertyStrip note={note} onManage={() => setManageProps(true)} />
+          <PropertyStrip note={note} />
+        )}
+
+        {meetingPage && (
+          <div className={isRead ? "mt-8" : "mt-6"}>
+            <MeetingNotesBlock note={note} readOnly={isRead} />
+          </div>
         )}
 
         <div
           className={cn(
-            isRead ? "mt-12" : "mt-10",
-            font,
+            meetingPage ? (isRead ? "mt-10" : "mt-8") : isRead ? "mt-12" : "mt-10",
             !isRead && note.smallText && "text-[14px] leading-7",
+            rewriteFlash && "writing-rewrite-flash px-2 -mx-2 py-1",
           )}
         >
+          {meetingPage && (
+            <div className={isRead ? "mb-4" : "mb-3"}>
+              <MonoLabel>Notes</MonoLabel>
+            </div>
+          )}
           {isRead ? (
             <MarkdownPreview
               note={{ ...note, body }}
@@ -674,6 +754,9 @@ export function NotePage({ note }: { note: Note }) {
                   query={slash.query}
                   index={slashI}
                   onIndex={setSlashI}
+                  onFiltered={(cmds) => {
+                    slashHitsRef.current = cmds;
+                  }}
                   onClose={() => {
                     setSlash(null);
                     setSlashRange(null);
@@ -702,16 +785,16 @@ export function NotePage({ note }: { note: Note }) {
 
         {!isRead && writingEnabled && (
           <WritingToolsBar
+            note={note}
             body={body}
             busy={busy}
             setBusy={setBusy}
             setBody={setBody}
             setError={setError}
             viewRef={viewRef}
+            onApplied={triggerRewriteFlash}
           />
-        )}
-      </div>
-      {manageProps && <PropertyManager note={note} onClose={() => setManageProps(false)} />}
+        )}      </div>
       {pendingDelete && (
         <ConfirmDialog
           title="Delete this page?"
@@ -735,63 +818,4 @@ function parentTitle(notes: Note[], id: string) {
 function toHex(cover?: string) {
   if (cover && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(cover)) return cover;
   return "#cfc8b8";
-}
-
-function PropertyStrip({ note, onManage }: { note: Note; onManage: () => void }) {
-  const notes = useApp((s) => s.notes);
-  const patchNote = useApp((s) => s.patchNote);
-  const setView = useApp((s) => s.setView);
-  const { open } = useContextMenu();
-  const target = schemaTarget(note, notes);
-  const schema = (target.schema ?? []).filter((s) => !s.hidden);
-
-  return (
-    <div className="mt-8 space-y-1.5">
-      <div className="flex flex-wrap gap-2">
-        {note.tags.map((t) => (
-            <Chip
-              key={t}
-              selected
-              tone="tag"
-              onClick={() => setView({ kind: "tag", tag: t })}
-              onContextMenu={(e) => open(e, tagMenuItems(t, { noteId: note.id }))}
-              className="font-mono"
-            >
-              #{t}
-            </Chip>
-        ))}
-        <input
-          placeholder="add tag"
-          className="w-24 bg-transparent font-mono text-[11px] text-tag/70 placeholder:text-tag/35 focus-visible:outline-none"
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              const v = e.currentTarget.value.replace(/^#/, "").trim();
-              if (v && !note.tags.includes(v)) patchNote(note.id, { tags: [...note.tags, v] });
-              e.currentTarget.value = "";
-            }
-          }}
-        />
-        <TextButton onClick={onManage} className="text-prop/80 hover:text-prop">
-          <Plus size={13} strokeWidth={1.4} />
-          property
-        </TextButton>
-      </div>
-      {schema.map((s) => (
-        <div key={s.key} className="grid grid-cols-[140px_1fr] items-center gap-3 py-0.5">
-          <span className="flex min-w-0 items-center gap-1.5">
-            <ChromeIcon icon={PROP_ICONS[s.type]} className={accentIconClass(s.type)} />
-            <MonoLabel>{s.name}</MonoLabel>
-          </span>
-          <PropInput
-            note={note}
-            field={s.key}
-            type={s.type}
-            options={s.options}
-            relationTo={s.relationTo}
-            spec={s}
-          />
-        </div>
-      ))}
-    </div>
-  );
 }
