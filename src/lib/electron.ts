@@ -1,6 +1,6 @@
-/** True when running inside an Electron renderer. */
+/** True when running inside the Klever desktop app (preload bridge), not Cursor/Chrome. */
 export function isElectron(): boolean {
-  return typeof navigator !== "undefined" && /Electron/i.test(navigator.userAgent);
+  return typeof window !== "undefined" && Boolean(window.kleverDesktop);
 }
 
 /** True on macOS (browser or Electron). */
@@ -18,6 +18,8 @@ export function isMacElectron(): boolean {
 /** Tag `<html>` so CSS can target Electron / macOS chrome without JS in every bar. */
 export function applyElectronPlatformClass(): void {
   const root = document.documentElement;
-  if (isElectron()) root.classList.add("electron");
-  if (isMacElectron()) root.classList.add("electron-mac");
+  root.classList.toggle("electron", isElectron());
+  root.classList.toggle("electron-mac", isMacElectron());
 }
+
+if (typeof document !== "undefined") applyElectronPlatformClass();

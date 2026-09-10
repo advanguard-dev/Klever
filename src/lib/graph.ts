@@ -30,8 +30,14 @@ export function buildGraph(notes: Note[]): { nodes: GraphNode[]; edges: GraphEdg
       if (hit) add(note.id, hit.id, "link");
     }
     for (const [key, val] of Object.entries(note.props)) {
-      const schema = notes.find((n) => n.id === note.parent)?.schema?.find((s) => s.key === key);
-      const isRel = schema?.type === "relation" || key === "related" || key === "people";
+      const schema =
+        notes.find((n) => n.id === note.parent)?.schema?.find((s) => s.key === key) ??
+        note.schema?.find((s) => s.key === key);
+      const isRel =
+        schema?.type === "relation" ||
+        schema?.type === "people" ||
+        key === "related" ||
+        key === "people";
       if (!isRel) continue;
       const list = Array.isArray(val) ? val : val ? [val] : [];
       for (const item of list) {
@@ -71,8 +77,18 @@ export function relationsTo(noteId: string, notes: Note[]): Note[] {
   return notes.filter((n) => {
     if (n.id === noteId) return false;
     return Object.entries(n.props).some(([key, val]) => {
-      const schema = notes.find((d) => d.id === n.parent)?.schema?.find((s) => s.key === key);
-      if (schema && schema.type !== "relation" && key !== "related") return false;
+      const schema =
+        notes.find((d) => d.id === n.parent)?.schema?.find((s) => s.key === key) ??
+        n.schema?.find((s) => s.key === key);
+      if (
+        schema &&
+        schema.type !== "relation" &&
+        schema.type !== "people" &&
+        key !== "related" &&
+        key !== "people"
+      ) {
+        return false;
+      }
       const list = Array.isArray(val) ? val : val ? [val] : [];
       return list.some((item) => resolveLink(String(item), notes)?.id === noteId || String(item) === note?.title);
     });

@@ -11,7 +11,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { Search } from "lucide-react";
 import dynamicIconImports from "lucide-react/dynamicIconImports";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 const EMOJI_MARKS = ["✦", "◇", "○", "★", "✎", "▣", "▤", "📌", "💡", "🔥", "🌱", "📚"];
 
@@ -29,33 +29,6 @@ export function IconChooser({
   addLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const [q, setQ] = useState("");
-
-  useEffect(() => {
-    if (open) setQ("");
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        setOpen(false);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
-
-  const curated = useMemo(() => filterPageIcons(q), [q]);
-  const extras = useMemo(() => extraLucideNames(q, curated), [q, curated]);
-
-  const pick = (next: string | undefined) => {
-    onChange(next);
-    setOpen(false);
-  };
-
-  const emojiValue = isLucideIcon(value) ? "" : (value ?? "");
 
   return (
     <div className="group/icon">
@@ -65,7 +38,7 @@ export function IconChooser({
           aria-label="Change icon"
           aria-haspopup="dialog"
           aria-expanded={open}
-          className="inline-flex items-center justify-center rounded-xl hover:bg-paper-2"
+          className="klever-focus inline-flex items-center justify-center rounded-xl hover:bg-ink/[0.06]"
           style={{ width: size + 12, height: size + 12 }}
           onClick={() => setOpen(true)}
         >
@@ -77,99 +50,127 @@ export function IconChooser({
           aria-label={addLabel}
           aria-haspopup="dialog"
           aria-expanded={open}
-          className="mt-1 block font-serif text-[12px] text-faint opacity-0 transition-opacity duration-150 hover:text-ink group-hover/icon:opacity-100 group-hover/page:opacity-100"
+          className="klever-focus mt-1 block rounded-md text-[12px] text-mute hover:text-ink"
           onClick={() => setOpen(true)}
         >
           {addLabel}
         </button>
       )}
       {open && (
-        <Overlay onClose={() => setOpen(false)}>
-          <Panel className="overflow-hidden p-4">
-            <MonoLabel>Icon</MonoLabel>
-            <label className="mt-3 flex items-center gap-2">
-              <Search size={14} strokeWidth={1.4} className="shrink-0 text-faint" aria-hidden />
-              <Field
-                autoFocus
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    const first = curated[0] ?? extras[0];
-                    if (first) pick(lucideIconValue(first));
-                  }
-                }}
-                placeholder="Search Lucide icons"
-                aria-label="Search Lucide icons"
-                autoComplete="off"
-                className="py-1.5"
-              />
-            </label>
-            <div className="mt-3 max-h-64 overflow-y-auto">
-              {curated.length > 0 && (
-                <IconGrid
-                  names={curated}
-                  current={value}
-                  onPick={(name) => pick(lucideIconValue(name))}
-                />
-              )}
-              {extras.length > 0 && (
-                <div className="mt-3">
-                  <MonoLabel>Lucide</MonoLabel>
-                  <div className="mt-2">
-                    <IconGrid
-                      names={extras}
-                      current={value}
-                      onPick={(name) => pick(lucideIconValue(name))}
-                      extra
-                    />
-                  </div>
-                </div>
-              )}
-              {!curated.length && !extras.length && (
-                <p className="py-6 text-center text-sm text-mute">No matching icons.</p>
-              )}
-            </div>
-            <div className="mt-4 border-t border-line pt-3">
-              <MonoLabel>Emoji</MonoLabel>
-              <div className="mt-2 flex flex-wrap gap-1">
-                {EMOJI_MARKS.map((mark) => (
-                  <IconButton
-                    key={mark}
-                    aria-label={mark}
-                    active={value === mark}
-                    className="text-base"
-                    onClick={() => pick(mark)}
-                  >
-                    {mark}
-                  </IconButton>
-                ))}
-              </div>
-              <Field
-                value={emojiValue}
-                onChange={(e) => onChange(e.target.value.trim() ? e.target.value : undefined)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    setOpen(false);
-                  }
-                }}
-                placeholder="Emoji or short mark"
-                aria-label="Emoji or short mark"
-                autoComplete="off"
-                className="mt-2 py-1.5"
-              />
-            </div>
-            {value && (
-              <GhostButton className="mt-3 h-8 px-3 py-0 text-xs" onClick={() => pick(undefined)}>
-                Remove icon
-              </GhostButton>
-            )}
-          </Panel>
-        </Overlay>
+        <IconPickerOverlay
+          value={value}
+          onChange={onChange}
+          onClose={() => setOpen(false)}
+        />
       )}
     </div>
+  );
+}
+
+export function IconPickerOverlay({
+  value,
+  onChange,
+  onClose,
+}: {
+  value?: string;
+  onChange: (icon: string | undefined) => void;
+  onClose: () => void;
+}) {
+  const [q, setQ] = useState("");
+  const curated = useMemo(() => filterPageIcons(q), [q]);
+  const extras = useMemo(() => extraLucideNames(q, curated), [q, curated]);
+  const emojiValue = isLucideIcon(value) ? "" : (value ?? "");
+
+  const pick = (next: string | undefined) => {
+    onChange(next);
+    onClose();
+  };
+
+  return (
+    <Overlay onClose={onClose} title="Choose icon">
+      <Panel className="overflow-hidden p-4">
+        <MonoLabel>Icon</MonoLabel>
+        <label className="mt-3 flex items-center gap-2">
+          <Search size={14} strokeWidth={1.4} className="shrink-0 text-faint" aria-hidden />
+          <Field
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                const first = curated[0] ?? extras[0];
+                if (first) pick(lucideIconValue(first));
+              }
+            }}
+            placeholder="Search icons"
+            aria-label="Search Lucide icons"
+            autoComplete="off"
+            className="py-1.5"
+          />
+        </label>
+        <div className="mt-3 max-h-64 overflow-y-auto">
+          {curated.length > 0 && (
+            <IconGrid
+              names={curated}
+              current={value}
+              onPick={(name) => pick(lucideIconValue(name))}
+            />
+          )}
+          {extras.length > 0 && (
+            <div className="mt-3">
+              <MonoLabel>Lucide</MonoLabel>
+              <div className="mt-2">
+                <IconGrid
+                  names={extras}
+                  current={value}
+                  onPick={(name) => pick(lucideIconValue(name))}
+                  extra
+                />
+              </div>
+            </div>
+          )}
+          {!curated.length && !extras.length && (
+            <p className="py-6 text-center text-sm text-mute">No matching icons.</p>
+          )}
+        </div>
+        <div className="mt-4 border-t border-line pt-3">
+          <MonoLabel>Emoji</MonoLabel>
+          <div className="mt-2 flex flex-wrap gap-1">
+            {EMOJI_MARKS.map((mark) => (
+              <IconButton
+                key={mark}
+                aria-label={mark}
+                active={value === mark}
+                className="text-base"
+                onClick={() => pick(mark)}
+              >
+                {mark}
+              </IconButton>
+            ))}
+          </div>
+          <Field
+            value={emojiValue}
+            onChange={(e) => onChange(e.target.value.trim() ? e.target.value : undefined)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                onClose();
+              }
+            }}
+            placeholder="Emoji or short mark"
+            aria-label="Emoji or short mark"
+            autoComplete="off"
+            className="mt-2 py-1.5"
+          />
+        </div>
+        {value && (
+          <GhostButton className="mt-3 h-8 px-3 py-0 text-xs" onClick={() => pick(undefined)}>
+            Remove icon
+          </GhostButton>
+        )}
+      </Panel>
+    </Overlay>
   );
 }
 

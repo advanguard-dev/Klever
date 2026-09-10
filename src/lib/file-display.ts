@@ -1,40 +1,27 @@
-import type { BlobRecord } from "@/types";
 import { assetKindFromPath, parseAlt, type AssetKind } from "@/lib/assets";
 
-export type FileDisplay = "link" | "preview" | "card";
+export type FileDisplay = "link" | "card";
 
-const DISPLAYS = new Set<FileDisplay>(["link", "preview", "card"]);
+const DISPLAYS = new Set<FileDisplay>(["link", "card"]);
 
 const ASSET_MD_RE = /(!?)\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g;
 
 export function parseFileDisplay(title?: string | null): FileDisplay | undefined {
   const t = title?.trim().toLowerCase();
+  if (t === "preview") return "card"; // legacy notes — preview removed
   if (t && DISPLAYS.has(t as FileDisplay)) return t as FileDisplay;
   return undefined;
 }
 
-export function defaultFileDisplay(_kind: AssetKind): FileDisplay {
+export function defaultFileDisplay(_kind?: AssetKind): FileDisplay {
   return "card";
 }
 
-export function canPreviewKind(kind: AssetKind) {
-  return (
-    kind === "image" ||
-    kind === "audio" ||
-    kind === "video" ||
-    kind === "pdf" ||
-    kind === "text" ||
-    kind === "table"
-  );
-}
-
-export function fileDisplayOptions(kind: AssetKind): { value: FileDisplay; label: string }[] {
-  const all: { value: FileDisplay; label: string }[] = [
+export function fileDisplayOptions(_kind?: AssetKind): { value: FileDisplay; label: string }[] {
+  return [
     { value: "link", label: "Link" },
-    { value: "preview", label: "Preview" },
     { value: "card", label: "Card" },
   ];
-  return canPreviewKind(kind) ? all : all.filter((o) => o.value !== "preview");
 }
 
 export function kindLabel(kind: AssetKind) {
@@ -67,20 +54,6 @@ export function formatBytes(n: number) {
   return `${(n / (1024 * 1024)).toFixed(n < 10 * 1024 * 1024 ? 1 : 0)} MB`;
 }
 
-export function decodeTextSnippet(rec: BlobRecord, max = 1200) {
-  if (!rec.data.byteLength) return "";
-  const text = new TextDecoder("utf-8", { fatal: false }).decode(rec.data.slice(0, max * 2));
-  return text.replace(/\u0000/g, "").slice(0, max);
-}
-
-export function tableRowsFromText(text: string, maxRows = 6, maxCols = 8) {
-  return text
-    .split(/\r?\n/)
-    .filter((line) => line.length > 0)
-    .slice(0, maxRows)
-    .map((line) => line.split(/[\t,]/).slice(0, maxCols));
-}
-
 export function serializeFileMarkdown(opts: {
   src: string;
   name: string;
@@ -88,13 +61,9 @@ export function serializeFileMarkdown(opts: {
   display: FileDisplay;
   width?: number;
 }) {
-  const { src, kind, display, width } = opts;
+  const { src, kind, display } = opts;
   const name = opts.name.trim() || fileNameFromPath(src);
   const title = display === defaultFileDisplay(kind) ? "" : ` "${display}"`;
-  if (kind === "image" && display !== "link") {
-    const alt = width ? `${name}|${Math.round(width)}` : name;
-    return `![${alt}](${src}${title})`;
-  }
   return `[${name}](${src}${title})`;
 }
 

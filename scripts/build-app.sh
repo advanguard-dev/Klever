@@ -12,7 +12,10 @@ if [[ ! -d "$ROOT/dist/index.html" && ! -f "$ROOT/dist/index.html" ]]; then
   exit 1
 fi
 
+# Numbered leftovers (Klever 2.app …) keep bundle id com.klever.app and steal
+# `open -a Klever` / Dock / Spotlight away from /Applications/Klever.app.
 rm -rf "$OUT"/Klever-darwin-arm64 "$OUT"/mac-arm64/Klever.app
+rm -rf "$OUT"/mac-arm64/Klever\ *.app "$OUT"/Klever-darwin-arm64/Klever\ *.app
 
 npx --yes @electron/packager@18.3.6 "$ROOT" Klever \
   --platform=darwin \

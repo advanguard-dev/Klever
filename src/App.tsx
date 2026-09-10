@@ -1,8 +1,11 @@
+import { ContextMenuHost } from "@/components/ContextMenu";
 import { AppShell } from "@/components/layout/AppShell";
 import { Welcome } from "@/components/layout/Welcome";
+import { UnlockWorkspace } from "@/components/layout/UnlockWorkspace";
 import { WorkspaceSetup } from "@/components/layout/WorkspaceSetup";
-import { ContextMenuHost } from "@/components/ContextMenu";
 import { defaultWorkspaceTools } from "@/lib/workspaces";
+import { applyDocumentLang } from "@/lib/i18n";
+import { useT } from "@/lib/use-t";
 import { useApp } from "@/store";
 import { nextEditorMode } from "@/types";
 import { useEffect } from "react";
@@ -14,7 +17,9 @@ declare global {
 }
 
 export function App() {
+  const t = useT();
   const ready = useApp((s) => s.ready);
+  const locale = useApp((s) => s.locale);
   const view = useApp((s) => s.view);
   const hydrate = useApp((s) => s.hydrate);
   const setCommandOpen = useApp((s) => s.setCommandOpen);
@@ -41,6 +46,10 @@ export function App() {
   }, [hydrate]);
 
   useEffect(() => {
+    applyDocumentLang(locale);
+  }, [locale]);
+
+  useEffect(() => {
     window.__kleverFlush = flushNow;
     const onHide = () => {
       if (document.visibilityState !== "hidden") return;
@@ -61,6 +70,10 @@ export function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const meta = e.metaKey || e.ctrlKey;
+      if (view.kind === "welcome" || view.kind === "unlock") {
+        if (e.key === "Escape") closeWorkspaceSetup();
+        return;
+      }
       if (meta && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setCommandOpen(!commandOpen);
@@ -76,6 +89,10 @@ export function App() {
       if (meta && e.shiftKey && e.key.toLowerCase() === "d" && tools.brainDump) {
         e.preventDefault();
         setDumpOpen(true);
+      }
+      if (meta && e.shiftKey && e.key.toLowerCase() === "m" && tools.meeting) {
+        e.preventDefault();
+        setView({ kind: "meeting" });
       }
       if (meta && e.key === "\\") {
         e.preventDefault();
@@ -116,13 +133,15 @@ export function App() {
     toggleSidebar,
     tools.brainDump,
     tools.graph,
+    tools.meeting,
+    view.kind,
   ]);
 
   if (!ready) {
     return (
-      <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-paper">
-        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-mute">Vault</span>
-        <p className="font-serif text-5xl italic tracking-tight">Klever</p>
+      <div className="flex min-h-dvh flex-col items-center justify-center gap-3 bg-paper">
+        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-mute">{t("shell.vault")}</span>
+        <p className="font-serif text-5xl font-semibold tracking-tight">Klever</p>
       </div>
     );
   }
@@ -131,6 +150,14 @@ export function App() {
     return (
       <ContextMenuHost>
         <Welcome />
+        <WorkspaceSetup />
+      </ContextMenuHost>
+    );
+  }
+  if (view.kind === "unlock") {
+    return (
+      <ContextMenuHost>
+        <UnlockWorkspace />
         <WorkspaceSetup />
       </ContextMenuHost>
     );

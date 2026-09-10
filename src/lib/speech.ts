@@ -107,7 +107,7 @@ export async function startDumpTranscription(
   }
 
   if (!webSpeechSupported()) {
-    throw new Error("No speech recognition backend is available.");
+    throw new Error("No speech recognition backend is available. Paste or type instead.");
   }
   const webLang = resolveWebSpeechLang(language);
   opts?.onStatus?.(`Listening (browser speech · ${webLang})…`);

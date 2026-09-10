@@ -24,7 +24,7 @@ export function formatShort(iso?: string) {
   if (!iso) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(undefined, {
+  return d.toLocaleDateString(document.documentElement.lang || undefined, {
     month: "short",
     day: "numeric",
     year: "numeric",

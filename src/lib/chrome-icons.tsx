@@ -8,6 +8,7 @@ import type { DbViewType, EditorMode, PropType } from "@/types";
 import type { LucideIcon } from "lucide-react";
 import {
   AlignLeft,
+  AudioLines,
   Brackets,
   Calendar,
   CalendarDays,
@@ -22,6 +23,7 @@ import {
   FilePlus,
   FileText,
   GalleryHorizontal,
+  GanttChart,
   GitBranch,
   Globe,
   Hash,
@@ -33,6 +35,7 @@ import {
   Library,
   Link2,
   List,
+  MapPin,
   ListOrdered,
   ListTodo,
   MessageSquareWarning,
@@ -47,6 +50,7 @@ import {
   Table2,
   Tags,
   Type,
+  Users,
   Volume2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -194,6 +198,8 @@ export const PROP_ICONS: Record<PropType, LucideIcon> = {
   checkbox: SquareCheck,
   url: Link2,
   relation: GitBranch,
+  people: Users,
+  location: MapPin,
   tags: Hash,
   files: Paperclip,
   formula: Equal,
@@ -207,6 +213,7 @@ export const VIEW_ICONS: Record<DbViewType, LucideIcon> = {
   card: GalleryHorizontal,
   list: List,
   calendar: CalendarDays,
+  timeline: GanttChart,
 };
 
 export const MODE_ICONS: Record<EditorMode, LucideIcon> = {
@@ -234,6 +241,7 @@ const COMMAND_ICONS: Record<string, LucideIcon> = {
   audio: Volume2,
   file: File,
   dump: Sparkles,
+  meeting: AudioLines,
   transcribe: Mic,
   page: FilePlus,
   daily: Calendar,

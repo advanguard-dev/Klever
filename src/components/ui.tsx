@@ -1,12 +1,15 @@
 import { cn } from "@/lib/cn";
+import { useT } from "@/lib/use-t";
 import { ChevronDown } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import {
+  forwardRef,
   useEffect,
   useId,
   useRef,
   useState,
   type ButtonHTMLAttributes,
+  type CSSProperties,
   type HTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
@@ -26,10 +29,10 @@ export function IconButton({
     <button
       type="button"
       className={cn(
-        "inline-flex h-8 w-8 max-md:h-11 max-md:w-11 items-center justify-center rounded-md text-mute transition-colors duration-150 ease-out",
-        "hover:bg-paper-2 hover:text-ink active:bg-paper-2 active:text-ink",
+        "inline-flex h-9 w-9 max-md:h-11 max-md:w-11 items-center justify-center rounded-md text-mute transition-colors duration-150 ease-out",
+        "hover:bg-paper-2 hover:text-ink active:bg-line active:text-ink",
         focusRing,
-        "disabled:cursor-not-allowed disabled:opacity-40",
+        "disabled:cursor-not-allowed disabled:opacity-50",
         active && "bg-paper-2 text-ink",
         className,
       )}
@@ -48,13 +51,15 @@ export function ToolbarBtn({
   shortcut,
   onMouseEnter,
   onMouseLeave,
+  onFocus,
+  onBlur,
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   active?: boolean;
   label: string;
   /** Show the label next to the icon (not only sr-only). */
   showLabel?: boolean;
-  /** Keyboard shortcut; after 1.5s hover, shown for 2s. */
+  /** Keyboard shortcut; after 1.5s hover or focus, shown for 2s. */
   shortcut?: string;
 }) {
   const [hint, setHint] = useState(false);
@@ -65,6 +70,15 @@ export function ToolbarBtn({
     window.clearTimeout(showTimer.current);
     window.clearTimeout(hideTimer.current);
     setHint(false);
+  };
+
+  const armHint = () => {
+    if (!shortcut) return;
+    clearHint();
+    showTimer.current = window.setTimeout(() => {
+      setHint(true);
+      hideTimer.current = window.setTimeout(() => setHint(false), 2000);
+    }, 1500);
   };
 
   useEffect(() => () => {
@@ -78,23 +92,27 @@ export function ToolbarBtn({
         type="button"
         title={shortcut ? undefined : (title ?? label)}
         aria-keyshortcuts={shortcut}
+        aria-pressed={active}
         className={cn(
-          "inline-flex h-8 max-md:h-11 max-md:min-w-11 items-center justify-center gap-1.5 rounded-lg px-2 font-serif text-sm text-mute transition-colors duration-150 ease-out",
-          "hover:bg-paper-2 hover:text-ink active:bg-paper-2",
+          "inline-flex h-9 max-md:h-11 max-md:min-w-11 items-center justify-center gap-1.5 rounded-md px-2 text-sm font-medium text-mute transition-colors duration-150 ease-out",
+          "hover:bg-paper-2 hover:text-ink active:bg-line",
           focusRing,
-          "disabled:cursor-not-allowed disabled:opacity-40",
+          "disabled:cursor-not-allowed disabled:opacity-50",
           active && "bg-paper-2 text-ink",
           className,
         )}
         {...props}
+        onFocus={(e) => {
+          onFocus?.(e);
+          armHint();
+        }}
+        onBlur={(e) => {
+          onBlur?.(e);
+          if (shortcut) clearHint();
+        }}
         onMouseEnter={(e) => {
           onMouseEnter?.(e);
-          if (!shortcut) return;
-          clearHint();
-          showTimer.current = window.setTimeout(() => {
-            setHint(true);
-            hideTimer.current = window.setTimeout(() => setHint(false), 2000);
-          }, 1500);
+          armHint();
         }}
         onMouseLeave={(e) => {
           onMouseLeave?.(e);
@@ -111,9 +129,9 @@ export function ToolbarBtn({
       {hint && shortcut && (
         <span
           role="tooltip"
-          className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 flex -translate-x-1/2 items-center gap-1.5 rounded-lg border border-line bg-paper px-2 py-1 shadow-[0_12px_40px_-18px_rgba(0,0,0,0.35)]"
+          className="pointer-events-none absolute left-1/2 top-full z-50 mt-1.5 flex -translate-x-1/2 items-center gap-1.5 rounded-md border border-line bg-paper px-2 py-1 shadow-md"
         >
-          <span className="whitespace-nowrap font-serif text-xs text-ink">{label}</span>
+          <span className="whitespace-nowrap text-xs text-ink">{label}</span>
           <Kbd>{shortcut}</Kbd>
         </span>
       )}
@@ -129,8 +147,8 @@ export function TextButton({
     <button
       type="button"
       className={cn(
-        "inline-flex items-center gap-2 rounded-lg px-2 py-1 font-serif text-sm text-mute transition-colors duration-150 ease-out",
-        "hover:bg-paper-2 hover:text-ink active:bg-paper-2",
+        "inline-flex items-center gap-2 rounded-md px-2 py-1 text-sm font-medium text-mute transition-colors duration-150 ease-out",
+        "hover:bg-paper-2 hover:text-ink active:bg-line",
         focusRing,
         "disabled:cursor-not-allowed disabled:opacity-40",
         className,
@@ -148,10 +166,10 @@ export function SolidButton({
     <button
       type="button"
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-xl bg-ink px-4 py-2 font-serif text-sm text-paper transition-opacity duration-150 ease-out",
-        "hover:opacity-85 active:opacity-70",
+        "inline-flex h-9 items-center justify-center gap-2 rounded-md bg-ink px-4 text-sm font-medium text-paper transition-colors duration-150 ease-out",
+        "hover:bg-ink/90 active:bg-ink/80",
         focusRingSolid,
-        "disabled:cursor-not-allowed disabled:opacity-40",
+        "disabled:cursor-not-allowed disabled:opacity-50",
         className,
       )}
       {...props}
@@ -167,10 +185,10 @@ export function GhostButton({
     <button
       type="button"
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-xl border border-line px-4 py-2 font-serif text-sm text-ink transition-colors duration-150 ease-out",
-        "hover:bg-paper-2 hover:border-ink/25 active:bg-paper-2",
+        "inline-flex h-9 items-center justify-center gap-2 rounded-md border border-line bg-paper px-4 text-sm font-medium text-ink transition-colors duration-150 ease-out",
+        "hover:bg-paper-2 hover:border-ink/20 active:bg-line",
         focusRing,
-        "disabled:cursor-not-allowed disabled:opacity-40",
+        "disabled:cursor-not-allowed disabled:opacity-50",
         className,
       )}
       {...props}
@@ -189,7 +207,7 @@ export function MenuTrigger({
       type="button"
       aria-expanded={open}
       className={cn(
-        "inline-flex items-center gap-2 rounded-xl border border-line bg-paper px-3 py-1.5 font-serif text-sm text-ink transition-colors duration-150 ease-out",
+        "inline-flex h-9 items-center gap-2 rounded-md border border-line bg-paper px-3 text-sm font-medium text-ink transition-colors duration-150 ease-out",
         "hover:bg-paper-2",
         focusRing,
         open && "bg-paper-2",
@@ -213,19 +231,39 @@ export function Segmented<T extends string>({
   onChange,
   options,
   size = "md",
+  variant = "well",
   "aria-label": ariaLabel,
 }: {
   value: T;
   onChange: (value: T) => void;
   options: { value: T; label: string; icon?: LucideIcon; iconOnly?: boolean }[];
   size?: "sm" | "md";
+  variant?: "well" | "ghost";
   "aria-label"?: string;
 }) {
+  const ghost = variant === "ghost";
   return (
     <div
-      role="tablist"
+      role="radiogroup"
       aria-label={ariaLabel}
-      className="inline-flex rounded-xl border border-line bg-paper p-0.5"
+      className={
+        ghost
+          ? "inline-flex items-center gap-0.5"
+          : "inline-flex rounded-md border border-line bg-paper-2 p-0.5"
+      }
+      onKeyDown={(e) => {
+        if (e.key !== "ArrowRight" && e.key !== "ArrowLeft" && e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+        e.preventDefault();
+        const i = options.findIndex((o) => o.value === value);
+        const dir = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1;
+        const next = options[(i + dir + options.length) % options.length];
+        if (next) onChange(next.value);
+        requestAnimationFrame(() => {
+          const radios = e.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]');
+          const ni = options.findIndex((o) => o.value === next?.value);
+          if (ni >= 0) radios[ni]?.focus();
+        });
+      }}
     >
       {options.map((o) => {
         const on = value === o.value;
@@ -234,15 +272,25 @@ export function Segmented<T extends string>({
           <button
             key={o.value}
             type="button"
-            role="tab"
-            aria-selected={on}
+            role="radio"
+            aria-checked={on}
+            tabIndex={on ? 0 : -1}
             aria-label={o.label}
             onClick={() => onChange(o.value)}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded-lg font-serif text-ink transition-colors duration-150 ease-out",
+              "inline-flex items-center gap-1.5 text-ink",
+              ghost
+                ? "rounded-md px-2 py-1 text-xs font-medium transition-colors duration-150 ease-out max-md:min-h-11"
+                : cn(
+                    "rounded-sm transition-colors duration-150 ease-out",
+                    size === "sm" ? "px-2 py-1 text-xs max-md:min-h-11 max-md:px-2.5 max-md:py-0 max-md:text-sm" : "px-3 py-1.5 text-sm max-md:min-h-11",
+                  ),
               focusRing,
-              size === "sm" ? "px-2 py-1 text-xs max-md:min-h-11 max-md:px-2.5 max-md:py-0 max-md:text-sm" : "px-3 py-1.5 text-sm max-md:min-h-11",
-              on ? "bg-paper-2 text-ink" : "text-mute hover:bg-paper-2/70 hover:text-ink",
+              on
+                ? ghost
+                  ? "bg-paper-2 text-ink"
+                  : "bg-paper text-ink shadow-sm"
+                : "text-mute hover:text-ink",
             )}
             title={o.label}
           >
@@ -272,12 +320,12 @@ export function Toggle({
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className={cn("inline-flex items-center gap-2 font-serif text-sm text-ink", focusRing, className)}
+      className={cn("inline-flex items-center gap-2 text-sm text-ink", focusRing, className)}
     >
       <span
         className={cn(
           "relative h-5 w-9 shrink-0 rounded-full border transition-colors duration-150",
-          checked ? "border-ink bg-ink" : "border-line bg-paper-2",
+          checked ? "border-ring bg-ring" : "border-line bg-paper-2",
         )}
       >
         <span
@@ -316,8 +364,9 @@ export function Chip({
   return (
     <button
       type="button"
+      aria-pressed={selected}
       className={cn(
-        "rounded-full border px-2.5 py-0.5 font-serif text-xs transition-colors duration-150 ease-out",
+        "rounded-md border px-2.5 py-0.5 text-xs font-medium transition-colors duration-150 ease-out",
         focusRing,
         tone
           ? tones[tone]
@@ -338,7 +387,7 @@ export function Select({
   return (
     <span className={cn("relative inline-flex min-w-[7rem]", className)}>
       <select
-        className="h-8 w-full appearance-none rounded-lg border border-line bg-paper py-1 pl-2 pr-7 font-serif text-sm text-ink transition-colors duration-150 ease-out focus-visible:border-ink focus-visible:outline-none"
+        className="h-9 w-full appearance-none rounded-md border border-line bg-paper py-1 pl-2 pr-7 text-sm text-ink transition-colors duration-150 ease-out klever-focus focus-visible:border-ring"
         {...props}
       />
       <ChevronDown
@@ -358,8 +407,8 @@ export function Field({
   return (
     <input
       className={cn(
-        "w-full rounded-xl border border-line bg-paper px-3 py-2 text-ink placeholder:text-faint",
-        "transition-colors duration-150 ease-out focus-visible:border-ink focus-visible:outline-none",
+        "w-full rounded-md border border-line bg-paper px-3 py-2 text-sm text-ink placeholder:text-faint",
+        "transition-colors duration-150 ease-out klever-focus aria-invalid:border-danger focus-visible:border-ring",
         className,
       )}
       {...props}
@@ -378,12 +427,28 @@ export function Kbd({ children }: { children: ReactNode }) {
 export function Overlay({
   children,
   onClose,
+  title,
+  description,
+  labelledBy,
+  describedBy,
+  className,
 }: {
   children: ReactNode;
   onClose: () => void;
+  title: string;
+  description?: string;
+  labelledBy?: string;
+  describedBy?: string;
+  className?: string;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
-  const labelId = useId();
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const fallbackTitleId = useId();
+  const fallbackDescId = useId();
+  const titleId = labelledBy ?? fallbackTitleId;
+  const descId = describedBy ?? (description ? fallbackDescId : undefined);
+  const closeLabel = useT()("shell.close");
 
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
@@ -392,13 +457,15 @@ export function Overlay({
       panel
         ? [
             ...panel.querySelectorAll<HTMLElement>(
-              'button:not(.overlay-dismiss):not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+              'button:not(.overlay-dismiss):not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), iframe, a[href], [tabindex]:not([tabindex="-1"])',
             ),
           ].filter((el) => !el.hasAttribute("disabled") && el.getAttribute("aria-hidden") !== "true")
         : [];
 
     requestAnimationFrame(() => {
       const nodes = focusables();
+      const active = document.activeElement as HTMLElement | null;
+      if (panel && active && panel.contains(active) && active !== panel) return;
       (nodes[0] ?? panel)?.focus();
     });
 
@@ -406,7 +473,7 @@ export function Overlay({
       if (e.key === "Escape") {
         e.preventDefault();
         e.stopPropagation();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== "Tab" || !panel) return;
@@ -428,32 +495,43 @@ export function Overlay({
       window.removeEventListener("keydown", onKey, true);
       prev?.focus?.();
     };
-  }, [onClose]);
+  }, []);
 
   return (
     <div
-      className="fixed inset-0 z-40 overflow-y-auto overscroll-contain bg-ink/20 motion-safe:animate-blotter"
+      className="fixed inset-0 z-40 overflow-y-auto overscroll-contain bg-black/40 dark:bg-black/70 motion-safe:animate-blotter"
       role="presentation"
     >
       <div className="flex min-h-full items-end justify-center px-0 pt-10 sm:items-start sm:px-4 sm:py-8">
         <button
           type="button"
-          aria-label="Close"
+          aria-label={closeLabel}
           className="overlay-dismiss fixed inset-0 cursor-default"
           tabIndex={-1}
           onClick={onClose}
         />
         <div
           ref={panelRef}
-          className="relative z-10 w-full max-w-xl pb-[env(safe-area-inset-bottom)] font-serif motion-safe:animate-sheet max-sm:[&>*]:rounded-b-none max-sm:[&>*]:rounded-t-2xl sm:pb-0"
+          className={cn(
+            "relative z-10 w-full max-w-lg pb-[env(safe-area-inset-bottom)] motion-safe:animate-sheet max-sm:[&>*]:rounded-b-none max-sm:[&>*]:rounded-t-xl sm:pb-0",
+            className,
+          )}
           role="dialog"
           aria-modal="true"
-          aria-labelledby={labelId}
+          aria-labelledby={titleId}
+          aria-describedby={descId}
           tabIndex={-1}
         >
-          <span id={labelId} className="sr-only">
-            Dialog
-          </span>
+          {!labelledBy && (
+            <h2 id={fallbackTitleId} className="sr-only">
+              {title}
+            </h2>
+          )}
+          {!describedBy && description && (
+            <p id={fallbackDescId} className="sr-only">
+              {description}
+            </p>
+          )}
           {children}
         </div>
       </div>
@@ -461,9 +539,17 @@ export function Overlay({
   );
 }
 
-export function MonoLabel({ children }: { children: ReactNode }) {
+export function MonoLabel({
+  children,
+  className,
+  style,
+}: {
+  children: ReactNode;
+  className?: string;
+  style?: CSSProperties;
+}) {
   return (
-    <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-mute">
+    <span className={cn("font-mono text-[10px] uppercase tracking-[0.16em] text-mute", className)} style={style}>
       {children}
     </span>
   );
@@ -475,21 +561,8 @@ export function Panel({
 }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn("rounded-2xl border border-line bg-paper", className)}
-      {...props}
-    />
-  );
-}
-
-export function TextArea({
-  className,
-  ...props
-}: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return (
-    <textarea
       className={cn(
-        "w-full resize-y rounded-xl border border-line bg-paper px-3 py-2 text-ink placeholder:text-faint",
-        "transition-colors duration-150 ease-out focus-visible:border-ink focus-visible:outline-none",
+        "rounded-lg border border-line bg-paper shadow-lg",
         className,
       )}
       {...props}
@@ -497,22 +570,38 @@ export function TextArea({
   );
 }
 
-export function Alert({
-  className,
-  children,
-  onDismiss,
-}: {
-  className?: string;
-  children: ReactNode;
-  onDismiss?: () => void;
-}) {
+export const TextArea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement>>(
+  function TextArea({ className, ...props }, ref) {
+    return (
+      <textarea
+        ref={ref}
+        className={cn(
+          "w-full resize-y rounded-md border border-line bg-paper px-3 py-2 text-sm text-ink placeholder:text-faint",
+          "transition-colors duration-150 ease-out klever-focus aria-invalid:border-danger focus-visible:border-ring",
+          className,
+        )}
+        {...props}
+      />
+    );
+  },
+);
+
+export const Alert = forwardRef<
+  HTMLDivElement,
+  HTMLAttributes<HTMLDivElement> & {
+    onDismiss?: () => void;
+  }
+>(function Alert({ className, children, onDismiss, ...props }, ref) {
   return (
     <div
+      ref={ref}
       role="alert"
+      tabIndex={-1}
       className={cn(
-        "flex items-start gap-3 rounded-xl border border-line bg-paper px-4 py-3 font-serif text-sm text-ink",
+        "flex items-start gap-3 rounded-lg border border-line bg-paper px-4 py-3 text-sm text-ink",
         className,
       )}
+      {...props}
     >
       <div className="min-w-0 flex-1">{children}</div>
       {onDismiss && (
@@ -522,7 +611,7 @@ export function Alert({
       )}
     </div>
   );
-}
+});
 
 export function EmptyState({
   title,
@@ -537,7 +626,7 @@ export function EmptyState({
 }) {
   return (
     <div className={cn("flex flex-col items-start gap-3 px-4 py-16 md:px-8 md:py-20", className)}>
-      <p className="font-serif text-2xl italic tracking-tight">{title}</p>
+      <p className="font-serif text-2xl font-semibold tracking-tight">{title}</p>
       {description && <p className="max-w-md text-sm leading-relaxed text-mute">{description}</p>}
       {action}
     </div>
@@ -547,8 +636,8 @@ export function EmptyState({
 export function ConfirmDialog({
   title,
   description,
-  confirmLabel = "Confirm",
-  cancelLabel = "Cancel",
+  confirmLabel,
+  cancelLabel,
   onConfirm,
   onClose,
 }: {
@@ -559,15 +648,28 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onClose: () => void;
 }) {
+  const t = useT();
+  const titleId = useId();
+  const descId = useId();
   return (
-    <Overlay onClose={onClose}>
+    <Overlay
+      onClose={onClose}
+      title={title}
+      description={description}
+      labelledBy={titleId}
+      describedBy={descId}
+    >
       <Panel className="p-6">
-        <MonoLabel>Confirm</MonoLabel>
-        <h2 className="mt-2 font-serif text-2xl italic tracking-tight">{title}</h2>
-        <p className="mt-3 text-sm leading-relaxed text-mute">{description}</p>
+        <MonoLabel>{t("common.confirm")}</MonoLabel>
+        <h2 id={titleId} className="mt-2 font-serif text-2xl font-semibold tracking-tight">
+          {title}
+        </h2>
+        <p id={descId} className="mt-3 text-sm leading-relaxed text-mute">
+          {description}
+        </p>
         <div className="mt-6 flex flex-wrap gap-3">
-          <SolidButton onClick={onConfirm}>{confirmLabel}</SolidButton>
-          <GhostButton onClick={onClose}>{cancelLabel}</GhostButton>
+          <GhostButton onClick={onClose}>{cancelLabel ?? t("common.cancel")}</GhostButton>
+          <SolidButton onClick={onConfirm}>{confirmLabel ?? t("common.confirm")}</SolidButton>
         </div>
       </Panel>
     </Overlay>

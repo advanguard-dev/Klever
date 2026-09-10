@@ -8,40 +8,43 @@ import {
   serializeFileMarkdown,
   type FileDisplay,
 } from "@/lib/file-display";
+import { isHttpUrl, serializeUrlEmbedMarkdown, urlEmbedHtml } from "@/lib/url-embed";
 import { wikiToHtmlSpans } from "@/lib/parse";
+import { serializeWikiMarkdown } from "@/lib/wiki-display";
 import { wordFontSyntaxToHtml } from "@/lib/word-font";
-import { marked, Renderer } from "marked";
+import { mathSyntaxToHtml } from "@/lib/math-render";
+import { marked } from "marked";
 import TurndownService from "turndown";
 
 marked.setOptions({ gfm: true, breaks: false });
 
-const renderer = new Renderer();
-const defaultLink = renderer.link.bind(renderer);
-const defaultImage = renderer.image.bind(renderer);
-
 function vaultFileHtml(src: string, name: string, kind: ReturnType<typeof assetKindFromPath>, display: FileDisplay) {
-  return `<div data-vault-file data-src="${escapeAttr(src)}" data-name="${escapeAttr(name)}" data-kind="${kind}" data-display="${display}"></div>`;
+  // Non-empty content so TipTap/DOMParser keeps the atom node; unwrap from <p> in mdToHtml.
+  return `<div data-vault-file data-src="${escapeAttr(src)}" data-name="${escapeAttr(name)}" data-kind="${kind}" data-display="${display}">&#8203;</div>`;
 }
 
-renderer.link = function link(args) {
-  const href = args.href ?? "";
-  const text = this.parser.parseInline(args.tokens);
-  const label = stripTags(typeof text === "string" ? text : String(text));
-  if (!isAttachedFileHref(href)) return defaultLink(args);
-  const kind = assetKindFromPath(href, label);
-  const display = parseFileDisplay(args.title) ?? defaultFileDisplay(kind);
-  return vaultFileHtml(href, fileNameFromPath(href, label), kind, display);
-};
-
-renderer.image = function image(args) {
-  const href = args.href ?? "";
-  if (!isLocalAssetHref(href)) return defaultImage(args);
-  const name = args.text || fileNameFromPath(href);
-  const display = parseFileDisplay(args.title) ?? defaultFileDisplay("image");
-  return vaultFileHtml(href, name, "image", display);
-};
-
-marked.use({ renderer });
+marked.use({
+  renderer: {
+    link(args) {
+      const href = args.href ?? "";
+      if (isHttpUrl(href) && (parseFileDisplay(args.title) === "card" || args.title === "embed")) {
+        return urlEmbedHtml(href, stripTags(args.text ?? ""));
+      }
+      if (!isAttachedFileHref(href)) return false;
+      const label = stripTags(args.text ?? "");
+      const kind = assetKindFromPath(href, label);
+      const display = parseFileDisplay(args.title) ?? defaultFileDisplay(kind);
+      return vaultFileHtml(href, fileNameFromPath(href, label), kind, display);
+    },
+    image(args) {
+      const href = args.href ?? "";
+      if (!isLocalAssetHref(href)) return false;
+      const name = args.text || fileNameFromPath(href);
+      const display = parseFileDisplay(args.title) ?? defaultFileDisplay("image");
+      return vaultFileHtml(href, name, "image", display);
+    },
+  },
+});
 
 function escapeAttr(s: string) {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
@@ -104,10 +107,13 @@ td.addRule("wikiLink", {
   replacement: (content, node) => {
     const el = node as HTMLElement;
     const target = el.getAttribute("data-wiki") || content.trim();
-    const embed = el.getAttribute("data-embed") === "true";
     const label = content.trim();
-    const inner = label && label !== target ? `${target}|${label}` : target;
-    return embed ? `![[${inner}]]` : `[[${inner}]]`;
+    return serializeWikiMarkdown({
+      target,
+      label,
+      display: el.getAttribute("data-display"),
+      embed: el.getAttribute("data-embed") === "true",
+    });
   },
 });
 
@@ -158,6 +164,36 @@ td.addRule("vaultVideo", {
   },
 });
 
+td.addRule("urlEmbed", {
+  filter: (node) => node.nodeName === "DIV" && (node as HTMLElement).hasAttribute("data-url-embed"),
+  replacement: (_content, node) => {
+    const el = node as HTMLElement;
+    const src = el.getAttribute("data-src") ?? "";
+    if (!src) return "";
+    const name = el.getAttribute("data-name") || src;
+    return `\n${serializeUrlEmbedMarkdown(src, name)}\n\n`;
+  },
+});
+
+td.addRule("katexMath", {
+  filter: (node) => {
+    if (node.nodeName !== "SPAN" && node.nodeName !== "DIV") return false;
+    const el = node as HTMLElement;
+    return el.hasAttribute("data-math") || el.classList.contains("katex");
+  },
+  replacement: (_content, node) => {
+    const el = node as HTMLElement;
+    const tex =
+      el.getAttribute("data-tex") ||
+      el.querySelector("annotation")?.textContent ||
+      el.textContent ||
+      "";
+    const display = el.getAttribute("data-math") === "block" || el.classList.contains("klever-math-block");
+    if (!tex.trim()) return "";
+    return display ? `\n$$\n${tex.trim()}\n$$\n\n` : `$${tex.trim()}$`;
+  },
+});
+
 td.addRule("vaultPdf", {
   filter: (node) => node.nodeName === "IFRAME" && (node as HTMLElement).hasAttribute("data-vault-pdf"),
   replacement: (_content, node) => {
@@ -169,9 +205,14 @@ td.addRule("vaultPdf", {
 });
 
 export function mdToHtml(md: string) {
-  const prepped = wordFontSyntaxToHtml(wikiToHtmlSpans(md || ""));
+  const prepped = mathSyntaxToHtml(wordFontSyntaxToHtml(wikiToHtmlSpans(md || "")));
   const html = marked.parse(prepped, { async: false });
-  return typeof html === "string" ? html : "";
+  const raw = typeof html === "string" ? html : "";
+  // Marked wraps link/image output in <p>; vault files are block divs — unwrap so TipTap keeps them.
+  return raw
+    .replace(/<p>\s*(<div\b[^>]*\bdata-vault-file\b[\s\S]*?<\/div>)\s*<\/p>/gi, "$1")
+    .replace(/<p>\s*(<div\b[^>]*\bdata-url-embed\b[\s\S]*?<\/div>)\s*<\/p>/gi, "$1")
+    .replace(/<p>\s*(<div\b[^>]*\bklever-math-block\b[\s\S]*?<\/div>)\s*<\/p>/gi, "$1");
 }
 
 export function htmlToMd(html: string) {

@@ -1,3 +1,4 @@
+import { contextMenuFromKey, type PointEvent } from "@/components/ContextMenu";
 import { firstImageSrc, isImagePath, resolveAssetSrc } from "@/lib/assets";
 import { accentKind, NoteIcon } from "@/lib/chrome-icons";
 import { PropValue } from "@/components/editor/PropValue";
@@ -21,7 +22,7 @@ export function RecordCard({
   size?: CardSize;
   snippet?: boolean;
   onOpen: () => void;
-  onContextMenu?: (e: React.MouseEvent) => void;
+  onContextMenu?: (e: PointEvent) => void;
 }) {
   const blobs = useApp((s) => s.blobs);
   const coverSrc = coverSource(row, cover);
@@ -31,15 +32,16 @@ export function RecordCard({
     <div
       role="button"
       tabIndex={0}
-      className="block w-full cursor-pointer rounded-2xl border border-line text-left transition-colors duration-150 hover:bg-paper-2"
+      className="klever-focus block w-full cursor-pointer rounded-2xl border border-line text-left transition-colors duration-150 hover:bg-paper-2"
       onClick={onOpen}
+      onContextMenu={onContextMenu}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onOpen();
         }
+        contextMenuFromKey(e, onContextMenu);
       }}
-      onContextMenu={onContextMenu}
     >
       {cover !== "none" && (
         <Cover vis={coverSrc} className={h} blobs={blobs} />

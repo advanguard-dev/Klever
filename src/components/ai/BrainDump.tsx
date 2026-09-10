@@ -1,14 +1,13 @@
-import { Alert, Field, GhostButton, MonoLabel, Overlay, Panel, Select, SolidButton, TextArea, TextButton } from "@/components/ui";
+import { Alert, Field, GhostButton, MonoLabel, Overlay, Panel, Segmented, Select, SolidButton, TextArea, TextButton, Toggle } from "@/components/ui";
 import {
   applyGeminiFlashPreset,
   brainDump,
   DUMP_KIND_LABEL,
-  GEMINI_FLASH_MODEL,
   heuristicDump,
-  normalizeTags,
   type DumpKind,
   type ProposedItem,
 } from "@/lib/ai";
+import { commitProposedItems } from "@/lib/commit-items";
 import { slugify } from "@/lib/ids";
 import { defaultWorkspaceTools } from "@/lib/workspaces";
 import { moonshineReady, moonshineSupported, speechSupported, startDumpTranscription } from "@/lib/speech";
@@ -19,10 +18,13 @@ import {
   SPEECH_LANG_OPTIONS,
   type SpeechLangPreference,
 } from "@/lib/speech-lang";
+import { SettingsCalendarPanel } from "@/components/calendar/SettingsCalendarPanel";
+import { LOCALE_OPTIONS, type Locale } from "@/lib/i18n";
+import { fetchGitStatus, type GitStatus } from "@/lib/git-status";
+import { useT } from "@/lib/use-t";
 import { useApp } from "@/store";
-import type { Note } from "@/types";
 import { Check, Loader2, Mic, RefreshCw, Trash2, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 type DumpDraft = ProposedItem & { id: string; selected: boolean };
 
@@ -34,24 +36,6 @@ function newDraftId() {
 
 function toDrafts(items: ProposedItem[]): DumpDraft[] {
   return items.map((item) => ({ ...item, id: newDraftId(), selected: true }));
-}
-
-function findDbInFolder(notes: Note[], title: string, folder: string) {
-  const want = title.trim().toLowerCase();
-  const prefix = `${folder.replace(/\/$/, "")}/`;
-  return notes.find(
-    (n) =>
-      n.type === "database" &&
-      n.title.trim().toLowerCase() === want &&
-      (n.path.startsWith(prefix) || n.path === `${prefix}${slugify(title)}.database.md`),
-  );
-}
-
-function rowProps(due?: string, status?: string) {
-  const props: Record<string, unknown> = {};
-  if (due) props.due = due;
-  if (status) props.status = status;
-  return props;
 }
 
 function kindMeta(kind: DumpKind) {
@@ -68,6 +52,7 @@ function summarizeItem(item: ProposedItem) {
 }
 
 export function BrainDump() {
+  const t = useT();
   const open = useApp((s) => s.dumpOpen);
   const setOpen = useApp((s) => s.setDumpOpen);
   const ai = useApp((s) => s.ai);
@@ -76,9 +61,6 @@ export function BrainDump() {
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
   const tools = activeWorkspace?.tools ?? defaultWorkspaceTools();
   const aiMode = activeWorkspace?.aiMode ?? "remote";
-  const createPage = useApp((s) => s.createPage);
-  const createDatabase = useApp((s) => s.createDatabase);
-  const createEvent = useApp((s) => s.createEvent);
   const setView = useApp((s) => s.setView);
   const setError = useApp((s) => s.setError);
   const [text, setText] = useState("");
@@ -97,6 +79,8 @@ export function BrainDump() {
   const speechTextRef = useRef("");
   const skipSpeechRef = useRef(false);
   const proposedRef = useRef<HTMLDivElement | null>(null);
+  const dumpTitleId = useId();
+  const dumpDescId = useId();
 
   useEffect(() => {
     const sync = () => setIsolated(moonshineReady());
@@ -150,7 +134,7 @@ export function BrainDump() {
         return;
       }
       if (!ai.apiKey.trim()) {
-        setError("Add a Gemini API key in Settings to turn dumps into notes.");
+        setError("Add a Gemini API key in Settings to organize this dump.");
         setProposed([]);
         setStatus(null);
         return;
@@ -161,7 +145,7 @@ export function BrainDump() {
       setProposed(drafts);
       setStatus(
         drafts.length
-          ? `${drafts.length} item${drafts.length === 1 ? "" : "s"} in project “${result.project}” — pick what to keep`
+          ? `${drafts.length} item${drafts.length === 1 ? "" : "s"} in folder “${result.project}” — pick what to keep`
           : null,
       );
       requestAnimationFrame(() => {
@@ -175,12 +159,6 @@ export function BrainDump() {
     } finally {
       setBusy(false);
     }
-  };
-
-  const ensureRemindersDb = (folder: string) => {
-    const existing = findDbInFolder(useApp.getState().notes, "Reminders", folder);
-    if (existing) return existing.id;
-    return createDatabase({ title: "Reminders", viewType: "list", folder, stay: true });
   };
 
   const toggleDraft = (id: string) => {
@@ -212,78 +190,15 @@ export function BrainDump() {
     const chosen = proposed.filter((d) => d.selected);
     if (!chosen.length) return;
     const project = projectName.trim() || "Brain dump";
-    const folder = slugify(project);
-    let lastNote = "";
-    let lastDb = "";
-    let createdEvent = false;
 
     // Folder appears from child paths — no extra index page (avoids "Élodie" + folder Élodie).
+    const { lastNote, lastDb, createdEvent } = commitProposedItems({
+      items: chosen,
+      folder: slugify(project),
+      project,
+      skipProjectClonePage: true,
+    });
 
-    for (const item of chosen) {
-      // Kind / Reminders DB / due props already classify items — don't flood tags.
-      const tags = normalizeTags(item.tags, 2);
-      if (item.kind === "page") {
-        // Skip clone of the project name
-        if (item.title.trim().toLowerCase() === project.trim().toLowerCase()) continue;
-        lastNote = createPage({
-          title: item.title,
-          body: item.body,
-          tags,
-          folder,
-          props: rowProps(item.due),
-          stay: true,
-        });
-        continue;
-      }
-      if (item.kind === "reminder") {
-        const dbId = ensureRemindersDb(folder);
-        lastDb = dbId;
-        createPage({
-          parent: dbId,
-          title: item.title,
-          body: item.body,
-          tags,
-          folder,
-          props: rowProps(item.due, item.status || "Inbox"),
-          stay: true,
-        });
-        continue;
-      }
-      if (item.kind === "event") {
-        // Calendar entity — never a vault page
-        createEvent({
-          title: item.title,
-          body: item.body,
-          date: item.due || new Date().toISOString().slice(0, 10),
-          project,
-          tags,
-        });
-        createdEvent = true;
-        continue;
-      }
-      if (item.kind === "database") {
-        const viewType =
-          item.viewType === "calendar" ? "table" : (item.viewType ?? "table");
-        const dbId = createDatabase({
-          title: item.title,
-          viewType,
-          folder,
-          stay: true,
-        });
-        lastDb = dbId;
-        for (const row of item.rows ?? []) {
-          createPage({
-            parent: dbId,
-            title: row.title,
-            body: row.body,
-            tags: normalizeTags(row.tags.length ? row.tags : tags, 2),
-            folder,
-            props: rowProps(row.due, row.status || "Inbox"),
-            stay: true,
-          });
-        }
-      }
-    }
     if (createdEvent && !lastNote && !lastDb) setView({ kind: "calendar" });
     else if (lastNote) setView({ kind: "note", id: lastNote });
     else if (lastDb) setView({ kind: "database", id: lastDb });
@@ -396,24 +311,23 @@ export function BrainDump() {
   const langLocked = listening || loadingModel;
 
   return (
-    <Overlay onClose={() => setOpen(false)}>
+    <Overlay onClose={() => setOpen(false)} title={t("dump.title")} labelledBy={dumpTitleId} describedBy={dumpDescId}>
       <Panel className="p-6">
-        <MonoLabel>Brain dump</MonoLabel>
-        <h2 className="mt-2 font-serif text-3xl italic tracking-tight">Empty the head</h2>
-        <p className="mt-3 text-sm leading-relaxed text-mute">
+        <MonoLabel>{t("dump.title")}</MonoLabel>
+        <h2 id={dumpTitleId} className="mt-2 font-serif text-3xl font-semibold tracking-tight">Empty the head</h2>
+        <p id={dumpDescId} className="mt-3 text-sm leading-relaxed text-mute">
           Speak or paste. Transcription runs{" "}
           {moonshineSupported() ? (
             <>
               on-device with <span className="text-ink">Moonshine</span>
-              {!isolated && " (reload once for COOP/COEP)"} when a model exists for the
-              language; otherwise browser speech.{" "}
+              {!isolated && " after a one-time reload"} when a model exists for the language;
+              otherwise the browser.{" "}
             </>
           ) : (
-            "via the browser; "
+            "in the browser. "
           )}
-          then Klever uses Gemini to shape rich pages, reminders, events, and databases into a{" "}
-          <span className="text-ink">project folder</span>. Pages get real write-ups; lists stay
-          databases. Events go to the Calendar (not pages). Add an API key in Settings first.
+          Then it becomes pages, lists, and events in a folder. Events go on the calendar, not as
+          pages. Add an API key in Settings unless this workspace is on local mode.
         </p>
         <div className="mt-6 flex flex-wrap items-end gap-3">
           <label className="block min-w-[11rem] flex-1">
@@ -434,14 +348,18 @@ export function BrainDump() {
             </Select>
           </label>
         </div>
-        <TextArea
-          value={text}
-          onChange={(e) => onDumpTextChange(e.target.value)}
-          rows={proposed.length ? 5 : 8}
-          className="mt-4 bg-paper-2 leading-7"
-          placeholder="Everything at once…"
-          disabled={busy}
-        />
+        <label className="mt-4 block">
+          <span className="sr-only">Notes to organize</span>
+          <TextArea
+            value={text}
+            onChange={(e) => onDumpTextChange(e.target.value)}
+            rows={proposed.length ? 5 : 8}
+            className="bg-paper-2 leading-7"
+            placeholder="Everything at once…"
+            disabled={busy}
+            aria-label="Notes to organize"
+          />
+        </label>
         {(status || progress != null || busy) && (
           <div className="mt-3 space-y-2">
             {(status || busy) && (
@@ -462,17 +380,14 @@ export function BrainDump() {
         )}
         {moonshineSupported() && !isolated && !listening && (
           <Alert className="mt-4 font-mono text-xs">
-            <p>
-              This tab isn’t cross-origin isolated yet. After Vite serves COOP/COEP headers, hard-reload
-              once so Moonshine can use SharedArrayBuffer.
-            </p>
+            <p>Moonshine needs a one-time reload in this window before it can listen.</p>
             <GhostButton
               type="button"
               className="mt-3"
               onClick={() => window.location.reload()}
             >
               <RefreshCw size={14} strokeWidth={1.4} />
-              Reload this tab
+              Reload this window
             </GhostButton>
           </Alert>
         )}
@@ -485,7 +400,7 @@ export function BrainDump() {
             >
               <Mic size={14} strokeWidth={1.4} />
               {loadingModel
-                ? "Loading…"
+                  ? "Preparing…"
                 : listening
                   ? "Stop"
                   : usingMoonshine ||
@@ -511,13 +426,13 @@ export function BrainDump() {
         {proposed.length > 0 && (
           <div ref={proposedRef} className="mt-8 border-t border-line pt-6">
             <label className="block">
-              <MonoLabel>Project folder</MonoLabel>
+              <MonoLabel>Folder</MonoLabel>
               <Field
                 className="mt-1"
                 value={projectName}
                 onChange={(e) => setProjectName(e.target.value)}
                 onKeyDown={(e) => e.stopPropagation()}
-                placeholder="Project name"
+                placeholder="Name"
                 disabled={busy}
                 autoComplete="off"
                 spellCheck={false}
@@ -636,7 +551,7 @@ export function BrainDump() {
             </ul>
             <div className="mt-6 flex flex-wrap items-center gap-3">
               <SolidButton onClick={commit} disabled={busy || selectedCount === 0}>
-                Create {selectedCount || ""} in vault
+                Create {selectedCount || ""} in folder
               </SolidButton>
               {selectedCount < proposed.length && selectedCount > 0 && (
                 <span className="font-mono text-[11px] text-faint">
@@ -651,78 +566,286 @@ export function BrainDump() {
   );
 }
 
-export function AiSettings() {
-  const open = useApp((s) => s.settingsOpen);
-  const setOpen = useApp((s) => s.setSettingsOpen);
+type SettingsTab = "model" | "calendar" | "access" | "developer";
+
+function SettingsModelPanel() {
+  const t = useT();
   const ai = useApp((s) => s.ai);
   const setAi = useApp((s) => s.setAi);
   const displayName = useApp((s) => s.displayName);
   const setDisplayName = useApp((s) => s.setDisplayName);
-  if (!open) return null;
   return (
-    <Overlay onClose={() => setOpen(false)}>
-      <Panel className="p-6">
-        <MonoLabel>AI</MonoLabel>
-        <h2 className="mt-2 font-serif text-3xl italic tracking-tight">Brain dump</h2>
-        <p className="mt-3 text-sm leading-relaxed text-mute">
-          <span className="text-ink">Organize</span> and note writing tools call{" "}
-          <span className="text-ink">{GEMINI_FLASH_MODEL}</span> through Google’s OpenAI-compatible
-          API. Your key stays in this browser and is only sent to Google. Speech still uses{" "}
-          <span className="text-ink">Moonshine</span> on-device.
-        </p>
-        <div className="mt-6 space-y-4">
-          <label className="block">
-            <MonoLabel>Your name</MonoLabel>
-            <Field
-              className="mt-1"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              onBlur={() => {
-                const next = displayName.trim() || "You";
-                if (next !== displayName) setDisplayName(next);
-              }}
-            />
-          </label>
-          <label className="block">
-            <MonoLabel>Gemini API key</MonoLabel>
-            <Field
-              className="mt-1 font-mono text-sm"
-              type="password"
-              value={ai.apiKey}
-              onChange={(e) => setAi({ apiKey: e.target.value })}
-              placeholder="AIza…"
-              autoComplete="off"
-            />
-            <p className="mt-1.5 text-[12px] text-faint">
-              Create a key in{" "}
-              <a
-                className="text-mute underline decoration-line underline-offset-2 hover:text-ink"
-                href="https://aistudio.google.com/apikey"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Google AI Studio
-              </a>
-              .
-            </p>
-          </label>
-          <label className="block">
-            <MonoLabel>Model</MonoLabel>
-            <Field className="mt-1" value={ai.model} onChange={(e) => setAi({ model: e.target.value })} />
-          </label>
-          <label className="block">
-            <MonoLabel>Endpoint</MonoLabel>
-            <Field className="mt-1 font-mono text-xs" value={ai.endpoint} onChange={(e) => setAi({ endpoint: e.target.value })} />
-          </label>
-        </div>
-        <div className="mt-8 flex flex-wrap items-center gap-3">
-          <SolidButton onClick={() => setOpen(false)}>Done</SolidButton>
+    <>
+      <p className="mt-3 text-sm leading-relaxed text-mute">{t("settings.modelBlurb")}</p>
+      <div className="mt-6 space-y-4">
+        <label className="block">
+          <MonoLabel>{t("settings.yourName")}</MonoLabel>
+          <Field
+            className="mt-1"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            onBlur={() => {
+              const next = displayName.trim() || "You";
+              if (next !== displayName) setDisplayName(next);
+            }}
+          />
+        </label>
+        <label className="block">
+          <MonoLabel>{t("settings.apiKey")}</MonoLabel>
+          <Field
+            className="mt-1 font-mono text-sm"
+            type="password"
+            value={ai.apiKey}
+            onChange={(e) => setAi({ apiKey: e.target.value })}
+            placeholder="AIza…"
+            autoComplete="off"
+          />
+          <p className="mt-1.5 text-[12px] text-faint">
+            {t("settings.apiKeyHint")}{" "}
+            <a
+              className="text-mute underline decoration-line underline-offset-2 hover:text-ink"
+              href="https://aistudio.google.com/apikey"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Google AI Studio
+            </a>
+            .
+          </p>
+        </label>
+        <label className="block">
+          <MonoLabel>{t("settings.writingTools")}</MonoLabel>
+          <Field
+            className="mt-1"
+            value={ai.writingModel ?? ai.model}
+            onChange={(e) => setAi({ writingModel: e.target.value })}
+          />
+        </label>
+        <label className="block">
+          <MonoLabel>{t("settings.brainDump")}</MonoLabel>
+          <Field
+            className="mt-1"
+            value={ai.brainDumpModel ?? ai.model}
+            onChange={(e) => setAi({ brainDumpModel: e.target.value })}
+          />
+        </label>
+        <label className="block">
+          <MonoLabel>{t("settings.meetingSummarize")}</MonoLabel>
+          <Field
+            className="mt-1"
+            value={ai.meetingModel ?? ai.model}
+            onChange={(e) => setAi({ meetingModel: e.target.value })}
+          />
+        </label>
+        <label className="block">
+          <MonoLabel>{t("settings.endpoint")}</MonoLabel>
+          <Field className="mt-1 font-mono text-xs" value={ai.endpoint} onChange={(e) => setAi({ endpoint: e.target.value })} />
+        </label>
+      </div>
+    </>
+  );
+}
+
+function SettingsAccessPanel() {
+  const t = useT();
+  const strongFocus = useApp((s) => s.strongFocus);
+  const setStrongFocus = useApp((s) => s.setStrongFocus);
+  const locale = useApp((s) => s.locale);
+  const setLocale = useApp((s) => s.setLocale);
+  return (
+    <div className="mt-6 space-y-6">
+      <label className="block">
+        <MonoLabel>{t("settings.language")}</MonoLabel>
+        <Select
+          className="mt-1 block w-full max-w-xs"
+          aria-label={t("settings.language")}
+          value={locale}
+          onChange={(e) => setLocale(e.target.value as Locale)}
+        >
+          {LOCALE_OPTIONS.map((opt) => (
+            <option key={opt.id} value={opt.id}>
+              {opt.nativeName}
+            </option>
+          ))}
+        </Select>
+        <p className="mt-1.5 text-[12px] text-faint">{t("settings.languageHint")}</p>
+      </label>
+      <div className="space-y-3">
+        <p className="text-sm leading-relaxed text-mute">{t("settings.accessBlurb")}</p>
+        <Toggle
+          checked={strongFocus}
+          onChange={setStrongFocus}
+          label={t("settings.strongFocus")}
+        />
+      </div>
+    </div>
+  );
+}
+
+function SettingsDeveloperPanel() {
+  const t = useT();
+  const dev = useApp((s) => s.dev);
+  const setDev = useApp((s) => s.setDev);
+  const [copied, setCopied] = useState(false);
+  const [git, setGit] = useState<GitStatus | null>(null);
+  const [gitBusy, setGitBusy] = useState(false);
+
+  const refreshGit = useCallback(async () => {
+    setGitBusy(true);
+    try {
+      setGit(await fetchGitStatus());
+    } finally {
+      setGitBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshGit();
+  }, [refreshGit]);
+
+  return (
+    <div className="mt-6 space-y-6">
+      <p className="text-sm leading-relaxed text-mute">{t("settings.devBlurb")}</p>
+      <Toggle
+        checked={dev.semanticSearch}
+        onChange={(on) => setDev({ semanticSearch: on })}
+        label={t("settings.dev.semanticSearch")}
+      />
+      <Toggle
+        checked={dev.localApiEnabled}
+        onChange={(on) => setDev({ localApiEnabled: on })}
+        label={t("settings.dev.localApi")}
+      />
+      <label className="block max-w-xs">
+        <MonoLabel>{t("settings.dev.port")}</MonoLabel>
+        <Field
+          className="mt-1 font-mono text-sm"
+          type="number"
+          min={1}
+          max={65535}
+          value={dev.localApiPort}
+          onChange={(e) => setDev({ localApiPort: Number(e.target.value) || 7431 })}
+        />
+      </label>
+      <div>
+        <MonoLabel>{t("settings.dev.token")}</MonoLabel>
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          <Field
+            className="min-w-0 flex-1 font-mono text-xs"
+            readOnly
+            value={dev.localApiToken}
+            onFocus={(e) => e.target.select()}
+          />
           <GhostButton
             type="button"
-            onClick={() => setAi(applyGeminiFlashPreset(ai))}
+            onClick={() => {
+              void navigator.clipboard?.writeText(dev.localApiToken).then(() => {
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1500);
+              });
+            }}
           >
-            Reset to Gemini 3.6 Flash
+            {copied ? t("settings.dev.copied") : t("settings.dev.copyToken")}
           </GhostButton>
+        </div>
+      </div>
+      <label className="block">
+        <MonoLabel>{t("settings.dev.webhooks")}</MonoLabel>
+        <TextArea
+          className="mt-1 min-h-[88px] font-mono text-xs"
+          value={dev.webhookUrls.join("\n")}
+          onChange={(e) =>
+            setDev({
+              webhookUrls: e.target.value
+                .split("\n")
+                .map((line) => line.trim())
+                .filter(Boolean),
+            })
+          }
+          placeholder="http://127.0.0.1:9000/hook"
+          spellCheck={false}
+        />
+        <p className="mt-1.5 text-[12px] text-faint">{t("settings.dev.webhooksHint")}</p>
+      </label>
+      <div>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <MonoLabel>{t("settings.dev.git")}</MonoLabel>
+          <GhostButton type="button" onClick={() => void refreshGit()} disabled={gitBusy}>
+            <RefreshCw size={14} strokeWidth={1.5} className={gitBusy ? "animate-spin" : undefined} aria-hidden />
+            {t("settings.dev.gitRefresh")}
+          </GhostButton>
+        </div>
+        {git?.branch && (
+          <p className="mt-2 font-mono text-[11px] text-mute">
+            {t("settings.dev.branch")}: {git.branch}
+          </p>
+        )}
+        {git && !git.ok && (
+          <p className="mt-2 text-sm text-mute">{git.error || t("settings.dev.gitDesktop")}</p>
+        )}
+        {git?.ok && git.files.length === 0 && (
+          <p className="mt-2 text-sm text-mute">{t("settings.dev.gitNone")}</p>
+        )}
+        {git?.ok && git.files.length > 0 && (
+          <ul className="mt-3 max-h-48 space-y-1.5 overflow-auto font-mono text-[11px] text-mute">
+            {git.files.map((f) => (
+              <li key={`${f.code}:${f.path}`} className="flex gap-2">
+                <span className="w-16 shrink-0 text-faint">{f.label}</span>
+                <span className="min-w-0 break-all text-ink/80">{f.path}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function AiSettings() {
+  const t = useT();
+  const open = useApp((s) => s.settingsOpen);
+  const setOpen = useApp((s) => s.setSettingsOpen);
+  const ai = useApp((s) => s.ai);
+  const setAi = useApp((s) => s.setAi);
+  const titleId = useId();
+  const close = useCallback(() => setOpen(false), [setOpen]);
+  const [tab, setTab] = useState<SettingsTab>("model");
+  if (!open) return null;
+  const settingsTitle = t("settings.title");
+  return (
+    <Overlay onClose={close} title={settingsTitle} labelledBy={titleId}>
+      <Panel className="p-6">
+        <h2 id={titleId} className="font-serif text-3xl font-semibold tracking-tight">
+          {settingsTitle}
+        </h2>
+        <div className="mt-4">
+          <Segmented
+            size="sm"
+            aria-label={t("settings.category")}
+            value={tab}
+            onChange={setTab}
+            options={[
+              { value: "model", label: t("settings.tab.model") },
+              { value: "calendar", label: t("settings.tab.calendar") },
+              { value: "access", label: t("settings.tab.access") },
+              { value: "developer", label: t("settings.tab.developer") },
+            ]}
+          />
+        </div>
+        {tab === "model" && <SettingsModelPanel />}
+        {tab === "calendar" && <SettingsCalendarPanel />}
+        {tab === "access" && <SettingsAccessPanel />}
+        {tab === "developer" && <SettingsDeveloperPanel />}
+        <div className="mt-8 flex flex-wrap items-center gap-3">
+          <SolidButton onClick={close}>{t("settings.done")}</SolidButton>
+          {tab === "model" && (
+            <GhostButton
+              type="button"
+              onClick={() => setAi(applyGeminiFlashPreset(ai))}
+            >
+              {t("settings.resetGemini")}
+            </GhostButton>
+          )}
         </div>
       </Panel>
     </Overlay>

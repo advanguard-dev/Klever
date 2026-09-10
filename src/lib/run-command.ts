@@ -1,7 +1,8 @@
 import { assetKindFromPath } from "@/lib/assets";
 import { defaultFileDisplay, serializeFileMarkdown } from "@/lib/file-display";
-import { insertInEditor, insertWysiwygCommand } from "@/lib/editor-bridge";
+import { insertInEditor, insertWysiwygCommand, openLinkEmbed } from "@/lib/editor-bridge";
 import { speechSupported, startTranscription } from "@/lib/speech";
+import { attachMeetingNotes, createMeetingNote } from "@/lib/meetings";
 import { useApp } from "@/store";
 import type { InsertCommand } from "@/types";
 
@@ -31,11 +32,14 @@ function appendOrInsert(snippet: string) {
 }
 
 async function insertAsset(accept: string, kind: "image" | "audio" | "file") {
-  const path = await useApp.getState().linkLocalFile(accept);
-  if (!path) return;
-  const name = path.split("/").pop() ?? path;
-  const detected = kind === "file" ? assetKindFromPath(path) : kind;
-  appendOrInsert(`${serializeFileMarkdown({ src: path, name, kind: detected, display: defaultFileDisplay(detected) })}\n`);
+  const paths = await useApp.getState().linkLocalFiles(accept);
+  if (!paths.length) return;
+  const blocks = paths.map((path) => {
+    const name = path.split("/").pop() ?? path;
+    const detected = kind === "file" ? assetKindFromPath(path, name) : kind;
+    return serializeFileMarkdown({ src: path, name, kind: detected, display: defaultFileDisplay(detected) });
+  });
+  appendOrInsert(`${blocks.join("\n\n")}\n`);
 }
 
 export async function runCommand(cmd: InsertCommand) {
@@ -73,6 +77,7 @@ export async function runCommand(cmd: InsertCommand) {
       appendOrInsert(cmd.snippet ?? "");
       return;
     case "embed": {
+      if (openLinkEmbed({ mode: "embed" })) return;
       const url = window.prompt("URL to embed");
       if (url?.trim()) appendOrInsert(`<${url.trim()}>\n`);
       return;
@@ -89,9 +94,18 @@ export async function runCommand(cmd: InsertCommand) {
     case "dump":
       app.setDumpOpen(true);
       return;
+    case "meeting":
+      app.setView({ kind: "meeting" });
+      return;
+    case "meeting-notes": {
+      const id = currentNoteId();
+      if (id) attachMeetingNotes(id);
+      else createMeetingNote();
+      return;
+    }
     case "transcribe": {
       if (!speechSupported()) {
-        app.setError("Speech recognition is not available in this browser.");
+        app.setError("Speech recognition is not available. Paste or type instead.");
         return;
       }
       let id = currentNoteId();

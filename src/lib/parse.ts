@@ -1,4 +1,5 @@
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { parseWikiDisplay } from "@/lib/wiki-display";
 import type { DbView, Note, NoteComment, SchemaProp } from "@/types";
 
 const FM_KEYS = new Set([
@@ -63,7 +64,7 @@ function asTags(v: unknown): string[] {
   return [];
 }
 
-export const WIKI_RE = /\[\[([^\]|#]+)(?:\|([^\]]+))?\]\]/g;
+export const WIKI_RE = /\[\[([^\]|#]+)(?:#(mention|title|card))?(?:\|([^\]]+))?\]\]/g;
 export const EMBED_RE = /!\[\[([^\]|#]+)(?:#([^\]|]+))?(?:\|([^\]]+))?\]\]/g;
 export const TAG_RE = /(^|[\s(])#([A-Za-z][\w-/]*)/g;
 
@@ -73,7 +74,7 @@ export function extractWikilinks(text: string) {
     const re = new RegExp(WIKI_RE.source, "g");
     let m: RegExpExecArray | null;
     while ((m = re.exec(chunk))) {
-      links.push({ target: m[1].trim(), alias: m[2]?.trim() });
+      links.push({ target: m[1].trim(), alias: m[3]?.trim() });
     }
     return chunk;
   });
@@ -131,7 +132,7 @@ export function plainSnippet(body: string, n = 180) {
   const t = applyOutsideCode(body, (chunk) =>
     chunk
       .replace(EMBED_RE, "$1")
-      .replace(WIKI_RE, (_raw, target: string, alias?: string) => alias?.trim() || target.trim()),
+      .replace(WIKI_RE, (_raw, target: string, _display?: string, alias?: string) => alias?.trim() || target.trim()),
   )
     .replace(/^#+\s+/gm, "")
     .replace(/!\[[^\]]*]\([^)]*\)/g, "")
@@ -146,13 +147,16 @@ export function plainSnippet(body: string, n = 180) {
 export function wikifyForPreview(md: string) {
   return applyOutsideCode(normalizeCallouts(md), (chunk) =>
     chunk
-      .replace(EMBED_RE, (_raw, target: string, _heading?: string, alias?: string) => {
+      .replace(EMBED_RE, (_raw, target: string, heading?: string, alias?: string) => {
         const label = alias?.trim() || target.trim();
-        return `[${label}](embed:${encodeURIComponent(target.trim())})`;
+        const display = parseWikiDisplay(heading, true);
+        return `[${label}](wiki:${encodeURIComponent(target.trim())} "${display}")`;
       })
-      .replace(WIKI_RE, (_raw, target: string, alias?: string) => {
+      .replace(WIKI_RE, (_raw, target: string, display?: string, alias?: string) => {
         const label = alias?.trim() || target.trim();
-        return `[${label}](wiki:${encodeURIComponent(target.trim())})`;
+        const mode = parseWikiDisplay(display);
+        const title = mode === "mention" ? "" : ` "${mode}"`;
+        return `[${label}](wiki:${encodeURIComponent(target.trim())}${title})`;
       }),
   );
 }
@@ -168,15 +172,20 @@ function escHtml(s: string) {
 export function wikiToHtmlSpans(md: string) {
   return applyOutsideCode(normalizeCallouts(md), (chunk) =>
     chunk
-      .replace(EMBED_RE, (_raw, target: string, _heading?: string, alias?: string) => {
+      .replace(EMBED_RE, (_raw, target: string, heading?: string, alias?: string) => {
         const t = target.trim();
         const label = alias?.trim() || t;
-        return `<span data-wiki="${escHtml(t)}" data-embed="true" class="wiki-link wiki-embed">${escHtml(label)}</span>`;
+        const display = parseWikiDisplay(heading, true);
+        const embed = display === "card" ? ` data-embed="true"` : "";
+        const mode = display === "mention" ? "" : ` data-display="${display}"`;
+        return `<span data-wiki="${escHtml(t)}"${mode}${embed} class="wiki-link">${escHtml(label)}</span>`;
       })
-      .replace(WIKI_RE, (_raw, target: string, alias?: string) => {
+      .replace(WIKI_RE, (_raw, target: string, display?: string, alias?: string) => {
         const t = target.trim();
         const label = alias?.trim() || t;
-        return `<span data-wiki="${escHtml(t)}" class="wiki-link">${escHtml(label)}</span>`;
+        const mode = parseWikiDisplay(display);
+        const attr = mode === "mention" ? "" : ` data-display="${mode}"`;
+        return `<span data-wiki="${escHtml(t)}"${attr} class="wiki-link">${escHtml(label)}</span>`;
       }),
   );
 }

@@ -6,6 +6,7 @@ import { NoteLabel } from "@/lib/chrome-icons";
 import { tagMenuItems, wikiMenuItems } from "@/lib/context-menus";
 import { parseAlt, replaceImageSrc, setImageWidth } from "@/lib/assets";
 import { isAttachedFileHref, isLocalAssetHref, setFileDisplay } from "@/lib/file-display";
+import { HighlightedCode } from "@/lib/highlighted-code";
 import { headingSlug, plainSnippet, resolveLink, wikifyForPreview } from "@/lib/parse";
 import { isPageFont, wordFontSyntaxToHtml } from "@/lib/word-font";
 import { pageFontClass } from "@/lib/page-fonts";
@@ -14,8 +15,11 @@ import rehypeRaw from "rehype-raw";
 import { useApp } from "@/store";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import type { Components } from "react-markdown";
 import type { ReactNode } from "react";
+import "katex/dist/katex.min.css";
 
 export function MarkdownPreview({
   note,
@@ -46,6 +50,22 @@ export function MarkdownPreview({
     h1: heading("h1"),
     h2: heading("h2"),
     h3: heading("h3"),
+    code({ className, children, ...props }) {
+      const text = String(children).replace(/\n$/, "");
+      const match = /language-([\w+-]+)/.exec(className ?? "");
+      const inline = !match && !text.includes("\n");
+      if (inline) {
+        return (
+          <code className={className} {...props}>
+            {children}
+          </code>
+        );
+      }
+      return <HighlightedCode code={text} language={match?.[1]} />;
+    },
+    pre({ children }) {
+      return <>{children}</>;
+    },
     blockquote({ children }) {
       const kind = calloutKind(children);
       return (
@@ -104,10 +124,6 @@ export function MarkdownPreview({
             onDisplay={
               reading ? undefined : (display) => patchNote(note.id, { body: setFileDisplay(note.body, path, display) })
             }
-            onWidth={reading ? undefined : (w) => patchNote(note.id, { body: setImageWidth(note.body, path, w) })}
-            onReplaceSrc={
-              reading ? undefined : (next) => patchNote(note.id, { body: replaceImageSrc(note.body, path, next) })
-            }
           />
         );
       }
@@ -130,10 +146,6 @@ export function MarkdownPreview({
             readOnly={reading}
             onDisplay={
               reading ? undefined : (display) => patchNote(note.id, { body: setFileDisplay(note.body, path, display) })
-            }
-            onWidth={reading ? undefined : (w) => patchNote(note.id, { body: setImageWidth(note.body, path, w) })}
-            onReplaceSrc={
-              reading ? undefined : (next) => patchNote(note.id, { body: replaceImageSrc(note.body, path, next) })
             }
           />
         );
@@ -170,7 +182,11 @@ export function MarkdownPreview({
         .filter(Boolean)
         .join(" ")}
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex, rehypeRaw]}
+        components={components}
+      >
         {source}
       </ReactMarkdown>
     </div>

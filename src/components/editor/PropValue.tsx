@@ -1,4 +1,5 @@
 import { cellValue, displayValue } from "@/lib/compute";
+import { asChipValues, effectivePropType, itemColorId, propChipStyle } from "@/lib/prop-schema";
 import { normalizePropUrl } from "@/lib/prop-url";
 import { resolveLink } from "@/lib/parse";
 import { useApp } from "@/store";
@@ -25,6 +26,41 @@ export function PropValue({
 
   if (value === undefined || value === null || value === "") {
     return <span className="text-faint">—</span>;
+  }
+
+  const resolved = effectivePropType(spec);
+  if (resolved === "people" || resolved === "location") {
+    const items = asChipValues(value);
+    if (!items.length) return <span className="text-faint">—</span>;
+    return (
+      <span className="inline-flex flex-wrap gap-1">
+        {items.map((item) => {
+          const hit = resolved === "people" ? resolveLink(item, notes) : undefined;
+          return hit ? (
+            <button
+              key={item}
+              type="button"
+              className="rounded-md border border-prop/28 bg-prop/[0.08] px-1.5 py-0.5 text-prop hover:underline"
+              style={propChipStyle(itemColorId(spec.itemColors, item))}
+              onClick={(e) => {
+                stop(e);
+                setView({ kind: "note", id: hit.id });
+              }}
+            >
+              {item}
+            </button>
+          ) : (
+            <span
+              key={item}
+              className="rounded-md border border-prop/28 bg-prop/[0.08] px-1.5 py-0.5 text-prop"
+              style={propChipStyle(itemColorId(spec.itemColors, item))}
+            >
+              {item}
+            </span>
+          );
+        })}
+      </span>
+    );
   }
 
   if (spec.type === "relation") {
@@ -89,6 +125,24 @@ export function PropValue({
 
   if (spec.type === "checkbox") {
     return <span>{value ? "Yes" : "No"}</span>;
+  }
+
+  if (spec.type === "select" || spec.type === "multi_select" || spec.type === "tags") {
+    const items = asChipValues(value);
+    if (!items.length) return <span className="text-faint">—</span>;
+    return (
+      <span className="inline-flex flex-wrap gap-1">
+        {items.map((item) => (
+          <span
+            key={item}
+            className="rounded-md border border-prop/28 bg-prop/[0.08] px-1.5 py-0.5 font-mono text-[11px] text-prop"
+            style={propChipStyle(itemColorId(spec.itemColors, item))}
+          >
+            {spec.type === "tags" && !item.startsWith("#") ? `#${item}` : item}
+          </span>
+        ))}
+      </span>
+    );
   }
 
   return <span>{displayValue(value)}</span>;

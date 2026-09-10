@@ -1,6 +1,8 @@
 import { ConfirmDialog, Kbd, Panel } from "@/components/ui";
 import { cn } from "@/lib/cn";
-import { appMenuItems, type ContextMenuAction, type ContextMenuItem } from "@/lib/context-menus";
+import { appMenuItems, type ContextMenuAction, type ContextMenuItem, type ContextMenuSwatches } from "@/lib/context-menus";
+import { PROP_SWATCHES } from "@/lib/prop-schema";
+import { useT } from "@/lib/use-t";
 import {
   createContext,
   useCallback,
@@ -17,7 +19,7 @@ import { createPortal } from "react-dom";
 
 export type { ContextMenuAction, ContextMenuItem };
 
-type PointEvent = {
+export type PointEvent = {
   preventDefault: () => void;
   stopPropagation: () => void;
   clientX: number;
@@ -39,11 +41,19 @@ function isSep(item: ContextMenuItem): item is { type: "sep" } {
   return "type" in item && item.type === "sep";
 }
 
+function isSwatches(item: ContextMenuItem): item is ContextMenuSwatches {
+  return "type" in item && item.type === "swatches";
+}
+
 function flatten(items: ContextMenuItem[]): ContextMenuItem[] {
   const out: ContextMenuItem[] = [];
   for (const item of items) {
     if (isSep(item)) {
       if (out.length && !isSep(out[out.length - 1]!)) out.push(item);
+      continue;
+    }
+    if (isSwatches(item)) {
+      out.push(item);
       continue;
     }
     if (item.hidden) continue;
@@ -54,10 +64,6 @@ function flatten(items: ContextMenuItem[]): ContextMenuItem[] {
   return out;
 }
 
-function actionsOf(items: ContextMenuItem[]) {
-  return items.filter((item): item is ContextMenuAction => !isSep(item));
-}
-
 function nativeTarget(target: EventTarget | null) {
   const el = target instanceof Element ? target : null;
   return Boolean(el?.closest(NATIVE_SEL));
@@ -65,6 +71,23 @@ function nativeTarget(target: EventTarget | null) {
 
 export function useContextMenu(): HostApi {
   return useContext(Ctx) ?? { open: () => {}, close: () => {} };
+}
+
+export function contextMenuFromKey(
+  e: { key: string; shiftKey: boolean; preventDefault: () => void; currentTarget: EventTarget },
+  open?: (ev: PointEvent) => void,
+) {
+  if (!open) return;
+  if (e.key !== "ContextMenu" && !(e.shiftKey && e.key === "F10")) return;
+  e.preventDefault();
+  const el = e.currentTarget as HTMLElement;
+  const r = el.getBoundingClientRect();
+  open({
+    preventDefault() {},
+    stopPropagation() {},
+    clientX: r.left + 12,
+    clientY: r.bottom - 4,
+  });
 }
 
 export function ContextMenuHost({ children }: { children: ReactNode }) {
@@ -79,7 +102,7 @@ export function ContextMenuHost({ children }: { children: ReactNode }) {
 
   const open = useCallback((e: PointEvent, items: ContextMenuItem[]) => {
     const next = flatten(items);
-    if (!actionsOf(next).length) return;
+    if (!next.some((item) => !isSep(item))) return;
     e.preventDefault();
     e.stopPropagation();
     setMenu({ x: e.clientX, y: e.clientY, items: next });
@@ -143,9 +166,10 @@ function Menu({
   onClose: () => void;
   onConfirm: (item: ContextMenuAction) => void;
 }) {
+  const t = useT();
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: x, top: y });
-  const [active, setActive] = useState(() => items.findIndex((i) => !isSep(i) && !i.disabled));
+  const [active, setActive] = useState(() => items.findIndex((i) => !isSep(i) && !isSwatches(i) && !i.disabled));
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -177,7 +201,7 @@ function Menu({
           for (let n = 1; n <= items.length; n++) {
             const i = (cur + dir * n + items.length * 8) % items.length;
             const item = items[i];
-            if (item && !isSep(item) && !item.disabled) return i;
+            if (item && !isSep(item) && !isSwatches(item) && !item.disabled) return i;
           }
           return cur;
         });
@@ -186,7 +210,7 @@ function Menu({
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         const item = items[active];
-        if (item && !isSep(item) && !item.disabled) onConfirm(item);
+        if (item && !isSep(item) && !isSwatches(item) && !item.disabled) onConfirm(item);
       }
     };
     const onScroll = () => onClose();
@@ -220,6 +244,40 @@ function Menu({
           if (isSep(item)) {
             return <div key={`sep-${i}`} className="my-1 border-t border-line" role="separator" />;
           }
+          if (isSwatches(item)) {
+            return (
+              <div
+                key={item.id}
+                role="group"
+                aria-label={t("prop.color")}
+                className="flex items-center gap-1 px-3 py-1.5"
+              >
+                {PROP_SWATCHES.map((s) => {
+                  const on = (item.value ?? "") === s.id;
+                  const label = s.id ? t("prop.colorNamed", { name: s.label }) : t("prop.colorDefault");
+                  return (
+                    <button
+                      key={s.id || "default"}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={on}
+                      aria-label={label}
+                      title={label}
+                      onClick={() => {
+                        item.onPick(s.id || undefined);
+                        onClose();
+                      }}
+                      className={cn(
+                        "klever-focus h-5 w-5 rounded-full border",
+                        on ? "border-ink ring-2 ring-ink/20" : "border-line",
+                      )}
+                      style={{ background: s.hex || "var(--color-paper-2)" }}
+                    />
+                  );
+                })}
+              </div>
+            );
+          }
           return (
             <button
               key={item.id}
@@ -231,10 +289,10 @@ function Menu({
                 if (!item.disabled) onConfirm(item);
               }}
               className={cn(
-                "flex w-full items-center justify-between gap-4 border-l-2 px-3 py-1.5 text-left font-serif text-sm",
+                "flex w-full items-center justify-between gap-4 border-l-2 px-3 py-1.5 text-left text-sm",
                 item.disabled && "cursor-not-allowed opacity-40",
                 i === active && !item.disabled
-                  ? "border-ink bg-paper-2 text-ink"
+                  ? "border-ring bg-paper-2 text-ink"
                   : "border-transparent text-mute hover:bg-paper-2 hover:text-ink",
               )}
             >
