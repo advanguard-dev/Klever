@@ -26,7 +26,7 @@ const CODE_LABEL: Record<string, string> = {
 
 function labelFor(code: string) {
   const c = code.trim().slice(-1) || code.trim()[0] || "?";
-  return CODE_LABEL[c] ?? code.trim() || "changed";
+  return (CODE_LABEL[c] ?? code.trim()) || "changed";
 }
 
 /** Ask Electron main for `git status` of the vault root (localhost-only automation). */
