@@ -13,6 +13,16 @@ export function PrivacyStrip() {
             {copy.privacy}
           </h2>
           <p className="mt-4 max-w-xl text-base leading-7 text-paper/75">{copy.privacyBody}</p>
+          <h3 className="mt-10 font-serif text-xl font-semibold tracking-tight">
+            {copy.privacyNoteTitle}
+          </h3>
+          <ul className="mt-4 max-w-2xl space-y-3 text-sm leading-6 text-paper/75">
+            {copy.privacyBullets.map((line) => (
+              <li key={line} className="pl-4 relative before:absolute before:left-0 before:content-['–']">
+                {line}
+              </li>
+            ))}
+          </ul>
         </div>
       </AnimatedContent>
     </section>

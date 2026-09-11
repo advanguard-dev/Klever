@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Limit Oxide to app sources — scanning release/ or node_modules deadlocks vite build. */
+@source "./**/*.{js,ts,jsx,tsx,html}";
+@source not "../release/**";
+@source not "../node_modules/**";
+@source not "../dist/**";
+@source not "../web/**";
+
 @theme {
   --klever-titlebar-inset: 4.5rem;
 

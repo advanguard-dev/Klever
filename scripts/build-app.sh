@@ -21,7 +21,7 @@ rm -rf "$OUT"/mac-arm64/Klever\ *.app "$OUT"/Klever-darwin-arm64/Klever\ *.app
 # Path-segment `src` (not substring) so dist/assets/src-*.js shiki chunks ship.
 IGNORE='(^|/)(node_modules|src|web|docs|scripts|cli|release|build|public|\.git|\.cursor|\.agents|\.qa)(/|$)'
 IGNORE+='|\.(md|map)$'
-IGNORE+='|(^|/)(tsconfig.*|vite\.config\.ts|index\.html|package-lock\.json|skills-lock\.json|\.npmrc|\.nvmrc|\.gitignore)$'
+IGNORE+='|(^|/)(tsconfig.*|vite\.config\..*|index\.html|index\.smoke\.html|package-lock\.json|skills-lock\.json|\.npmrc|\.nvmrc|\.gitignore)$'
 
 npx --yes @electron/packager@18.3.6 "$ROOT" Klever \
   --platform=darwin \
@@ -42,8 +42,15 @@ if [[ ! -d "$APP" ]]; then
   exit 1
 fi
 
+# Adhoc-sign so macOS does not treat the bundle as damaged
+# ("code has no resources but signature indicates they must be present").
+codesign --force --deep --sign - "$APP"
+xattr -cr "$APP" 2>/dev/null || true
+
 mkdir -p "$OUT/mac-arm64"
 rm -rf "$OUT/mac-arm64/Klever.app"
 ditto "$APP" "$OUT/mac-arm64/Klever.app"
+codesign --force --deep --sign - "$OUT/mac-arm64/Klever.app"
+xattr -cr "$OUT/mac-arm64/Klever.app" 2>/dev/null || true
 
 echo "Packaged $OUT/mac-arm64/Klever.app"

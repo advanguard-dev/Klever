@@ -30,6 +30,8 @@
     "build:web": "tsc --noEmit && vite build",
     "build": "npm run build:web",
     "build:beta": "npm run build:icon && npm run build:web && bash scripts/build-app.sh",
+    "build:zip": "bash scripts/package-mac-zip.sh",
+    "install:mac": "bash scripts/install-mac.sh",
     "build:dmg": "npm run build:icon && npm run build:web && bash scripts/build-app.sh && bash scripts/create-dmg.sh",
     "preview": "vite preview"
   },

@@ -1,5 +1,5 @@
-export const DOWNLOAD_HREF =
-  "https://github.com/advanguard-dev/Klever/releases/latest";
+export const BETA_HREF =
+  "https://github.com/advanguard-dev/Klever/issues/new?title=Beta%20access%20request&body=Mac%20model%20%28Apple%20silicon%29%3A%0AHow%20you%20plan%20to%20use%20Klever%3A%0A";
 export const GITHUB_HREF = "https://github.com/advanguard-dev/Klever";
 export const VERSION = "0.1.0-beta.1";
 
@@ -9,13 +9,22 @@ export const copy = {
   deck: "Notes, databases, tags, and a graph. Files stay on this machine. Nothing leaves unless you send it to a model you choose.",
   principle: "A note you cannot open in a text editor is a hostage.",
   ai: "AI drafts; you keep.",
-  download: "Download for Mac",
+  beta: "Request beta access",
   github: "GitHub",
-  macLine: "Apple silicon · 0.1.0-beta.1",
-  vaultLead: "Point Klever at a folder. The files are yours — the same files Obsidian, git, and a text editor already understand.",
+  macLine: "Private beta · Apple silicon · 0.1.0-beta.1",
+  vaultLead:
+    "Point Klever at a folder. The files are yours — the same files Obsidian, git, and a text editor already understand.",
   privacy: "Nothing leaves the machine unless you send it.",
   privacyBody:
     "Work stays on disk. Optional models are a choice you make, not a default that phones home.",
+  privacyNoteTitle: "Privacy note",
+  privacyBullets: [
+    "Your vault is a folder of Markdown (and related) files on your Mac. Klever does not run a cloud sync service.",
+    "There is no Klever account. App preferences stay in local browser storage / IndexedDB on this device.",
+    "Remote AI is opt-in per workspace. When enabled, only the text you send for that feature leaves the machine — to the model provider you configure (e.g. DeepSeek).",
+    "Local AI mode uses on-device heuristics and speech tools. No model API calls.",
+    "We do not ship analytics or tracking SDKs in the desktop app or this site.",
+  ] as const,
   welcomeType:
     "Klever is a local garden. Notes are markdown. Databases are markdown. The graph is the leftover shape of how you think.\n\nWrite in [[Principles]]\nTrack work in [[Projects]]",
 };

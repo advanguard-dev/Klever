@@ -62,17 +62,21 @@ export function TypeStudio({
         : textColorHex(color);
 
   const apply = (patch: FreeformPatch) => {
-    if (obj.type === "mind" && typeof patch.text === "string") {
+    const bag = patch as { text?: unknown; fontSize?: unknown };
+    if (obj.type === "mind" && typeof bag.text === "string") {
       onPatch(obj.id, {
         ...patch,
-        h: mindNodeHeight(patch.text, typeof patch.fontSize === "number" ? patch.fontSize : (obj.fontSize ?? 14)),
+        h: mindNodeHeight(
+          bag.text,
+          typeof bag.fontSize === "number" ? bag.fontSize : (obj.fontSize ?? 14),
+        ),
       });
       return;
     }
-    if (obj.type === "mind" && typeof patch.fontSize === "number") {
+    if (obj.type === "mind" && typeof bag.fontSize === "number") {
       onPatch(obj.id, {
         ...patch,
-        h: mindNodeHeight(obj.text, patch.fontSize),
+        h: mindNodeHeight(obj.text, bag.fontSize),
       });
       return;
     }

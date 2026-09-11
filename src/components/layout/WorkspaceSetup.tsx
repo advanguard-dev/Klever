@@ -27,7 +27,7 @@ export function WorkspaceSetup() {
 
   const [name, setName] = useState("Vault");
   const [tools, setTools] = useState<WorkspaceTools>(() => defaultWorkspaceTools());
-  const [aiMode, setAiMode] = useState<WorkspaceAiMode>("remote");
+  const [aiMode, setAiMode] = useState<WorkspaceAiMode>("local");
   const [busy, setBusy] = useState(false);
   const [encrypt, setEncrypt] = useState(false);
   const [password, setPassword] = useState("");
@@ -56,7 +56,7 @@ export function WorkspaceSetup() {
     } else {
       setName("New workspace");
       setTools(defaultWorkspaceTools());
-      setAiMode("remote");
+      setAiMode("local");
     }
     setBusy(false);
     setEncrypt(false);

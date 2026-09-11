@@ -40,7 +40,7 @@ export function NotePage({ note, active = true }: { note: Note; active?: boolean
   const activeWorkspaceId = useApp((s) => s.activeWorkspaceId);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
   const tools = activeWorkspace?.tools ?? defaultWorkspaceTools();
-  const aiMode = activeWorkspace?.aiMode ?? "remote";
+  const aiMode = activeWorkspace?.aiMode ?? "local";
   const writingEnabled = tools.writingTools && aiMode === "remote";
   const meetingPage = isMeetingNote(note, notes);
   const setError = useApp((s) => s.setError);

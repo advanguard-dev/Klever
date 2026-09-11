@@ -63,7 +63,7 @@ export function BrainDump() {
   const activeWorkspaceId = useApp((s) => s.activeWorkspaceId);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
   const tools = activeWorkspace?.tools ?? defaultWorkspaceTools();
-  const aiMode = activeWorkspace?.aiMode ?? "remote";
+  const aiMode = activeWorkspace?.aiMode ?? "local";
   const setView = useApp((s) => s.setView);
   const setError = useApp((s) => s.setError);
   const [text, setText] = useState("");

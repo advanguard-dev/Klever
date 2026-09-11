@@ -483,7 +483,7 @@ export async function loadOrMigrateWorkspaces(): Promise<{
 
   const ws = createWorkspaceDraft({
     name: globalMeta.lastPath?.trim() || "Vault",
-    aiMode: "remote",
+    aiMode: "local",
   });
   const registry: WorkspacesRegistry = { activeId: ws.id, workspaces: [ws] };
   await saveWorkspacesRegistry(registry);

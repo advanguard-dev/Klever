@@ -13,8 +13,9 @@ import {
   TableStudio,
 } from "@/components/freeform/board-chrome";
 import type { AlignEdge } from "@/components/freeform/board-ops";
-import type { InkTool } from "@/components/freeform/board-model";
 import {
+  type InkTool,
+  type StrokeSwatch,
   stickyContrastTextColor,
   TABLE_TEXT_SIZES,
 } from "@/components/freeform/board-model";
@@ -105,7 +106,7 @@ export function BoardFloatingChrome({
   inkTool: InkTool;
   strokeColor: string;
   activeWidth: number;
-  strokeSwatches: readonly string[];
+  strokeSwatches: StrokeSwatch[];
   onInkTool: (t: InkTool) => void;
   onStrokeColor: (c: string) => void;
   onStrokeWidth: (n: number) => void;

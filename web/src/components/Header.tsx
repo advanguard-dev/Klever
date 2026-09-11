@@ -1,5 +1,5 @@
 import { GhostLink, SolidLink } from "@/components/ui";
-import { copy, DOWNLOAD_HREF, GITHUB_HREF } from "@/content";
+import { BETA_HREF, copy, GITHUB_HREF } from "@/content";
 
 const nav = [
   { href: "#notes", label: "Notes" },
@@ -20,12 +20,12 @@ export function Header() {
             Klever
           </a>
           <SolidLink
-            href={DOWNLOAD_HREF}
+            href={BETA_HREF}
             className="h-8 px-3 sm:hidden"
             rel="noopener noreferrer"
             target="_blank"
           >
-            {copy.download}
+            {copy.beta}
           </SolidLink>
         </div>
         <nav aria-label="Page" className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:justify-center">
@@ -49,12 +49,12 @@ export function Header() {
             {copy.github}
           </GhostLink>
           <SolidLink
-            href={DOWNLOAD_HREF}
+            href={BETA_HREF}
             className="h-8 px-3"
             rel="noopener noreferrer"
             target="_blank"
           >
-            {copy.download}
+            {copy.beta}
           </SolidLink>
         </div>
       </div>

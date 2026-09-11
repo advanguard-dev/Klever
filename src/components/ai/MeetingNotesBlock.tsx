@@ -33,7 +33,7 @@ export function MeetingNotesBlock({ note, readOnly }: { note: Note; readOnly?: b
   const workspaces = useApp((s) => s.workspaces);
   const activeWorkspaceId = useApp((s) => s.activeWorkspaceId);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
-  const aiMode = activeWorkspace?.aiMode ?? "remote";
+  const aiMode = activeWorkspace?.aiMode ?? "local";
   const tools = activeWorkspace?.tools ?? defaultWorkspaceTools();
 
   const savedTranscript = meetingTranscript(note);

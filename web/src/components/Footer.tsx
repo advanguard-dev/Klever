@@ -1,5 +1,5 @@
 import { GhostLink, SolidLink } from "@/components/ui";
-import { copy, DOWNLOAD_HREF, GITHUB_HREF, VERSION } from "@/content";
+import { BETA_HREF, copy, GITHUB_HREF, VERSION } from "@/content";
 
 export function Footer() {
   return (
@@ -11,12 +11,15 @@ export function Footer() {
           <p className="mt-3 font-mono text-[11px] text-mute">macOS · {VERSION}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <SolidLink href={DOWNLOAD_HREF} rel="noopener noreferrer" target="_blank">
-            {copy.download}
-          </SolidLink>
-          <GhostLink href={GITHUB_HREF} rel="noopener noreferrer" target="_blank">
+          <GhostLink href="#privacy" className="h-8 px-3">
+            Privacy
+          </GhostLink>
+          <GhostLink href={GITHUB_HREF} rel="noopener noreferrer" target="_blank" className="h-8 px-3">
             {copy.github}
           </GhostLink>
+          <SolidLink href={BETA_HREF} rel="noopener noreferrer" target="_blank">
+            {copy.beta}
+          </SolidLink>
         </div>
       </div>
     </footer>

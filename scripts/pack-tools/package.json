@@ -1,0 +1,11 @@
+{
+  "name": "klever-pack-tools",
+  "private": true,
+  "type": "module",
+  "description": "Vite 7 (Rollup) renderer build — avoids Vite 8 Rolldown hangs during packaging.",
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^4.7.0",
+    "vite": "^7.1.11"
+  }
+}

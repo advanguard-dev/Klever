@@ -33,6 +33,10 @@ export default defineConfig({
     modulePreload: {
       polyfill: false,
     },
+    // Avoid Rolldown napi warning-bridge deadlocks on large transforms (vite 8).
+    rolldownOptions: {
+      logLevel: "silent",
+    },
   },
   server: {
     host: "127.0.0.1",

@@ -48,7 +48,7 @@ export function RightRail() {
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
   const tools = activeWorkspace?.tools ?? defaultWorkspaceTools();
   // Suggestions need a remote model; local workspaces stay offline.
-  const suggestionsEnabled = tools.suggestions && (activeWorkspace?.aiMode ?? "remote") === "remote";
+  const suggestionsEnabled = tools.suggestions && (activeWorkspace?.aiMode ?? "local") === "remote";
   const t = useT();
   const { open } = useContextMenu();
 

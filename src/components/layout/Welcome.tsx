@@ -22,7 +22,9 @@ export function Welcome() {
         </p>
         <div className="mt-8 flex flex-wrap gap-2">
           <SolidButton onClick={() => void startDemo()}>Open sample vault</SolidButton>
-          <GhostButton onClick={() => void startGraphFixture()}>Open orchard</GhostButton>
+          {import.meta.env.DEV && (
+            <GhostButton onClick={() => void startGraphFixture()}>Open orchard</GhostButton>
+          )}
           <GhostButton onClick={() => void openFolder()}>Open folder</GhostButton>
           <GhostButton onClick={() => startEmpty()}>Start empty</GhostButton>
         </div>

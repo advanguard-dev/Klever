@@ -44,7 +44,6 @@ import {
   TEXT_SIZES,
 } from "@/components/freeform/board-model";
 import {
-  GRID,
   hitBoardObjectAt,
   type AlignEdge,
   type Guide,
