@@ -1,6 +1,6 @@
 import { Alert, Field, GhostButton, MonoLabel, Overlay, Panel, Segmented, Select, SolidButton, TextArea, TextButton, Toggle } from "@/components/ui";
 import {
-  applyGeminiFlashPreset,
+  applyDeepSeekFlashPreset,
   brainDump,
   DUMP_KIND_LABEL,
   heuristicDump,
@@ -8,12 +8,14 @@ import {
   type ProposedItem,
 } from "@/lib/ai";
 import { commitProposedItems } from "@/lib/commit-items";
+import { macDictationCommandAvailable, startMacDictation, stopMacDictation } from "@/lib/dictation";
 import { slugify } from "@/lib/ids";
 import { defaultWorkspaceTools } from "@/lib/workspaces";
 import { moonshineReady, moonshineSupported, speechSupported, startDumpTranscription } from "@/lib/speech";
 import {
   loadDumpSpeechLang,
   moonshineSupports,
+  resolveDumpLang,
   saveDumpSpeechLang,
   SPEECH_LANG_OPTIONS,
   type SpeechLangPreference,
@@ -56,11 +58,12 @@ export function BrainDump() {
   const open = useApp((s) => s.dumpOpen);
   const setOpen = useApp((s) => s.setDumpOpen);
   const ai = useApp((s) => s.ai);
+  const aiConfigured = useApp((s) => s.aiConfigured);
   const workspaces = useApp((s) => s.workspaces);
   const activeWorkspaceId = useApp((s) => s.activeWorkspaceId);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
   const tools = activeWorkspace?.tools ?? defaultWorkspaceTools();
-  const aiMode = activeWorkspace?.aiMode ?? "remote";
+  const aiMode = activeWorkspace?.aiMode ?? "local";
   const setView = useApp((s) => s.setView);
   const setError = useApp((s) => s.setError);
   const [text, setText] = useState("");
@@ -69,18 +72,21 @@ export function BrainDump() {
   const [loadingModel, setLoadingModel] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
-  const [backend, setBackend] = useState<"moonshine" | "webspeech" | null>(null);
+  const [backend, setBackend] = useState<"moonshine" | "webspeech" | "dictation" | null>(null);
   const [proposed, setProposed] = useState<DumpDraft[]>([]);
   const [projectName, setProjectName] = useState("");
   const [isolated, setIsolated] = useState(() => moonshineReady());
   const [speechLang, setSpeechLang] = useState<SpeechLangPreference>(() => loadDumpSpeechLang());
   const recRef = useRef<{ stop: () => void } | null>(null);
+  const textAreaRef = useRef<HTMLTextAreaElement | null>(null);
   const userTextRef = useRef("");
   const speechTextRef = useRef("");
   const skipSpeechRef = useRef(false);
   const proposedRef = useRef<HTMLDivElement | null>(null);
   const dumpTitleId = useId();
   const dumpDescId = useId();
+  const useMacDictation = macDictationCommandAvailable();
+  const resolvedLang = resolveDumpLang(speechLang);
 
   useEffect(() => {
     const sync = () => setIsolated(moonshineReady());
@@ -97,6 +103,7 @@ export function BrainDump() {
     if (!open) {
       recRef.current?.stop();
       recRef.current = null;
+      void stopMacDictation();
       setListening(false);
       setLoadingModel(false);
       setStatus(null);
@@ -109,13 +116,20 @@ export function BrainDump() {
     }
   }, [open]);
 
+  useEffect(() => {
+    return () => {
+      recRef.current?.stop();
+      void stopMacDictation();
+    };
+  }, []);
+
   if (!open || !tools.brainDump) return null;
 
   const organize = async () => {
     if (!text.trim() || busy) return;
     setBusy(true);
     const useLocal = aiMode === "local";
-    setStatus(useLocal ? "Organizing locally…" : "Organizing with Gemini…");
+    setStatus(useLocal ? "Organizing locally…" : "Organizing with DeepSeek…");
     try {
       if (useLocal) {
         const items = heuristicDump(text);
@@ -133,8 +147,8 @@ export function BrainDump() {
         });
         return;
       }
-      if (!ai.apiKey.trim()) {
-        setError("Add a Gemini API key in Settings to organize this dump.");
+      if (!aiConfigured) {
+        setError("Configure DEEPSEEK_API_KEY in the desktop app to organize this dump.");
         setProposed([]);
         setStatus(null);
         return;
@@ -214,24 +228,50 @@ export function BrainDump() {
     saveDumpSpeechLang(value);
   };
 
+  const stopMic = () => {
+    recRef.current?.stop();
+    recRef.current = null;
+    if (backend === "dictation") void stopMacDictation();
+    setListening(false);
+    setLoadingModel(false);
+    setStatus(null);
+    setProgress(null);
+    setBackend(null);
+    speechTextRef.current = "";
+    skipSpeechRef.current = false;
+  };
+
   const toggleMic = () => {
     if (listening || loadingModel) {
-      recRef.current?.stop();
-      recRef.current = null;
-      setListening(false);
-      setLoadingModel(false);
-      setStatus(null);
-      setProgress(null);
-      speechTextRef.current = "";
-      skipSpeechRef.current = false;
+      stopMic();
       return;
     }
+
+    // Mac Dictation types into the focused field — most reliable in Electron for EN/FR.
+    if (useMacDictation) {
+      userTextRef.current = text.trim();
+      speechTextRef.current = "";
+      skipSpeechRef.current = false;
+      setBackend("dictation");
+      setListening(true);
+      setLoadingModel(false);
+      setProgress(null);
+      requestAnimationFrame(() => textAreaRef.current?.focus());
+      void startMacDictation(textAreaRef.current).then((started) => {
+        setStatus(
+          started
+            ? `Listening (${resolvedLang === "fr" ? "French" : "English"} · Mac Dictation). Click Stop when done.`
+            : "Focus the box, then press Fn twice or Globe to dictate. English or French only.",
+        );
+      });
+      return;
+    }
+
     userTextRef.current = text.trim();
     speechTextRef.current = "";
     skipSpeechRef.current = false;
     const ready = moonshineReady();
-    const useMoon =
-      ready && (speechLang === "auto" || moonshineSupports(speechLang));
+    const useMoon = ready && resolvedLang === "en" && moonshineSupports("en");
     setIsolated(ready);
     setLoadingModel(true);
     setStatus(useMoon ? "Loading Moonshine…" : "Starting transcription…");
@@ -245,7 +285,9 @@ export function BrainDump() {
       },
       {
         language: speechLang,
-        onError: (m) => setError(m),
+        onError: (m) => {
+          if (m) setError(m);
+        },
         onProgress: (fraction) => setProgress(fraction),
         onStatus: (s) => {
           setStatus(s);
@@ -268,12 +310,13 @@ export function BrainDump() {
             ? prev
             : session.backend === "moonshine"
               ? "Listening with Moonshine (on-device)…"
-              : "Listening (browser speech)…",
+              : `Listening (browser speech · ${resolvedLang === "fr" ? "fr-FR" : "en-US"})…`,
         );
       })
       .catch((err) => {
         setLoadingModel(false);
         setListening(false);
+        setBackend(null);
         setStatus(null);
         setError(err instanceof Error ? err.message : String(err));
       });
@@ -281,6 +324,10 @@ export function BrainDump() {
 
   const onDumpTextChange = (value: string) => {
     setText(value);
+    if (backend === "dictation") {
+      userTextRef.current = value;
+      return;
+    }
     if (!(listening || loadingModel)) {
       userTextRef.current = value;
       return;
@@ -306,25 +353,26 @@ export function BrainDump() {
     skipSpeechRef.current = true;
   };
 
-  const canTranscribe = speechSupported();
-  const usingMoonshine = backend === "moonshine" || (listening && isolated);
+  const canTranscribe = useMacDictation || speechSupported();
+  const usingMoonshine = backend === "moonshine" || (listening && isolated && resolvedLang === "en" && !useMacDictation);
   const langLocked = listening || loadingModel;
 
   return (
     <Overlay onClose={() => setOpen(false)} title={t("dump.title")} labelledBy={dumpTitleId} describedBy={dumpDescId}>
       <Panel className="p-6">
         <MonoLabel>{t("dump.title")}</MonoLabel>
-        <h2 id={dumpTitleId} className="mt-2 font-serif text-3xl font-semibold tracking-tight">Empty the head</h2>
+        <h2 id={dumpTitleId} className="mt-2 font-serif text-3xl tracking-tight">{t("dump.title")}</h2>
         <p id={dumpDescId} className="mt-3 text-sm leading-relaxed text-mute">
-          Speak or paste. Transcription runs{" "}
-          {moonshineSupported() ? (
+          Speak or paste in English or French.{" "}
+          {useMacDictation ? (
+            <>Transcription uses <span className="text-ink">Mac Dictation</span>. </>
+          ) : moonshineSupported() && resolvedLang === "en" ? (
             <>
-              on-device with <span className="text-ink">Moonshine</span>
-              {!isolated && " after a one-time reload"} when a model exists for the language;
-              otherwise the browser.{" "}
+              On-device <span className="text-ink">Moonshine</span>
+              {!isolated && " (after a one-time reload)"} for English; otherwise browser speech.{" "}
             </>
           ) : (
-            "in the browser. "
+            "Transcription runs in the browser. "
           )}
           Then it becomes pages, lists, and events in a folder. Events go on the calendar, not as
           pages. Add an API key in Settings unless this workspace is on local mode.
@@ -342,7 +390,9 @@ export function BrainDump() {
               {SPEECH_LANG_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
-                  {o.value !== "auto" && moonshineSupports(o.value) ? " · Moonshine" : ""}
+                  {!useMacDictation && o.value === "en" && moonshineSupports("en")
+                    ? " · Moonshine"
+                    : ""}
                 </option>
               ))}
             </Select>
@@ -351,6 +401,7 @@ export function BrainDump() {
         <label className="mt-4 block">
           <span className="sr-only">Notes to organize</span>
           <TextArea
+            ref={textAreaRef}
             value={text}
             onChange={(e) => onDumpTextChange(e.target.value)}
             rows={proposed.length ? 5 : 8}
@@ -365,7 +416,7 @@ export function BrainDump() {
             {(status || busy) && (
               <p className="inline-flex items-center gap-2 font-mono text-[11px] tracking-wide text-mute" role="status">
                 {busy && <Loader2 size={12} strokeWidth={1.6} className="animate-spin" aria-hidden />}
-                {status ?? "Organizing with Gemini…"}
+                {status ?? "Organizing with DeepSeek…"}
               </p>
             )}
             {progress != null && progress < 1 && (
@@ -378,7 +429,7 @@ export function BrainDump() {
             )}
           </div>
         )}
-        {moonshineSupported() && !isolated && !listening && (
+        {moonshineSupported() && !useMacDictation && !isolated && !listening && resolvedLang === "en" && (
           <Alert className="mt-4 font-mono text-xs">
             <p>Moonshine needs a one-time reload in this window before it can listen.</p>
             <GhostButton
@@ -396,17 +447,18 @@ export function BrainDump() {
             <GhostButton
               onClick={toggleMic}
               className={listening || loadingModel ? "text-ink" : ""}
-              disabled={busy || (loadingModel && !listening)}
+              disabled={busy}
             >
               <Mic size={14} strokeWidth={1.4} />
               {loadingModel
-                  ? "Preparing…"
+                ? "Preparing…"
                 : listening
                   ? "Stop"
-                  : usingMoonshine ||
-                      (isolated && (speechLang === "auto" || moonshineSupports(speechLang)))
-                    ? "Transcribe with Moonshine"
-                    : "Transcribe"}
+                  : useMacDictation
+                    ? "Dictate"
+                    : usingMoonshine || (isolated && resolvedLang === "en")
+                      ? "Transcribe with Moonshine"
+                      : "Transcribe"}
             </GhostButton>
           )}
           <SolidButton onClick={() => void organize()} disabled={busy || listening || !text.trim()}>
@@ -572,8 +624,19 @@ function SettingsModelPanel() {
   const t = useT();
   const ai = useApp((s) => s.ai);
   const setAi = useApp((s) => s.setAi);
+  const aiConfigured = useApp((s) => s.aiConfigured);
+  const refreshAiStatus = useApp((s) => s.refreshAiStatus);
   const displayName = useApp((s) => s.displayName);
   const setDisplayName = useApp((s) => s.setDisplayName);
+  useEffect(() => {
+    void refreshAiStatus();
+  }, [refreshAiStatus]);
+  const desktop = typeof window !== "undefined" && Boolean(window.kleverDesktop);
+  const statusLabel = !desktop
+    ? t("settings.apiBrowser")
+    : aiConfigured
+      ? t("settings.apiReady")
+      : t("settings.apiMissing");
   return (
     <>
       <p className="mt-3 text-sm leading-relaxed text-mute">{t("settings.modelBlurb")}</p>
@@ -590,29 +653,11 @@ function SettingsModelPanel() {
             }}
           />
         </label>
-        <label className="block">
+        <div className="block">
           <MonoLabel>{t("settings.apiKey")}</MonoLabel>
-          <Field
-            className="mt-1 font-mono text-sm"
-            type="password"
-            value={ai.apiKey}
-            onChange={(e) => setAi({ apiKey: e.target.value })}
-            placeholder="AIza…"
-            autoComplete="off"
-          />
-          <p className="mt-1.5 text-[12px] text-faint">
-            {t("settings.apiKeyHint")}{" "}
-            <a
-              className="text-mute underline decoration-line underline-offset-2 hover:text-ink"
-              href="https://aistudio.google.com/apikey"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Google AI Studio
-            </a>
-            .
-          </p>
-        </label>
+          <p className="mt-1 text-sm text-ink">{statusLabel}</p>
+          <p className="mt-1.5 text-[12px] text-faint">{t("settings.apiKeyHint")}</p>
+        </div>
         <label className="block">
           <MonoLabel>{t("settings.writingTools")}</MonoLabel>
           <Field
@@ -637,10 +682,10 @@ function SettingsModelPanel() {
             onChange={(e) => setAi({ meetingModel: e.target.value })}
           />
         </label>
-        <label className="block">
+        <div className="block">
           <MonoLabel>{t("settings.endpoint")}</MonoLabel>
-          <Field className="mt-1 font-mono text-xs" value={ai.endpoint} onChange={(e) => setAi({ endpoint: e.target.value })} />
-        </label>
+          <p className="mt-1 font-mono text-xs text-mute">{ai.endpoint}</p>
+        </div>
       </div>
     </>
   );
@@ -841,7 +886,7 @@ export function AiSettings() {
           {tab === "model" && (
             <GhostButton
               type="button"
-              onClick={() => setAi(applyGeminiFlashPreset(ai))}
+              onClick={() => setAi(applyDeepSeekFlashPreset(ai))}
             >
               {t("settings.resetGemini")}
             </GhostButton>

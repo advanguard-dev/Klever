@@ -36,6 +36,8 @@ export const INPUT_RATES: { test: RegExp; rate: InputRate }[] = [
   { test: /claude-haiku-4|claude-4-haiku|claude-3[.-]5-haiku/i, rate: { usdPerMillion: 0.8, outputUsdPerMillion: 4, label: "Anthropic" } },
   { test: /claude-3-haiku/i, rate: { usdPerMillion: 0.25, outputUsdPerMillion: 1.25, label: "Anthropic" } },
 
+  { test: /deepseek-flash|deepseek-v4|deepseek/i, rate: { usdPerMillion: 0.15, outputUsdPerMillion: 0.6, label: "DeepSeek" } },
+
   { test: /gemini-3\.6-flash|gemini-3-flash|gemini-2\.5-flash|gemini-2\.0-flash/i, rate: { usdPerMillion: 0.15, outputUsdPerMillion: 0.6, label: "Google" } },
   { test: /gemini-2\.5-pro|gemini-3\.5-pro|gemini-1\.5-pro|gemini-pro/i, rate: { usdPerMillion: 1.25, outputUsdPerMillion: 10, label: "Google" } },
   { test: /gemini-1\.5-flash|gemini-flash/i, rate: { usdPerMillion: 0.075, outputUsdPerMillion: 0.3, label: "Google" } },

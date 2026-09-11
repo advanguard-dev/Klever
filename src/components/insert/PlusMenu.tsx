@@ -1,4 +1,5 @@
 import { Overlay, Kbd, MonoLabel, Panel } from "@/components/ui";
+import { StarterMenu } from "@/components/insert/StarterMenu";
 import { ChromeIcon, commandIcon } from "@/lib/chrome-icons";
 import { cn } from "@/lib/cn";
 import { buildCommands, filterCommands, grouped, sectionLabel, slashCommands } from "@/lib/commands";
@@ -17,6 +18,9 @@ export function PlusMenu() {
   const setOpen = useApp((s) => s.setPlusOpen);
   const notes = useApp((s) => s.notes);
   if (!open) return null;
+  if (context === "sidebar") {
+    return <StarterMenu onClose={() => setOpen(false)} />;
+  }
   return (
     <CommandStack
       context={context}

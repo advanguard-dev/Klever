@@ -1,4 +1,3 @@
-import Noise from "@/bits/Noise";
 import { DeskSheets } from "@/components/DeskSheets";
 import { Footer } from "@/components/Footer";
 import { Header } from "@/components/Header";
@@ -11,7 +10,6 @@ export function App() {
   return (
     <div className="relative min-h-dvh bg-blotter text-ink">
       <SkipLink />
-      <Noise patternAlpha={10} patternRefreshInterval={10} />
       <Header />
       <main id="main" tabIndex={-1}>
         <Hero />

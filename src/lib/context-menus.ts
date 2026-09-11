@@ -33,7 +33,10 @@ export type ContextMenuSwatches = {
   onPick: (id: string | undefined) => void;
 };
 
-export type ContextMenuItem = ContextMenuAction | { type: "sep" } | ContextMenuSwatches;
+export type ContextMenuItem =
+  | ContextMenuAction
+  | { type: "sep"; hidden?: boolean }
+  | ContextMenuSwatches;
 
 export async function copyText(text: string) {
   try {
@@ -64,11 +67,37 @@ export function noteMenuItems(note: Note, opts?: { closeTab?: boolean }): Contex
   const s = useApp.getState();
   const starred = s.starred.includes(note.id);
   const isDb = note.type === "database";
+  const currentId = s.view.kind === "note" || s.view.kind === "database" ? s.view.id : null;
+  const onCurrent = currentId === note.id;
   return [
     {
       id: "open",
       label: "Open",
       onSelect: () => openNote(note),
+    },
+    {
+      id: "split-page",
+      label: "Split page…",
+      hidden: isDb || s.view.kind !== "note" || !onCurrent,
+      onSelect: () => s.setPageSplitOpen(true),
+    },
+    {
+      id: "split-left",
+      label: "Open left",
+      hidden: Boolean(s.split) || !currentId || onCurrent,
+      onSelect: () => s.splitPage({ side: "left", withId: note.id, focusIncoming: true }),
+    },
+    {
+      id: "split-right",
+      label: "Open right",
+      hidden: Boolean(s.split) || !currentId || onCurrent,
+      onSelect: () => s.splitPage({ side: "right", withId: note.id, focusIncoming: true }),
+    },
+    {
+      id: "close-split",
+      label: "Close split",
+      hidden: !s.split,
+      onSelect: () => s.closeSplit(),
     },
     {
       id: "star",
@@ -94,6 +123,15 @@ export function noteMenuItems(note: Note, opts?: { closeTab?: boolean }): Contex
       onSelect: () => void copyText(`[[${note.title}]]`),
     },
     {
+      id: "relate",
+      label: "Relate…",
+      hidden: isDb,
+      onSelect: () => {
+        openNote(note);
+        s.setRelateNoteId(note.id);
+      },
+    },
+    {
       id: "copy-path",
       label: "Copy path",
       onSelect: () => void copyText(note.path),
@@ -116,6 +154,19 @@ export function noteMenuItems(note: Note, opts?: { closeTab?: boolean }): Contex
       },
     },
     { type: "sep" },
+    {
+      id: "add-cover",
+      label: "Add cover",
+      hidden: Boolean(note.cover) || isDb,
+      onSelect: () => s.patchNote(note.id, { cover: "#cfc8b8" }),
+    },
+    {
+      id: "delete-cover",
+      label: "Delete cover",
+      hidden: !note.cover || isDb,
+      onSelect: () => s.patchNote(note.id, { cover: undefined }),
+    },
+    { type: "sep", hidden: isDb },
     {
       id: "delete",
       label: "Delete",

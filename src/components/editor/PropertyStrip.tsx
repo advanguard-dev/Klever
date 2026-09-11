@@ -285,6 +285,7 @@ export function PropertyStrip({ note }: { note: Note }) {
             name: schema.find((p) => p.key === pendingDelete)?.name ?? t("prop.property"),
           })}
           confirmLabel={t("prop.deleteConfirm")}
+          danger
           onConfirm={() => {
             removeProperty(pendingDelete);
             setOpenKey((k) => (k === pendingDelete ? null : k));

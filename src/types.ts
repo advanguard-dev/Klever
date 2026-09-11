@@ -139,19 +139,28 @@ export type PageFont = "sans" | "serif" | "mono";
 export type TextAlign = "left" | "center" | "right";
 export type TextVAlign = "top" | "middle" | "bottom";
 export type PageWidth = "s" | "m" | "l";
-export type EditorMode = "wysiwyg" | "markdown" | "read";
 
-export const EDITOR_MODES: EditorMode[] = ["wysiwyg", "markdown", "read"];
+/** Editing surface only — Present is a separate viewer flag on the store. */
+export type EditorMode = "wysiwyg";
+
+export const EDITOR_MODES: EditorMode[] = ["wysiwyg"];
 
 export const EDITOR_MODE_LABEL: Record<EditorMode, string> = {
   wysiwyg: "Block",
-  markdown: "Source",
-  read: "Read",
 };
 
-export function nextEditorMode(mode: EditorMode): EditorMode {
-  const i = EDITOR_MODES.indexOf(mode);
-  return EDITOR_MODES[(i + 1) % EDITOR_MODES.length];
+export function isEditorMode(v: unknown): v is EditorMode {
+  return v === "wysiwyg";
+}
+
+/** Map leftover Source/Read/Present session values onto Block. */
+export function normalizeEditorMode(v: unknown): EditorMode {
+  return isEditorMode(v) ? v : "wysiwyg";
+}
+
+/** @deprecated Prefer togglePresenting — kept for hotkey callers that flip edit/present. */
+export function nextEditorMode(_mode: EditorMode): EditorMode {
+  return "wysiwyg";
 }
 
 export interface NoteComment {
@@ -203,6 +212,16 @@ export type AppView =
   | { kind: "freeform"; id?: string }
   | { kind: "tag"; tag: string };
 
+/** Two notes side by side after dropping a tab on a corner. `focus` is the pane that owns `view`. */
+export type SplitSide = "left" | "right";
+export type SplitCorner = "top" | "bottom";
+
+export interface PageSplit {
+  leftId: string;
+  rightId: string;
+  focus: SplitSide;
+}
+
 export type InsertContext = "sidebar" | "editor" | "database";
 
 export type CommandSection = "pages" | "databases" | "blocks" | "media" | "ai" | "current";
@@ -229,6 +248,10 @@ export interface AiSettings {
   brainDumpModel?: string;
   /** Chat model for Meeting summarize. */
   meetingModel?: string;
+  /**
+   * Deprecated client-side key field. Always empty — DeepSeek auth stays in
+   * the Electron main process (`DEEPSEEK_API_KEY`).
+   */
   apiKey: string;
   /** Override system prompt for writing tools. */
   writingSystemPrompt?: string;
@@ -274,7 +297,7 @@ export interface CalendarSource {
   hiddenUids?: string[];
 }
 
-/** Per-workspace AI preference: remote uses Gemini settings; local uses heuristics / on-device only. */
+/** Per-workspace AI preference: remote uses DeepSeek via the desktop proxy; local uses heuristics / on-device only. */
 export type WorkspaceAiMode = "local" | "remote";
 
 export type WorkspaceToolId =
@@ -388,6 +411,17 @@ interface FreeformObjectBase {
   z: number;
 }
 
+export type TableCellStyle = {
+  fontSize?: number;
+  color?: string;
+  fontFamily?: PageFont;
+  bold?: boolean;
+  italic?: boolean;
+  strike?: boolean;
+  align?: TextAlign;
+  valign?: TextVAlign;
+};
+
 export type FreeformObject =
   | (FreeformObjectBase & {
       type: "text";
@@ -439,6 +473,16 @@ export type FreeformObject =
       cells: string[][];
       /** Emphasize first row as header. */
       headerRow?: boolean;
+      fontSize?: number;
+      color?: string;
+      fontFamily?: PageFont;
+      bold?: boolean;
+      italic?: boolean;
+      strike?: boolean;
+      align?: TextAlign;
+      valign?: TextVAlign;
+      /** Sparse per-cell overrides, keyed `"row,col"`. */
+      cellStyle?: Record<string, TableCellStyle>;
     })
   | (FreeformObjectBase & {
       type: "mind";
@@ -518,6 +562,8 @@ export interface GraphEdge {
   source: string;
   target: string;
   kind: "link" | "relation" | "tag";
+  /** Relation prop key or display label (e.g. references). */
+  label?: string;
 }
 
 export interface BlobRecord {

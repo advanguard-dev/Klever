@@ -1,7 +1,6 @@
 import { copyText } from "@/lib/context-menus";
 import { pastePayload } from "@/lib/paste-guard";
 import type { Editor } from "@tiptap/react";
-import type { EditorView } from "@codemirror/view";
 
 type JsonNode = { type: string; content?: JsonNode[]; text?: string };
 
@@ -93,34 +92,5 @@ export async function copyFromTipTap(editor: Editor) {
 export async function cutFromTipTap(editor: Editor) {
   if (!(await copyFromTipTap(editor))) return false;
   editor.chain().focus().deleteSelection().run();
-  return true;
-}
-
-export async function pasteIntoCodeMirror(view: EditorView) {
-  try {
-    const text = await navigator.clipboard.readText();
-    view.dispatch(view.state.replaceSelection(text));
-    view.focus();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export async function copyFromCodeMirror(view: EditorView) {
-  const { from, to } = view.state.selection.main;
-  if (from === to) return false;
-  await copyText(view.state.sliceDoc(from, to));
-  return true;
-}
-
-export async function cutFromCodeMirror(view: EditorView) {
-  if (!(await copyFromCodeMirror(view))) return false;
-  const { from, to } = view.state.selection.main;
-  view.dispatch({
-    changes: { from, to, insert: "" },
-    selection: { anchor: from },
-  });
-  view.focus();
   return true;
 }

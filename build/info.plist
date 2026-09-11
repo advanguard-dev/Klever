@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Klever needs the microphone for brain dump and meeting transcription.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Klever uses speech recognition for English and French transcription.</string>
+  </dict>
+</plist>

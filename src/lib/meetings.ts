@@ -273,7 +273,7 @@ export function createMeetingNote(opts?: {
     stay: true,
   });
   if (!opts?.stay) {
-    useApp.setState({ mode: "wysiwyg" });
+    useApp.setState({ mode: "wysiwyg", presenting: false });
     setView({ kind: "note", id });
   }
   return id;

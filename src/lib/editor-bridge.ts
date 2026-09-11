@@ -1,7 +1,6 @@
-export type EditorInsert = (snippet: string, replace?: { from: number; to: number }) => void;
+export type EditorInsert = (snippet: string) => void;
 
 let insert: EditorInsert | null = null;
-let slashRange: { from: number; to: number } | null = null;
 let wysiwygSnippet: ((md: string, at?: { clientX: number; clientY: number }) => boolean) | null = null;
 let wysiwygCommand: ((id: string) => boolean) | null = null;
 /** Append markdown to the open note's local draft (survives dirty editor state). */
@@ -11,9 +10,24 @@ let bodyReplace: ((md: string) => boolean) | null = null;
 /** Read the open note's current draft body, including unsaved edits. */
 let bodyRead: (() => string) | null = null;
 let linkEmbed: ((opts: { mode: "link" | "embed"; href?: string; text?: string }) => void) | null = null;
+let undoFn: (() => boolean) | null = null;
+let redoFn: (() => boolean) | null = null;
 
 export function registerEditorInsert(fn: EditorInsert | null) {
   insert = fn;
+}
+
+export function registerUndoRedo(opts: { undo?: (() => boolean) | null; redo?: (() => boolean) | null } | null) {
+  undoFn = opts?.undo ?? null;
+  redoFn = opts?.redo ?? null;
+}
+
+export function runEditorUndo() {
+  return Boolean(undoFn?.());
+}
+
+export function runEditorRedo() {
+  return Boolean(redoFn?.());
 }
 
 export function registerWysiwyg(opts: {
@@ -22,6 +36,25 @@ export function registerWysiwyg(opts: {
 } | null) {
   wysiwygSnippet = opts?.snippet ?? null;
   wysiwygCommand = opts?.command ?? null;
+}
+
+let selectionRead: (() => string) | null = null;
+let selectionReplace: ((md: string) => boolean) | null = null;
+
+export function registerSelection(opts: {
+  read?: (() => string) | null;
+  replace?: ((md: string) => boolean) | null;
+} | null) {
+  selectionRead = opts?.read ?? null;
+  selectionReplace = opts?.replace ?? null;
+}
+
+export function readOpenNoteSelection() {
+  return selectionRead?.() ?? "";
+}
+
+export function replaceOpenNoteSelection(md: string) {
+  return Boolean(selectionReplace?.(md));
 }
 
 export function registerBodyAppend(fn: ((md: string) => boolean) | null) {
@@ -52,15 +85,20 @@ export function readOpenNoteBody(): string | null {
   return bodyRead?.() ?? null;
 }
 
-/** Insert into TipTap / CodeMirror, or append to the open note draft. */
+/** Live editor draft when an editor is mounted; otherwise the saved body. */
+export function draftNoteBody(fallback: string) {
+  const live = readOpenNoteBody();
+  return live ?? fallback;
+}
+
+/** Insert into TipTap, or append to the open note draft. */
 export function insertInEditor(snippet: string, at?: { clientX: number; clientY: number }) {
   if (wysiwygSnippet?.(snippet, at)) return true;
   if (!insert) {
     if (bodyAppend?.(snippet)) return true;
     return false;
   }
-  insert(snippet, slashRange ?? undefined);
-  slashRange = null;
+  insert(snippet);
   return true;
 }
 
@@ -72,14 +110,6 @@ export function insertOrAppendToOpenNote(snippet: string, at?: { clientX: number
 
 export function insertWysiwygCommand(id: string) {
   return Boolean(wysiwygCommand?.(id));
-}
-
-export function setSlashRange(range: { from: number; to: number } | null) {
-  slashRange = range;
-}
-
-export function getSlashRange() {
-  return slashRange;
 }
 
 export function registerLinkEmbed(fn: typeof linkEmbed) {

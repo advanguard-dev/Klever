@@ -9,3 +9,6 @@ release
 .agents/
 .cursor/
 .qa/
+
+# macOS Finder duplicate copies
+* 2.*

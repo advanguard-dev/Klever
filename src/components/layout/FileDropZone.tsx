@@ -82,7 +82,7 @@ export function FileDropZone({
       {children}
       {active && (
         <div
-          className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center rounded-xl border-2 border-dashed border-smart/50 bg-smart/5 backdrop-blur-[1px]"
+          className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center rounded-xl border-2 border-dashed border-smart/50 bg-smart/5"
           aria-hidden
         >
           <p className="rounded-full bg-paper/90 px-4 py-2 font-mono text-xs text-smart shadow-sm">

@@ -1,31 +1,39 @@
 import type { AiSettings, Note, PropType, SchemaProp } from "@/types";
 import { asChipValues, inferredNameType } from "@/lib/prop-schema";
 import { readUsage, recordAiSpend } from "@/lib/ai-cost";
+import { isElectron } from "@/lib/electron";
 import { parseLocale } from "@/lib/i18n";
 
-/** Google AI Studio OpenAI-compatible base (no trailing slash). */
-export const GEMINI_OPENAI_ENDPOINT =
-  "https://generativelanguage.googleapis.com/v1beta/openai";
+/** DeepSeek OpenAI-compatible base (no trailing slash). Used only via Electron main. */
+export const DEEPSEEK_ENDPOINT = "https://api.deepseek.com";
 
-/** Current Flash model for new Gemini API keys (2.5 is blocked for new users). */
-export const GEMINI_FLASH_MODEL = "gemini-3.6-flash";
+/** Current Flash model for DeepSeek API keys. */
+export const DEEPSEEK_FLASH_MODEL = "deepseek-flash";
+
+/** @deprecated Use DEEPSEEK_ENDPOINT */
+export const GEMINI_OPENAI_ENDPOINT = DEEPSEEK_ENDPOINT;
+/** @deprecated Use DEEPSEEK_FLASH_MODEL */
+export const GEMINI_FLASH_MODEL = DEEPSEEK_FLASH_MODEL;
 
 export type AiChatTool = "writing" | "brainDump" | "meeting" | "suggestions" | "grammar";
 
 export const defaultAi = (): AiSettings => ({
-  endpoint: GEMINI_OPENAI_ENDPOINT,
-  model: GEMINI_FLASH_MODEL,
-  writingModel: GEMINI_FLASH_MODEL,
-  brainDumpModel: GEMINI_FLASH_MODEL,
-  meetingModel: GEMINI_FLASH_MODEL,
+  endpoint: DEEPSEEK_ENDPOINT,
+  model: DEEPSEEK_FLASH_MODEL,
+  writingModel: DEEPSEEK_FLASH_MODEL,
+  brainDumpModel: DEEPSEEK_FLASH_MODEL,
+  meetingModel: DEEPSEEK_FLASH_MODEL,
+  // Kept for vault meta shape; the key never lives in the renderer.
   apiKey: "",
 });
 
 function isRetiredFlash(model: string) {
   return (
-    /^gemini-2\.5-flash$/i.test(model) ||
-    /^gemini-2\.0-flash/i.test(model) ||
-    /^gemini-2\.5-flash-lite$/i.test(model)
+    /^gemini/i.test(model) ||
+    /^deepseek-chat$/i.test(model) ||
+    /^deepseek-reasoner$/i.test(model) ||
+    /^deepseek-v4-flash/i.test(model) ||
+    /^llama/i.test(model)
   );
 }
 
@@ -43,22 +51,31 @@ export function resolveAiModel(ai: AiSettings, tool: AiChatTool): string {
         ? ai.meetingModel
         : // writing, suggestions and grammar all ride the writing model.
           ai.writingModel;
-  return migrateModelId(specific, migrateModelId(ai.model, GEMINI_FLASH_MODEL));
+  return migrateModelId(specific, migrateModelId(ai.model, DEEPSEEK_FLASH_MODEL));
 }
 
-/** Move empty Ollama / retired Flash defaults to the current Gemini Flash model. */
+/** Move Gemini / Ollama / retired DeepSeek defaults to the current Flash model. */
 export function migrateAiSettings(ai: AiSettings): AiSettings {
   const endpoint = (ai.endpoint || "").trim();
   const model = (ai.model || "").trim();
-  const key = (ai.apiKey || "").trim();
   const legacyOllama =
-    !key &&
-    (/localhost:11434/i.test(endpoint) ||
-      model === "llama3.2" ||
-      /^llama/i.test(model));
-  if (legacyOllama) return defaultAi();
+    /localhost:11434/i.test(endpoint) ||
+    model === "llama3.2" ||
+    /^llama/i.test(model);
+  const legacyGemini =
+    /generativelanguage\.googleapis\.com/i.test(endpoint) || /^gemini/i.test(model);
+  if (legacyOllama || legacyGemini) {
+    return {
+      ...defaultAi(),
+      ...(ai.writingSystemPrompt?.trim()
+        ? { writingSystemPrompt: ai.writingSystemPrompt.trim() }
+        : {}),
+      ...(ai.lastCustomPrompt?.trim() ? { lastCustomPrompt: ai.lastCustomPrompt } : {}),
+      ...(parseLocale(ai.locale) ? { locale: parseLocale(ai.locale)! } : {}),
+    };
+  }
 
-  const fallback = migrateModelId(model, GEMINI_FLASH_MODEL);
+  const fallback = migrateModelId(model, DEEPSEEK_FLASH_MODEL);
 
   const writingPrompts = Object.fromEntries(
     Object.entries(ai.writingPrompts ?? {}).filter(([, v]) => typeof v === "string" && v.trim()),
@@ -66,12 +83,12 @@ export function migrateAiSettings(ai: AiSettings): AiSettings {
 
   const locale = parseLocale(ai.locale);
   return {
-    endpoint: endpoint || GEMINI_OPENAI_ENDPOINT,
+    endpoint: DEEPSEEK_ENDPOINT,
     model: fallback,
     writingModel: migrateModelId(ai.writingModel, fallback),
     brainDumpModel: migrateModelId(ai.brainDumpModel, fallback),
     meetingModel: migrateModelId(ai.meetingModel, fallback),
-    apiKey: key,
+    apiKey: "",
     ...(ai.writingSystemPrompt?.trim()
       ? { writingSystemPrompt: ai.writingSystemPrompt.trim() }
       : {}),
@@ -81,16 +98,20 @@ export function migrateAiSettings(ai: AiSettings): AiSettings {
   };
 }
 
-export function applyGeminiFlashPreset(ai: AiSettings): AiSettings {
+export function applyDeepSeekFlashPreset(ai: AiSettings): AiSettings {
   return {
     ...ai,
-    endpoint: GEMINI_OPENAI_ENDPOINT,
-    model: GEMINI_FLASH_MODEL,
-    writingModel: GEMINI_FLASH_MODEL,
-    brainDumpModel: GEMINI_FLASH_MODEL,
-    meetingModel: GEMINI_FLASH_MODEL,
+    endpoint: DEEPSEEK_ENDPOINT,
+    model: DEEPSEEK_FLASH_MODEL,
+    writingModel: DEEPSEEK_FLASH_MODEL,
+    brainDumpModel: DEEPSEEK_FLASH_MODEL,
+    meetingModel: DEEPSEEK_FLASH_MODEL,
+    apiKey: "",
   };
 }
+
+/** @deprecated Use applyDeepSeekFlashPreset */
+export const applyGeminiFlashPreset = applyDeepSeekFlashPreset;
 
 export type AiCallOpts = {
   /** Abort the request when the caller loses interest (page switch, retrigger). */
@@ -98,6 +119,21 @@ export type AiCallOpts = {
   /** Override sampling temperature. Extraction tasks want this near zero. */
   temperature?: number;
 };
+
+/** Chat completion for a writing-class tool. Present polish rides this. */
+export async function aiChat(
+  settings: AiSettings,
+  system: string,
+  user: string,
+  tool: AiChatTool = "writing",
+  opts?: AiCallOpts,
+) {
+  return chat(settings, system, user, tool, opts);
+}
+
+export function parseAiJson(text: string): unknown {
+  return extractJson(text);
+}
 
 /** Thrown when a call is cancelled. Callers should swallow this silently. */
 export class AiAbortError extends Error {
@@ -122,55 +158,70 @@ async function chat(
   tool: AiChatTool,
   opts?: AiCallOpts,
 ) {
-  const key = settings.apiKey.trim();
-  if (!key) {
-    throw new Error("Add a Gemini API key in Settings.");
-  }
   if (opts?.signal?.aborted) throw new AiAbortError();
-  const base = (settings.endpoint || GEMINI_OPENAI_ENDPOINT).replace(/\/$/, "");
-  const url = `${base}/chat/completions`;
+  if (!isElectron() || !window.kleverDesktop?.aiChat) {
+    throw new Error("AI runs in the Klever desktop app with DEEPSEEK_API_KEY configured.");
+  }
+
   const model = resolveAiModel(settings, tool);
-  let res: Response;
+  const requestId =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `ai-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+  const onAbort = () => {
+    void window.kleverDesktop?.aiCancel?.(requestId);
+  };
+  opts?.signal?.addEventListener("abort", onAbort, { once: true });
+
+  let result: {
+    ok: boolean;
+    content?: string;
+    model?: string;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null;
+    endpoint?: string;
+    status?: number;
+    aborted?: boolean;
+    error?: string;
+  };
   try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${key}`,
-      },
-      signal: opts?.signal,
-      body: JSON.stringify({
-        model,
-        temperature: opts?.temperature ?? 0.4,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-      }),
+    result = await window.kleverDesktop.aiChat({
+      system,
+      user,
+      model,
+      temperature: opts?.temperature ?? 0.4,
+      requestId,
     });
   } catch (err) {
-    if (isAbort(err)) throw new AiAbortError();
+    if (isAbort(err) || opts?.signal?.aborted) throw new AiAbortError();
     throw err;
+  } finally {
+    opts?.signal?.removeEventListener("abort", onAbort);
   }
-  if (!res.ok) {
-    const text = await res.text();
-    let detail = text || `AI request failed (${res.status})`;
-    try {
-      const errJson = JSON.parse(text) as { error?: { message?: string } };
-      if (errJson.error?.message) detail = errJson.error.message;
-    } catch {
-      /* keep raw */
-    }
-    throw new Error(detail);
+
+  if (result.aborted || opts?.signal?.aborted) throw new AiAbortError();
+  if (!result.ok) {
+    throw new Error(result.error || "DeepSeek request failed.");
   }
-  const json = (await res.json()) as {
-    choices?: { message?: { content?: string } }[];
-  };
-  const usage = readUsage(json);
-  if (usage) recordAiSpend(tool, usage, model, settings.endpoint);
-  const content = json.choices?.[0]?.message?.content?.trim();
-  if (!content) throw new Error("Gemini returned nothing. Try again.");
+
+  const usage = readUsage({ usage: result.usage });
+  if (usage) {
+    recordAiSpend(tool, usage, result.model || model, result.endpoint || DEEPSEEK_ENDPOINT);
+  }
+  const content = result.content?.trim();
+  if (!content) throw new Error("DeepSeek returned nothing. Try again.");
   return content;
+}
+
+/** Refresh whether the desktop process has DEEPSEEK_API_KEY (never reads the key). */
+export async function probeAiConfigured(): Promise<boolean> {
+  if (!isElectron() || !window.kleverDesktop?.aiStatus) return false;
+  try {
+    const status = await window.kleverDesktop.aiStatus();
+    return Boolean(status.configured);
+  } catch {
+    return false;
+  }
 }
 
 export type DumpKind = "page" | "reminder" | "event" | "database";
@@ -335,7 +386,9 @@ HARD RULES (anti-spam):
 - Titles short. Body markdown: pages = multi-section and dense; reminders/events/DB rows = short.
 - Tags (bridges, not taxonomy): Prefer 0–2 tags for the WHOLE dump, reused on related pages/rows/DBs so they link in the graph. Same few shared theme tags — NOT a unique tag per item, NOT a topic list. Empty tags is fine. Do NOT invent tags for kind ("reminder", "event", "project") — kind already encodes that. Lowercase, no #.
 - Keep speaker language (French dump → French text).
-- Do NOT create a "Calendar" database. Do NOT turn events into pages.`;
+- Do NOT create a "Calendar" database. Do NOT turn events into pages.
+
+Page bodies (kind "page") may include GFM tables and fenced \`\`\`mermaid diagrams when that clarifies a write-up. To point at a database, use [[Title]] or ![[Title]] — there is no live query/chart block. Do not put a list of similar items in a markdown table on a page; that list belongs in a database with rows.`;
   const raw = await chat(settings, system, dump, "brainDump");
   const json = extractJson(raw);
 
@@ -353,10 +406,10 @@ HARD RULES (anti-spam):
     return { project, items: stripProjectClone(project, items) };
   }
 
-  if (!json || typeof json !== "object") throw new Error("Gemini did not return a dump. Try again.");
+  if (!json || typeof json !== "object") throw new Error("DeepSeek did not return a dump. Try again.");
   const obj = json as Record<string, unknown>;
   const rawItems = Array.isArray(obj.items) ? obj.items : Array.isArray(obj.notes) ? obj.notes : null;
-  if (!rawItems) throw new Error("Gemini did not return items. Try again.");
+  if (!rawItems) throw new Error("DeepSeek did not return items. Try again.");
   const project =
     String(obj.project || obj.folder || obj.title || "").trim() ||
     "Brain dump";
@@ -537,9 +590,19 @@ export const WRITING_STRUCTURED_FORMAT = `Return ONLY a JSON object:
 Set "title" to a concise page title inferred from the text. Keep the current title when it already fits.
 "properties" maps field keys or names to values. Fill existing schema fields when the text implies them. You may add a few new properties when the content clearly warrants them (dates, people, location, status, links, amounts, checkboxes). Use short labels like "Due", "Status", "Participants", "Lieu", "URL". At most 8 new fields. Skip empty, generic, or uncertain fields. Use ISO dates (YYYY-MM-DD), booleans for checkboxes, numbers for amounts, string arrays of names/emails for people (attendees, participants — never hashtag tags), string arrays of place parts for location/lieu/venue/address (venue then city, no #), and string arrays for topical tags only.`;
 
+export const KLEVER_PAGE_BLOCKS = `Klever pages are markdown files on disk. When you write a page body you may use:
+- GFM tables (\`| col | col |\`) for small comparisons on the page.
+- Mermaid diagrams in fenced \`\`\`mermaid blocks (flowchart, sequence, pie, gantt) — not a separate chart widget.
+- [[wikilinks]] to pages and databases. ![[Title]] embeds a card. There is no live “query this database as a table/chart” syntax yet; do not invent one.
+- Database rows are child pages with YAML properties. A markdown table on a page does not write back to a database.`;
+
 export const DEFAULT_WRITING_SYSTEM_PROMPT = `You are a precise writing tool for a markdown notes app.
 
 ${WRITING_STRUCTURED_FORMAT}
+
+${KLEVER_PAGE_BLOCKS}
+
+You rewrite the current page. You do not create vault files or pick a start-from-template starter.
 
 Preserve [[wikilinks]] and #tags unless asked otherwise.`;
 
@@ -1305,11 +1368,11 @@ Do not invent attendees, decisions, or facts that are not in the source.`;
   const raw = await chat(settings, system, `${header}\n\n---\n${transcript || "(no transcript)"}`, "meeting");
   const json = extractJson(raw);
   if (!json || typeof json !== "object" || Array.isArray(json)) {
-    throw new Error("Gemini did not return meeting notes. Try again.");
+    throw new Error("DeepSeek did not return meeting notes. Try again.");
   }
   const result = normalizeMeetingNotes(json as Record<string, unknown>, opts);
   if (!result.summary || result.summary === "No summary.") {
-    throw new Error("Gemini did not return a summary. Try again.");
+    throw new Error("DeepSeek did not return a summary. Try again.");
   }
   return result;
 }

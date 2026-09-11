@@ -58,6 +58,7 @@ function liveBody(note: Note): string {
 export function SuggestionsPanel({ note }: { note: Note }) {
   const t = useT();
   const ai = useApp((s) => s.ai);
+  const aiConfigured = useApp((s) => s.aiConfigured);
   const state = useSuggestState(note.id);
   const body = liveBody(note);
   const enoughText = body.trim().length >= MIN_SUGGEST_CHARS;
@@ -69,16 +70,16 @@ export function SuggestionsPanel({ note }: { note: Note }) {
     consumeSuggestion(note.id, s);
   };
 
-  if (!ai.apiKey.trim()) return <p className="text-sm text-faint">{t("suggest.needKey")}</p>;
+  if (!aiConfigured) return <p className="text-sm text-mute">{t("suggest.needKey")}</p>;
 
   return (
     <>
-      {state.status === "idle" && <p className="text-sm text-faint">{t("suggest.idle")}</p>}
+      {state.status === "idle" && <p className="text-sm text-mute">{t("suggest.idle")}</p>}
       {state.status === "error" && state.error && (
-        <p className="text-sm text-faint">{state.error}</p>
+        <p className="text-sm text-mute">{state.error}</p>
       )}
       {state.status === "done" && state.items.length === 0 && (
-        <p className="text-sm text-faint">{t("suggest.none")}</p>
+        <p className="text-sm text-mute">{t("suggest.none")}</p>
       )}
 
       {state.items.map((s) => {
@@ -113,10 +114,10 @@ export function SuggestionsPanel({ note }: { note: Note }) {
         );
       })}
 
-      {stale && <p className="mb-1 text-[12px] text-faint">{t("suggest.stale")}</p>}
+      {stale && <p className="mb-1 text-[12px] text-mute">{t("suggest.stale")}</p>}
 
       {!enoughText ? (
-        <p className="text-sm text-faint">{t("suggest.short")}</p>
+        <p className="text-sm text-mute">{t("suggest.short")}</p>
       ) : (
         <TextButton
           className="mt-1 h-7 px-2 py-0 text-xs"
@@ -137,6 +138,7 @@ export function SuggestionsPanel({ note }: { note: Note }) {
 export function ProofreadPanel({ note }: { note: Note }) {
   const t = useT();
   const ai = useApp((s) => s.ai);
+  const aiConfigured = useApp((s) => s.aiConfigured);
   const state = useGrammarState(note.id);
   const body = liveBody(note);
   const busy = state.status === "loading";
@@ -158,16 +160,16 @@ export function ProofreadPanel({ note }: { note: Note }) {
     for (const fix of fixes) consumeGrammarFix(note.id, fix.id);
   };
 
-  if (!ai.apiKey.trim()) return <p className="text-sm text-faint">{t("suggest.needKey")}</p>;
+  if (!aiConfigured) return <p className="text-sm text-mute">{t("suggest.needKey")}</p>;
 
   return (
     <>
-      {state.status === "idle" && <p className="text-sm text-faint">{t("proof.idle")}</p>}
+      {state.status === "idle" && <p className="text-sm text-mute">{t("proof.idle")}</p>}
       {state.status === "error" && state.error && (
-        <p className="text-sm text-faint">{state.error}</p>
+        <p className="text-sm text-mute">{state.error}</p>
       )}
       {state.status === "done" && state.fixes.length === 0 && (
-        <p className="text-sm text-faint">{t("proof.none")}</p>
+        <p className="text-sm text-mute">{t("proof.none")}</p>
       )}
 
       {state.fixes.length > 1 && (
@@ -207,7 +209,7 @@ export function ProofreadPanel({ note }: { note: Note }) {
         </div>
       ))}
 
-      {stale && <p className="mb-1 text-[12px] text-faint">{t("proof.stale")}</p>}
+      {stale && <p className="mb-1 text-[12px] text-mute">{t("proof.stale")}</p>}
 
       <TextButton
         className="mt-1 h-7 px-2 py-0 text-xs"

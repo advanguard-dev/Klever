@@ -27,7 +27,7 @@ export function WorkspaceSetup() {
 
   const [name, setName] = useState("Vault");
   const [tools, setTools] = useState<WorkspaceTools>(() => defaultWorkspaceTools());
-  const [aiMode, setAiMode] = useState<WorkspaceAiMode>("remote");
+  const [aiMode, setAiMode] = useState<WorkspaceAiMode>("local");
   const [busy, setBusy] = useState(false);
   const [encrypt, setEncrypt] = useState(false);
   const [password, setPassword] = useState("");
@@ -56,7 +56,7 @@ export function WorkspaceSetup() {
     } else {
       setName("New workspace");
       setTools(defaultWorkspaceTools());
-      setAiMode("remote");
+      setAiMode("local");
     }
     setBusy(false);
     setEncrypt(false);
@@ -246,7 +246,7 @@ export function WorkspaceSetup() {
                   {
                     id: "remote" as const,
                     title: "Remote",
-                    body: "Gemini for Brain Dump, Meeting, and writing tools. The key stays in Settings.",
+                    body: "DeepSeek for Brain Dump, Meeting, and writing tools. The key stays in the desktop process.",
                   },
                   {
                     id: "local" as const,
@@ -283,7 +283,7 @@ export function WorkspaceSetup() {
                   setSettingsOpen(true);
                 }}
               >
-                Open Gemini settings
+                Open AI settings
               </button>
             )}
           </div>

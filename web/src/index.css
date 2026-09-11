@@ -68,7 +68,7 @@
     color: var(--color-ink);
     font-family: var(--font-sans);
     font-size: 16px;
-    line-height: 1.65;
+    line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
@@ -118,6 +118,25 @@
 
 .klever-folio {
   border-left: 2px solid var(--color-ring);
+}
+
+@layer utilities {
+  .font-serif {
+    font-weight: 400;
+    font-synthesis-weight: none;
+    font-kerning: normal;
+    font-variant-ligatures: common-ligatures contextual;
+    letter-spacing: clamp(-0.03em, calc(0.22rem - 0.2em), 0.01em);
+  }
+
+  .font-serif.font-medium,
+  .font-serif.font-semibold,
+  .font-serif.font-bold,
+  .font-serif.tracking-tight,
+  .font-serif.tracking-tighter {
+    font-weight: 400;
+    letter-spacing: clamp(-0.032em, calc(0.2rem - 0.19em), 0.006em);
+  }
 }
 
 .lattice-node:focus-visible circle.lattice-hit {

@@ -187,7 +187,7 @@ export function flattenVaultNotes(root: VaultFolder): Note[] {
   return out;
 }
 
-/** Pages in vault order for Read mode prev/next and the page menu. */
+/** Pages in vault order. */
 export function readingQueue(notes: Note[]): Note[] {
   return flattenVaultNotes(buildVaultTree(notes.filter((n) => n.type === "page")));
 }

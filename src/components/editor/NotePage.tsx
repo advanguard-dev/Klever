@@ -1,60 +1,38 @@
 import { BlockEditor } from "@/components/editor/BlockEditor";
 import { IconChooser } from "@/components/editor/IconChooser";
-import { ImageBlock } from "@/components/editor/ImageBlock";
-import { MarkdownPreview } from "@/components/editor/MarkdownPreview";
 import { PropertyStrip } from "@/components/editor/PropertyStrip";
-import { SlashStack } from "@/components/insert/PlusMenu";
-import { Chip, ConfirmDialog, MonoLabel, Panel, Segmented, TextButton, Toggle, ToolbarBtn } from "@/components/ui";
+import { ConfirmDialog, MonoLabel, Panel, Segmented, TextButton, Toggle, ToolbarBtn } from "@/components/ui";
 import { useContextMenu } from "@/components/ContextMenu";
-import { copyFromCodeMirror, cutFromCodeMirror, pasteIntoCodeMirror } from "@/lib/clipboard-editing";
-import { noteMenuItems, tagMenuItems } from "@/lib/context-menus";
-import { ICON_LG, NoteIcon, noteKindIcon } from "@/lib/chrome-icons";
-import { extractImages, replaceImageSrc, setImageWidth } from "@/lib/assets";
+import { noteMenuItems } from "@/lib/context-menus";
+import { noteKindIcon } from "@/lib/chrome-icons";
 import { cn } from "@/lib/cn";
 import {
   registerBodyAppend,
   registerBodyRead,
   registerBodyReplace,
   registerEditorInsert,
-  setSlashRange,
+  replaceOpenNoteSelection,
 } from "@/lib/editor-bridge";
 import { pageFontClass } from "@/lib/page-fonts";
 import { slugify } from "@/lib/ids";
-import { runCommand } from "@/lib/run-command";
 import { registerBeforeFlush } from "@/lib/save-hooks";
 import { useApp } from "@/store";
-import type { InsertCommand, Note, PageFont, PageWidth } from "@/types";
-import { markdown } from "@codemirror/lang-markdown";
-import { autocompletion, type CompletionContext } from "@codemirror/autocomplete";
-import { Prec } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
-import CodeMirror from "@uiw/react-codemirror";
-import { ChevronDown, ChevronRight, Mic, Plus, Star, Trash2 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { Note, PageFont, PageWidth } from "@/types";
+import { ChevronDown, ChevronRight, GitBranch, Loader2, Mic, Plus, Star, Trash2 } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { startTranscription, speechSupported } from "@/lib/speech";
-import { WritingToolsBar } from "@/components/editor/WritingToolsBar";
+import { WritingEditConfirm } from "@/components/editor/WritingEditConfirm";
+import { WritingToolsBar, type PendingWritingEdit } from "@/components/editor/WritingToolsBar";
 import { MeetingNotesBlock } from "@/components/ai/MeetingNotesBlock";
 import { isMeetingNote } from "@/lib/meetings";
 import { defaultWorkspaceTools } from "@/lib/workspaces";
+import { schemaTarget } from "@/components/db/PropertyManager";
+import { writingPagePatch } from "@/lib/ai";
+import { useT } from "@/lib/use-t";
 
-const cmTheme = EditorView.theme({
-  "&": { fontSize: "16px", color: "var(--color-ink)", backgroundColor: "transparent" },
-  ".cm-content": {
-    caretColor: "var(--color-ink)",
-    minHeight: "50vh",
-    color: "var(--color-ink)",
-  },
-  ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--color-ink)" },
-  "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
-    backgroundColor: "color-mix(in srgb, var(--color-ink) 16%, transparent) !important",
-  },
-  ".cm-line": { lineHeight: "1.75" },
-  ".cm-activeLine": { backgroundColor: "transparent" },
-});
-
-export function NotePage({ note }: { note: Note }) {
+export function NotePage({ note, active = true }: { note: Note; active?: boolean }) {
+  const t = useT();
   const notes = useApp((s) => s.notes);
-  const mode = useApp((s) => s.mode);
   const patchNote = useApp((s) => s.patchNote);
   const deleteNote = useApp((s) => s.deleteNote);
   const upsertNote = useApp((s) => s.upsertNote);
@@ -62,28 +40,29 @@ export function NotePage({ note }: { note: Note }) {
   const activeWorkspaceId = useApp((s) => s.activeWorkspaceId);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
   const tools = activeWorkspace?.tools ?? defaultWorkspaceTools();
-  const aiMode = activeWorkspace?.aiMode ?? "remote";
+  const aiMode = activeWorkspace?.aiMode ?? "local";
   const writingEnabled = tools.writingTools && aiMode === "remote";
   const meetingPage = isMeetingNote(note, notes);
   const setError = useApp((s) => s.setError);
   const setView = useApp((s) => s.setView);
   const setPlusOpen = useApp((s) => s.setPlusOpen);
+  const setRelateNoteId = useApp((s) => s.setRelateNoteId);
   const starred = useApp((s) => s.starred);
   const toggleStar = useApp((s) => s.toggleStar);
   const openTabs = useApp((s) => s.openTabs);
   const [body, setBody] = useState(note.body);
   const [baseline, setBaseline] = useState(note.body);
   const [seenId, setSeenId] = useState(note.id);
+  const [pendingRewrite, setPendingRewrite] = useState<PendingWritingEdit | null>(null);
   if (note.id !== seenId) {
     setSeenId(note.id);
     setBody(note.body);
     setBaseline(note.body);
+    setPendingRewrite(null);
   }
   const dirty = body !== baseline;
   const [busy, setBusy] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
-  const [slash, setSlash] = useState<{ from: number; to: number; query: string } | null>(null);
-  const [slashI, setSlashI] = useState(0);
   const [pageOpen, setPageOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(false);
   const [coverHover, setCoverHover] = useState(false);
@@ -99,6 +78,37 @@ export function NotePage({ note }: { note: Note }) {
       rewriteFlashTimer.current = window.setTimeout(() => setRewriteFlash(false), 1200);
     });
   };
+
+  const acceptRewrite = () => {
+    if (!pendingRewrite) return;
+    const { result, selection } = pendingRewrite;
+    if (selection) {
+      replaceOpenNoteSelection(result.body);
+    } else {
+      setBody(result.body);
+    }
+    const liveNotes = useApp.getState().notes;
+    const live = liveNotes.find((n) => n.id === note.id) ?? note;
+    const target = schemaTarget(live, liveNotes);
+    const fullSchema = target.schema ?? [];
+    const pageResult = writingPagePatch(live, result, fullSchema, liveNotes);
+    if (pageResult) {
+      const nextSchema = pageResult.schemaAdds.length
+        ? [...fullSchema, ...pageResult.schemaAdds]
+        : undefined;
+      if (target.id === live.id) {
+        if (Object.keys(pageResult.patch).length || nextSchema) {
+          patchNote(live.id, { ...pageResult.patch, ...(nextSchema ? { schema: nextSchema } : {}) });
+        }
+      } else {
+        if (nextSchema) patchNote(target.id, { schema: nextSchema });
+        if (Object.keys(pageResult.patch).length) patchNote(live.id, pageResult.patch);
+      }
+    }
+    setPendingRewrite(null);
+    triggerRewriteFlash();
+  };
+  const discardRewrite = () => setPendingRewrite(null);
   const { open } = useContextMenu();
   const [draftTitle, setDraftTitle] = useState(note.title);
   const [titleSeenId, setTitleSeenId] = useState(note.id);
@@ -153,18 +163,6 @@ export function NotePage({ note }: { note: Note }) {
   bodyRef.current = body;
   baselineRef.current = baseline;
   draftTitleRef.current = draftTitle;
-  const viewRef = useRef<EditorView | null>(null);
-  const slashRef = useRef(slash);
-  const slashIRef = useRef(slashI);
-  slashRef.current = slash;
-  slashIRef.current = slashI;
-  const slashHitsRef = useRef<InsertCommand[]>([]);
-
-  useEffect(() => setSlashI(0), [slash?.query]);
-
-  useEffect(() => {
-    if (mode !== "markdown") viewRef.current = null;
-  }, [mode]);
 
   // Apply remote/store body only when local edits are idle — never while dirty (keystroke fight).
   useEffect(() => {
@@ -213,28 +211,12 @@ export function NotePage({ note }: { note: Note }) {
   }, [note.id, note.title, note.path, note.type, patchNote, upsertNote]);
 
   useEffect(() => {
-    registerEditorInsert((snippet, replace) => {
-      const view = viewRef.current;
-      if (view) {
-        if (replace) {
-          view.dispatch({
-            changes: { from: replace.from, to: replace.to, insert: snippet },
-            selection: { anchor: replace.from + snippet.length },
-          });
-        } else {
-          const pos = view.state.selection.main.from;
-          view.dispatch({ changes: { from: pos, to: pos, insert: snippet } });
-        }
-        setBody(view.state.doc.toString());
-        view.focus();
-      } else {
-        setBody((b) => {
-          const base = b.trimEnd();
-          return base ? `${base}\n\n${snippet}` : snippet;
-        });
-      }
-      setSlash(null);
-      setSlashRange(null);
+    if (!active) return;
+    registerEditorInsert((snippet) => {
+      setBody((b) => {
+        const base = b.trimEnd();
+        return base ? `${base}\n\n${snippet}` : snippet;
+      });
     });
     registerBodyAppend((snippet) => {
       setBody((b) => {
@@ -254,100 +236,7 @@ export function NotePage({ note }: { note: Note }) {
       registerBodyReplace(null);
       registerBodyRead(null);
     };
-  }, [note.id]);
-
-  const detectSlash = (view: EditorView) => {
-    const pos = view.state.selection.main.head;
-    const line = view.state.doc.lineAt(pos);
-    const before = line.text.slice(0, pos - line.from);
-    const m = before.match(/(?:^|\s)(\/([^\s]*))$/);
-    if (!m) {
-      setSlash(null);
-      setSlashRange(null);
-      return;
-    }
-    const token = m[1];
-    const from = line.from + before.length - token.length;
-    const next = { from, to: pos, query: m[2] };
-    setSlash(next);
-    setSlashRange({ from, to: pos });
-  };
-
-  const slashKeys = useMemo(
-    () =>
-      Prec.highest(
-        keymap.of([
-          {
-            key: "ArrowDown",
-            run: () => {
-              if (!slashRef.current) return false;
-              setSlashI((x) => Math.min(slashHitsRef.current.length - 1, x + 1));
-              return true;
-            },
-          },
-          {
-            key: "ArrowUp",
-            run: () => {
-              if (!slashRef.current) return false;
-              setSlashI((x) => Math.max(0, x - 1));
-              return true;
-            },
-          },
-          {
-            key: "Enter",
-            run: () => {
-              const s = slashRef.current;
-              const cmd = slashHitsRef.current[slashIRef.current];
-              if (!s || !cmd) return false;
-              void runCommand(cmd).then(() => {
-                setSlash(null);
-                setSlashRange(null);
-              });
-              return true;
-            },
-          },
-          {
-            key: "Escape",
-            run: () => {
-              if (!slashRef.current) return false;
-              setSlash(null);
-              setSlashRange(null);
-              return true;
-            },
-          },
-        ]),
-      ),
-    [],
-  );
-
-  const completions = useMemo(
-    () =>
-      autocompletion({
-        override: [
-          (ctx: CompletionContext) => {
-            const word = ctx.matchBefore(/\[\[[^\]|]*/);
-            if (!word) return null;
-            const q = word.text.replace(/^\[\[/, "").toLowerCase();
-            return {
-              from: word.from + 2,
-              options: notes
-                .filter((n) => n.title.toLowerCase().includes(q))
-                .slice(0, 12)
-                .map((n) => ({ label: n.title, type: "text" })),
-            };
-          },
-        ],
-      }),
-    [notes],
-  );
-
-  const listener = useMemo(
-    () =>
-      EditorView.updateListener.of((u) => {
-        if (u.docChanged || u.selectionSet) detectSlash(u.view);
-      }),
-    [],
-  );
+  }, [note.id, active]);
 
   const toggleMic = () => {
     if (listening) {
@@ -387,50 +276,67 @@ export function NotePage({ note }: { note: Note }) {
     skipBodySpeechRef.current = true;
   };
 
-  const images = extractImages(body);
-  const isRead = mode === "read";
   const pageWidth = note.width ?? "l";
-  const width = isRead
-    ? pageWidth === "s"
-      ? "max-w-[60ch]"
-      : pageWidth === "m"
-        ? "max-w-[68ch]"
-        : "max-w-[75ch]"
-    : pageWidth === "s"
-      ? "max-w-[560px]"
-      : pageWidth === "m"
-        ? "max-w-[720px]"
-        : "max-w-5xl";
-  const font = cn(
-    isRead ? "font-serif" : pageFontClass(note.font) || "font-sans",
-    !isRead && note.font === "mono" && "text-[15px]",
-  );
+  const width =
+    pageWidth === "s" ? "max-w-[560px]" : pageWidth === "m" ? "max-w-[720px]" : "max-w-5xl";
+  const font = cn(pageFontClass(note.font) || "font-sans", note.font === "mono" && "text-[15px]");
 
   return (
     <article
-      className={cn("min-h-full group/page", isRead && "reading-mode")}
+      className={cn("min-h-full group/page", busy && "writing-ai-working")}
+      aria-busy={Boolean(busy)}
       onContextMenu={(e) => {
-        const t = e.target as HTMLElement;
-        if (t.closest("input, textarea, [contenteditable], .cm-editor, .ProseMirror, button")) return;
+        const el = e.target as HTMLElement;
+        if (el.closest("input, textarea, [contenteditable], .cm-editor, .ProseMirror, button")) return;
         open(e, noteMenuItems(note));
       }}
     >
+      {busy && (
+        <div className="writing-ai-working-status" role="status">
+          <Loader2 size={12} strokeWidth={1.8} className="animate-spin" aria-hidden />
+          {t("writing.withGemini", { tool: busy })}
+        </div>
+      )}
       <div
         className="relative"
-        onMouseEnter={() => !isRead && setCoverHover(true)}
+        onMouseEnter={() => setCoverHover(true)}
         onMouseLeave={() => setCoverHover(false)}
       >
         {note.cover ? (
           <div
-            className={cn("w-full", isRead ? "h-44" : "h-36")}
+            className="relative h-36 w-full"
             style={{
               background:
                 note.cover.startsWith("#") || note.cover.startsWith("rgb") ? note.cover : undefined,
             }}
-            aria-hidden
-          />
+          >
+            <div
+              className={cn(
+                "absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-end gap-1 px-4 py-2 transition-opacity duration-150 md:px-8",
+                "bg-gradient-to-t from-ink/25 to-transparent",
+                coverHover ? "opacity-100" : "opacity-0",
+                "focus-within:opacity-100",
+              )}
+            >
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-paper px-2 py-1 text-sm font-medium text-mute shadow-sm hover:bg-paper-2 hover:text-ink">
+                Change
+                <input
+                  type="color"
+                  className="h-5 w-6 cursor-pointer rounded border border-line bg-transparent p-0"
+                  value={toHex(note.cover)}
+                  aria-label="Change cover color"
+                  onChange={(e) => patchNote(note.id, { cover: e.target.value })}
+                />
+              </label>
+              <TextButton
+                className="bg-paper shadow-sm hover:bg-paper-2"
+                onClick={() => patchNote(note.id, { cover: undefined })}
+              >
+                Delete cover
+              </TextButton>
+            </div>
+          </div>
         ) : (
-          !isRead &&
           openTabs.length < 2 && (
             <div
               className={cn(
@@ -447,22 +353,9 @@ export function NotePage({ note }: { note: Note }) {
         )}
       </div>
 
-      <div
-        className={cn(
-          "relative mx-auto px-4 pb-32 md:px-6 lg:px-8",
-          font,
-          note.cover ? (isRead ? "pt-10" : "pt-8") : isRead ? "pt-10" : "pt-4",
-          width,
-          isRead && "motion-safe:animate-sheet",
-        )}
-      >
+      <div className={cn("relative mx-auto px-5 pb-40 pt-4 md:px-8 lg:px-10", font, note.cover && "pt-8", width)}>
         {note.parent && (
-        <div
-          className={cn(
-            "mb-2 flex flex-wrap items-center gap-1 text-[11px] text-mute",
-            isRead && "opacity-70",
-          )}
-        >
+        <div className="mb-2 flex flex-wrap items-center gap-1 text-[11px] text-mute">
           <button
             type="button"
             className="klever-focus rounded-md px-1 hover:bg-ink/[0.06] hover:text-ink"
@@ -474,8 +367,7 @@ export function NotePage({ note }: { note: Note }) {
           <span className="truncate text-faint">{note.title || "Untitled"}</span>
         </div>
         )}
-        {!isRead && (
-          <div className="mb-1 flex flex-wrap items-center justify-end gap-2 font-sans text-base">
+        <div className="mb-1 flex flex-wrap items-center justify-end gap-2 font-sans text-base">
           <span
             ref={pageMenuRef}
             className="klever-reveal relative z-10 flex flex-wrap items-center justify-end gap-0.5"
@@ -539,9 +431,13 @@ export function NotePage({ note }: { note: Note }) {
                         onChange={(e) => patchNote(note.id, { cover: e.target.value })}
                       />
                     </label>
-                    {note.cover && (
+                    {note.cover ? (
                       <TextButton onClick={() => patchNote(note.id, { cover: undefined })}>
-                        Remove cover
+                        Delete cover
+                      </TextButton>
+                    ) : (
+                      <TextButton onClick={() => patchNote(note.id, { cover: "#cfc8b8" })}>
+                        Add cover
                       </TextButton>
                     )}
                   </div>
@@ -563,6 +459,11 @@ export function NotePage({ note }: { note: Note }) {
             <ToolbarBtn label="Insert" aria-label="Insert" onClick={() => setPlusOpen(true, "editor")}>
               <Plus size={15} strokeWidth={1.4} />
             </ToolbarBtn>
+            {note.type === "page" && (
+              <ToolbarBtn label="Relate" aria-label="Relate" onClick={() => setRelateNoteId(note.id)}>
+                <GitBranch size={15} strokeWidth={1.4} />
+              </ToolbarBtn>
+            )}
             {speechSupported() && (
               <ToolbarBtn
                 label={listening ? "Listening" : "Transcribe"}
@@ -577,229 +478,108 @@ export function NotePage({ note }: { note: Note }) {
               <Trash2 size={15} strokeWidth={1.4} />
             </ToolbarBtn>
           </span>
-          </div>
-        )}
-
-        <div className={cn("mb-3", isRead && "mb-5")}>
-          {isRead ? (
-            <div
-              className="inline-flex items-center justify-center"
-              style={{ width: ICON_LG + 12, height: ICON_LG + 12 }}
-            >
-              <NoteIcon
-                icon={note.icon}
-                fallback={noteKindIcon(note.type)}
-                size={ICON_LG}
-                className="text-ink"
-              />
-            </div>
-          ) : (
-            <IconChooser
-              value={note.icon}
-              onChange={(icon) => patchNote(note.id, { icon })}
-              fallback={noteKindIcon(note.type)}
-            />
-          )}
         </div>
 
-        {isRead ? (
-          <h1 className="w-full break-words text-[2rem] font-semibold leading-[1.15] tracking-tight text-ink md:text-[2.75rem]">
-            {note.title || "Untitled"}
-          </h1>
-        ) : (
-          <textarea
-            ref={titleInputRef}
-            rows={1}
-            wrap="soft"
-            value={draftTitle}
-            onChange={(e) => {
-              setDraftTitle(e.target.value);
-              fitTitleHeight(e.target);
-            }}
-            onBlur={() => {
-              const title = draftTitle.replace(/\s+/g, " ").trim();
-              if (title !== draftTitle) setDraftTitle(title);
-              if (title === note.title) return;
-              const folder = note.path.includes("/")
-                ? note.path.split("/").slice(0, -1).join("/")
-                : "";
-              const nextPath = `${folder ? folder + "/" : ""}${slugify(title || "untitled")}${
-                note.type === "database" ? ".database.md" : ".md"
-              }`;
-              // Include local body — upsert replaces the whole note and must not wipe unsaved edits.
-              upsertNote(
-                { ...note, title, path: nextPath, body },
-                { renameFrom: note.path },
-              );
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                (e.target as HTMLTextAreaElement).blur();
-              }
-            }}
-            className="klever-focus field-sizing-content h-auto w-full resize-none overflow-hidden break-words rounded-md bg-transparent text-3xl font-semibold leading-[1.15] tracking-tight text-ink placeholder:text-faint md:text-4xl"
-            placeholder="Untitled"
-            aria-label="Page title"
+        <div className="mb-3">
+          <IconChooser
+            value={note.icon}
+            onChange={(icon) => patchNote(note.id, { icon })}
+            fallback={noteKindIcon(note.type)}
           />
-        )}
+        </div>
 
-        {isRead ? (
-          note.tags.length > 0 && (
-            <div className="mt-6 flex flex-wrap gap-2">
-              {note.tags.map((t) => (
-                <Chip
-                  key={t}
-                  selected
-                  tone="tag"
-                  onClick={() => setView({ kind: "tag", tag: t })}
-                  onContextMenu={(e) => open(e, tagMenuItems(t, { noteId: note.id }))}
-                  className="font-mono"
-                >
-                  #{t}
-                </Chip>
-              ))}
-            </div>
-          )
-        ) : (
-          <PropertyStrip note={note} />
-        )}
+        <textarea
+          ref={titleInputRef}
+          rows={1}
+          wrap="soft"
+          value={draftTitle}
+          onChange={(e) => {
+            setDraftTitle(e.target.value);
+            fitTitleHeight(e.target);
+          }}
+          onBlur={() => {
+            const title = draftTitle.replace(/\s+/g, " ").trim();
+            if (title !== draftTitle) setDraftTitle(title);
+            if (title === note.title) return;
+            const folder = note.path.includes("/")
+              ? note.path.split("/").slice(0, -1).join("/")
+              : "";
+            const nextPath = `${folder ? folder + "/" : ""}${slugify(title || "untitled")}${
+              note.type === "database" ? ".database.md" : ".md"
+            }`;
+            upsertNote(
+              { ...note, title, path: nextPath, body },
+              { renameFrom: note.path },
+            );
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              (e.target as HTMLTextAreaElement).blur();
+            }
+          }}
+          className="klever-focus klever-page-title field-sizing-content h-auto w-full resize-none overflow-hidden rounded-md bg-transparent text-ink placeholder:text-faint"
+          placeholder="Untitled"
+          aria-label="Page title"
+        />
+
+        <PropertyStrip note={note} />
 
         {meetingPage && (
-          <div className={isRead ? "mt-8" : "mt-6"}>
-            <MeetingNotesBlock note={note} readOnly={isRead} />
+          <div className="mt-6">
+            <MeetingNotesBlock note={note} />
           </div>
         )}
 
         <div
           className={cn(
-            meetingPage ? (isRead ? "mt-10" : "mt-8") : isRead ? "mt-12" : "mt-10",
-            !isRead && note.smallText && "text-[14px] leading-7",
+            meetingPage ? "mt-8" : "mt-10",
+            note.smallText && "text-[15px] leading-[1.65]",
             rewriteFlash && "writing-rewrite-flash px-2 -mx-2 py-1",
           )}
         >
           {meetingPage && (
-            <div className={isRead ? "mb-4" : "mb-3"}>
+            <div className="mb-3">
               <MonoLabel>Notes</MonoLabel>
             </div>
           )}
-          {isRead ? (
-            <MarkdownPreview
-              note={{ ...note, body }}
-              notes={notes}
-              small={note.smallText}
-              reading
-            />
-          ) : mode === "wysiwyg" ? (
-            <BlockEditor key={note.id} noteId={note.id} markdown={body} onChange={onBodyChange} />
-          ) : (
-            <>
-              <p className="mb-3 font-mono text-[10px] text-faint">Type / for blocks · [[ to link</p>
-              <div
-                onContextMenu={(e) =>
-                  open(e, [
-                    {
-                      id: "cut",
-                      label: "Cut",
-                      hint: "⌘X",
-                      disabled: !viewRef.current || viewRef.current.state.selection.main.empty,
-                      onSelect: () => {
-                        const view = viewRef.current;
-                        if (!view) return;
-                        void cutFromCodeMirror(view).then((ok) => {
-                          if (ok) setBody(view.state.doc.toString());
-                        });
-                      },
-                    },
-                    {
-                      id: "copy",
-                      label: "Copy",
-                      hint: "⌘C",
-                      disabled: !viewRef.current || viewRef.current.state.selection.main.empty,
-                      onSelect: () => {
-                        const view = viewRef.current;
-                        if (view) void copyFromCodeMirror(view);
-                      },
-                    },
-                    {
-                      id: "paste",
-                      label: "Paste",
-                      hint: "⌘V",
-                      onSelect: () => {
-                        const view = viewRef.current;
-                        if (!view) return;
-                        void pasteIntoCodeMirror(view).then((ok) => {
-                          if (ok) setBody(view.state.doc.toString());
-                        });
-                      },
-                    },
-                    { type: "sep" },
-                    ...noteMenuItems(note),
-                  ])
-                }
-              >
-              <CodeMirror
-                value={body}
-                height="auto"
-                basicSetup={{ lineNumbers: false, foldGutter: false, highlightActiveLine: false }}
-                extensions={[markdown(), completions, cmTheme, slashKeys, listener]}
-                onChange={onBodyChange}
-                onCreateEditor={(view) => {
-                  viewRef.current = view;
-                }}
+          <div
+            className={cn(
+              "relative",
+              pendingRewrite && "writing-edit-source-locked writing-edit-source-hidden",
+            )}
+          >
+            <BlockEditor key={note.id} noteId={note.id} markdown={body} onChange={onBodyChange} bridgeActive={active} />
+            {pendingRewrite && (
+              <WritingEditConfirm
+                pending={pendingRewrite}
+                fromText={pendingRewrite.fromText}
+                noteTitle={note.title}
+                onAccept={acceptRewrite}
+                onDiscard={discardRewrite}
               />
-              </div>
-              {slash && (
-                <SlashStack
-                  query={slash.query}
-                  index={slashI}
-                  onIndex={setSlashI}
-                  onFiltered={(cmds) => {
-                    slashHitsRef.current = cmds;
-                  }}
-                  onClose={() => {
-                    setSlash(null);
-                    setSlashRange(null);
-                  }}
-                  onRun={(cmd) => void runCommand(cmd)}
-                />
-              )}
-              {images.length > 0 && (
-                <div className="mt-8 border-t border-line pt-6">
-                  <MonoLabel>Images</MonoLabel>
-                  {images.map((img) => (
-                    <ImageBlock
-                      key={img.src}
-                      src={img.src}
-                      caption={img.caption}
-                      width={img.width}
-                      onWidth={(w) => setBody(setImageWidth(body, img.src, w))}
-                      onReplaceSrc={(next) => setBody(replaceImageSrc(body, img.src, next))}
-                    />
-                  ))}
-                </div>
-              )}
-            </>
-          )}
+            )}
+          </div>
         </div>
 
-        {!isRead && writingEnabled && (
+        {writingEnabled && (
           <WritingToolsBar
             note={note}
             body={body}
             busy={busy}
             setBusy={setBusy}
-            setBody={setBody}
             setError={setError}
-            viewRef={viewRef}
-            onApplied={triggerRewriteFlash}
+            onPropose={setPendingRewrite}
+            locked={Boolean(pendingRewrite)}
           />
-        )}      </div>
+        )}
+      </div>
       {pendingDelete && (
         <ConfirmDialog
           title="Delete this page?"
           description="The file is removed from the vault. This cannot be undone."
           confirmLabel="Delete"
+          danger
           onConfirm={() => {
             deleteNote(note.id);
             setPendingDelete(false);

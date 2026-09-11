@@ -178,7 +178,7 @@ export async function loadMeta(): Promise<PersistedMeta> {
     cal: migrateCalSettings(meta?.cal),
     calendarSources: migrateCalendarSources(meta?.calendarSources),
     displayName: meta?.displayName || "You",
-    strongFocus: Boolean(meta?.strongFocus),
+    strongFocus: meta?.strongFocus !== false,
     locale,
     dev: normalizeDevSettings(meta?.dev),
     lastPath: meta?.lastPath,
@@ -483,7 +483,7 @@ export async function loadOrMigrateWorkspaces(): Promise<{
 
   const ws = createWorkspaceDraft({
     name: globalMeta.lastPath?.trim() || "Vault",
-    aiMode: "remote",
+    aiMode: "local",
   });
   const registry: WorkspacesRegistry = { activeId: ws.id, workspaces: [ws] };
   await saveWorkspacesRegistry(registry);

@@ -1,3 +1,4 @@
+import { ImageBlock } from "@/components/editor/ImageBlock";
 import { useContextMenu } from "@/components/ContextMenu";
 import { Segmented } from "@/components/ui";
 import { assetKindFromPath, type AssetKind } from "@/lib/assets";
@@ -106,6 +107,15 @@ export function FileAttachment({
           ]),
     ]);
   };
+
+  if (kind === "image" && mode !== "link") {
+    return (
+      <div className="vault-file my-4" onContextMenu={onMenu}>
+        <ImageBlock src={path} caption={label} readOnly={readOnly} />
+        {chrome}
+      </div>
+    );
+  }
 
   if (mode === "link") {
     return (

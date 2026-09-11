@@ -1,4 +1,4 @@
-import { Field, GhostButton, MonoLabel, SolidButton } from "@/components/ui";
+import { EmptyState, Field, GhostButton, MonoLabel, SolidButton } from "@/components/ui";
 import { NoteIcon, noteKindIcon } from "@/lib/chrome-icons";
 import { cn } from "@/lib/cn";
 import {
@@ -102,13 +102,11 @@ export function MeetingView() {
       </label>
 
       {total === 0 ? (
-        <div className="mt-16">
-          <p className="font-serif text-2xl font-semibold tracking-tight">No meetings yet</p>
-          <p className="mt-2 max-w-md text-sm leading-relaxed text-mute">
-            Create a meeting to take notes, or add notes from a calendar event. ⌘⇧M always opens this
-            list.
-          </p>
-        </div>
+        <EmptyState
+          className="mt-16 px-0"
+          title="No meetings yet"
+          description="Create a meeting to take notes, or add notes from a calendar event. ⌘⇧M always opens this list."
+        />
       ) : (
         <div className="mt-10 space-y-10">
           <MeetingSection title="Today" empty={today.length === 0 && eventsToday.length === 0}>

@@ -1,11 +1,11 @@
-import { IconButton, Kbd, MonoLabel, TextButton } from "@/components/ui";
+import { AnchoredMenu, IconButton, Kbd, MonoLabel, TextButton } from "@/components/ui";
 import { contextMenuFromKey, useContextMenu, type PointEvent } from "@/components/ContextMenu";
 import { boardMenuItems, folderMenuItems, noteMenuItems, tagMenuItems } from "@/lib/context-menus";
 import { cn } from "@/lib/cn";
 import { ChromeIcon, Database, FileText, Hash, Library, Network, NoteIcon, noteKindIcon, treeNoteIcon } from "@/lib/chrome-icons";
 import { IconPickerOverlay } from "@/components/editor/IconChooser";
 import { dropNoteNearNote, dropNoteToFolder } from "@/lib/drop-files";
-import { folderDropHighlight, folderDragPath, hasFileTransfer, isKleverTreeDrag, KLEVER_FOLDER_DRAG, KLEVER_NOTE_DRAG, noteDragId } from "@/lib/dnd";
+import { endNoteDrag, folderDropHighlight, folderDragPath, hasFileTransfer, isKleverNoteDrag, isKleverTreeDrag, KLEVER_FOLDER_DRAG, noteDragId, writeNoteDrag } from "@/lib/dnd";
 import { filesFromFileList } from "@/lib/local-file-path";
 import { slugify } from "@/lib/ids";
 import { buildVaultTree, canMoveFolder, ensureFolderPaths, folderAncestors, noteFolder, type VaultFolder } from "@/lib/folders";
@@ -82,22 +82,6 @@ export function Sidebar() {
 
   const [wsMenuOpen, setWsMenuOpen] = useState(false);
   const wsMenuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!wsMenuOpen) return;
-    const onDoc = (e: MouseEvent) => {
-      if (!wsMenuRef.current?.contains(e.target as Node)) setWsMenuOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setWsMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [wsMenuOpen]);
 
   const tree = useMemo(() => {
     const visible = notes.filter((n) => !isSidebarDraftNoise(n));
@@ -197,7 +181,7 @@ export function Sidebar() {
             className="klever-focus flex max-w-full items-center gap-1.5 rounded-lg px-1 py-0.5 text-left transition-colors hover:bg-ink/[0.06]"
             onClick={() => setWsMenuOpen((v) => !v)}
           >
-            <span className="truncate font-sans text-lg font-semibold tracking-tight">Klever</span>
+            <span className="truncate font-serif text-lg tracking-tight">Klever</span>
             <ChevronDown
               size={14}
               strokeWidth={1.4}
@@ -217,9 +201,11 @@ export function Sidebar() {
             </p>
           )}
           {wsMenuOpen && (
-            <div
-              role="menu"
-              className="absolute left-0 top-full z-50 mt-1 w-[min(16rem,calc(100vw-2rem))] rounded-md border border-line bg-paper py-1 shadow-md"
+            <AnchoredMenu
+              open={wsMenuOpen}
+              onClose={() => setWsMenuOpen(false)}
+              anchorRef={wsMenuRef}
+              className="w-[min(16rem,calc(100vw-2rem))]"
             >
               <p className="px-3 pb-1 pt-2">
                 <MonoLabel>{t("sidebar.workspaces")}</MonoLabel>
@@ -289,7 +275,7 @@ export function Sidebar() {
                   {t("sidebar.lockWorkspace")}
                 </button>
               )}
-            </div>
+            </AnchoredMenu>
           )}
         </div>
         <IconButton aria-label={t("sidebar.collapse")} onClick={toggleSidebar}>
@@ -797,7 +783,7 @@ function FolderBranch({
               <button
                 type="button"
                 aria-label={`Folder actions for ${child.name}`}
-                className="klever-focus hidden h-7 w-7 items-center justify-center rounded-md text-faint hover:bg-ink/[0.06] hover:text-ink group-hover/folder:inline-flex group-focus-within/folder:inline-flex"
+                className="klever-reveal klever-focus inline-flex h-7 w-7 items-center justify-center rounded-md text-faint hover:bg-ink/[0.06] hover:text-ink"
                 onClick={(e) => openMenu(e, folderMenu(child.path))}
               >
                 <MoreHorizontal size={12} strokeWidth={1.4} />
@@ -805,7 +791,7 @@ function FolderBranch({
               <button
                 type="button"
                 aria-label={`New page in ${child.name}`}
-                className="klever-focus mr-1 hidden h-7 w-7 items-center justify-center rounded-md text-faint hover:bg-ink/[0.06] hover:text-ink group-hover/folder:inline-flex group-focus-within/folder:inline-flex"
+                className="klever-reveal klever-focus mr-1 inline-flex h-7 w-7 items-center justify-center rounded-md text-faint hover:bg-ink/[0.06] hover:text-ink"
                 onClick={() => onCreate(child.path)}
               >
                 <Plus size={12} strokeWidth={1.4} />
@@ -1059,11 +1045,12 @@ function Row({
       draggable={Boolean(noteId)}
       onDragStart={(e) => {
         if (!noteId) return;
-        e.dataTransfer.setData(KLEVER_NOTE_DRAG, noteId);
+        writeNoteDrag(e.dataTransfer, noteId);
         e.dataTransfer.effectAllowed = "move";
       }}
+      onDragEnd={() => endNoteDrag()}
       onDragOver={(e) => {
-        if (!onNoteDrop || !e.dataTransfer.types.includes(KLEVER_NOTE_DRAG)) return;
+        if (!onNoteDrop || !isKleverNoteDrag(e)) return;
         e.preventDefault();
         e.stopPropagation();
         setDropOver(true);
@@ -1110,7 +1097,7 @@ function Row({
           onClick={onStar}
           className={cn(
             "klever-focus mr-1 h-7 w-7 shrink-0 items-center justify-center rounded-md text-faint hover:bg-ink/[0.06] hover:text-ink",
-            starred ? "inline-flex text-ink" : "hidden group-hover/row:inline-flex group-focus-within/row:inline-flex",
+            starred ? "inline-flex text-ink" : "klever-reveal inline-flex",
           )}
         >
           <Star size={12} strokeWidth={1.4} fill={starred ? "currentColor" : "none"} />

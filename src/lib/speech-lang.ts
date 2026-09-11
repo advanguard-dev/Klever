@@ -1,94 +1,29 @@
 /**
- * Speech language preference for Brain Dump (and other STT entry points).
- * Moonshine loads one language model at a time; Web Speech takes a BCP-47 tag.
+ * Speech language preference for Brain Dump / meeting STT.
+ * Supported: English and French only.
  */
 
-/** STT languages Moonshine Voice currently ships (see upstream README). */
-export const MOONSHINE_STT = ["en", "es", "zh", "ja", "ko", "vi", "uk", "ar"] as const;
+/** STT languages Moonshine Voice ships that we use (English only — no French model). */
+export const MOONSHINE_STT = ["en"] as const;
 
 export type MoonshineSttLang = (typeof MOONSHINE_STT)[number];
 
-/** Map common locale tags onto Moonshine STT codes. */
-const MOONSHINE_ALIASES: Record<string, MoonshineSttLang> = {
-  eng: "en",
-  spa: "es",
-  "es-419": "es",
-  "es-mx": "es",
-  "es-es": "es",
-  cmn: "zh",
-  "zh-cn": "zh",
-  "zh-hans": "zh",
-  "zh-tw": "zh",
-  "zh-hant": "zh",
-  "zh-hk": "zh",
-  yue: "zh",
-  jpn: "ja",
-  kor: "ko",
-  vie: "vi",
-  ukr: "uk",
-  ara: "ar",
-  "ar-sa": "ar",
-  "ar-eg": "ar",
-};
-
-/** Prefer these BCP-47 tags when driving the Web Speech API from a short code. */
+/** Prefer these BCP-47 tags when driving the Web Speech API. */
 const WEB_SPEECH_TAGS: Record<string, string> = {
   en: "en-US",
-  es: "es-ES",
-  zh: "zh-CN",
-  ja: "ja-JP",
-  ko: "ko-KR",
-  vi: "vi-VN",
-  uk: "uk-UA",
-  ar: "ar-SA",
   fr: "fr-FR",
-  de: "de-DE",
-  pt: "pt-BR",
-  it: "it-IT",
-  nl: "nl-NL",
-  ru: "ru-RU",
-  pl: "pl-PL",
-  tr: "tr-TR",
-  hi: "hi-IN",
-  sv: "sv-SE",
-  da: "da-DK",
-  fi: "fi-FI",
-  no: "nb-NO",
-  nb: "nb-NO",
-  cs: "cs-CZ",
-  ro: "ro-RO",
-  el: "el-GR",
-  he: "he-IL",
-  id: "id-ID",
-  th: "th-TH",
-  hu: "hu-HU",
 };
 
-export type SpeechLangPreference = "auto" | string;
+export type SpeechLangPreference = "auto" | "en" | "fr";
 
 export const SPEECH_LANG_OPTIONS: { value: SpeechLangPreference; label: string }[] = [
-  { value: "auto", label: "Auto (browser)" },
+  { value: "auto", label: "Auto" },
   { value: "en", label: "English" },
-  { value: "es", label: "Spanish" },
-  { value: "zh", label: "Chinese (Mandarin)" },
-  { value: "ja", label: "Japanese" },
-  { value: "ko", label: "Korean" },
-  { value: "vi", label: "Vietnamese" },
-  { value: "uk", label: "Ukrainian" },
-  { value: "ar", label: "Arabic" },
   { value: "fr", label: "French" },
-  { value: "de", label: "German" },
-  { value: "pt", label: "Portuguese" },
-  { value: "it", label: "Italian" },
-  { value: "nl", label: "Dutch" },
-  { value: "ru", label: "Russian" },
-  { value: "pl", label: "Polish" },
-  { value: "tr", label: "Turkish" },
-  { value: "hi", label: "Hindi" },
-  { value: "sv", label: "Swedish" },
 ];
 
 const STORAGE_KEY = "klever.dumpSpeechLang";
+const ALLOWED = new Set<string>(SPEECH_LANG_OPTIONS.map((o) => o.value));
 
 export function browserLocales(): string[] {
   if (typeof navigator === "undefined") return ["en"];
@@ -115,46 +50,29 @@ function primaryCode(raw: string): string {
   return normalizeCode(raw).split("-")[0] ?? "en";
 }
 
-/**
- * Moonshine language from browser locale (or explicit preference).
- * Returns null when the preference has no Moonshine model (use Web Speech).
- */
-export function resolveMoonshineLang(preference: SpeechLangPreference = "auto"): MoonshineSttLang | null {
-  if (preference !== "auto") {
-    const code = primaryCode(preference);
-    return moonshineSupports(code) ? (code as MoonshineSttLang) : null;
-  }
+/** Resolve preference to en | fr (never other languages). */
+export function resolveDumpLang(preference: SpeechLangPreference = "auto"): "en" | "fr" {
+  if (preference === "en" || preference === "fr") return preference;
   for (const loc of browserLocales()) {
-    const lower = normalizeCode(loc);
-    const primary = primaryCode(loc);
-    if (MOONSHINE_ALIASES[lower]) return MOONSHINE_ALIASES[lower];
-    if (moonshineSupports(lower)) return lower as MoonshineSttLang;
-    if (MOONSHINE_ALIASES[primary]) return MOONSHINE_ALIASES[primary];
-    if (moonshineSupports(primary)) return primary as MoonshineSttLang;
+    const p = primaryCode(loc);
+    if (p === "fr") return "fr";
+    if (p === "en") return "en";
   }
   return "en";
 }
 
-/** BCP-47 tag for the Web Speech API. */
+/**
+ * Moonshine language from preference.
+ * Returns null when French (no model) — callers should use dictation / Web Speech.
+ */
+export function resolveMoonshineLang(preference: SpeechLangPreference = "auto"): MoonshineSttLang | null {
+  return resolveDumpLang(preference) === "en" ? "en" : null;
+}
+
+/** BCP-47 tag for the Web Speech API (en-US or fr-FR). */
 export function resolveWebSpeechLang(preference: SpeechLangPreference = "auto"): string {
-  if (preference === "auto") {
-    return browserLocales()[0] ?? "en-US";
-  }
-  const lower = normalizeCode(preference);
-  if (WEB_SPEECH_TAGS[lower]) return WEB_SPEECH_TAGS[lower];
-  const primary = primaryCode(preference);
-  if (WEB_SPEECH_TAGS[primary]) return WEB_SPEECH_TAGS[primary];
-  return preference;
-}
-
-/** @deprecated Prefer resolveWebSpeechLang */
-export function webSpeechLang(preference: SpeechLangPreference = "auto") {
-  return resolveWebSpeechLang(preference);
-}
-
-/** @deprecated Prefer resolveMoonshineLang */
-export function moonshineLang(preference: SpeechLangPreference = "auto") {
-  return resolveMoonshineLang(preference) ?? "en";
+  const lang = resolveDumpLang(preference);
+  return WEB_SPEECH_TAGS[lang] ?? "en-US";
 }
 
 export function loadDumpSpeechLang(): SpeechLangPreference {
@@ -162,8 +80,11 @@ export function loadDumpSpeechLang(): SpeechLangPreference {
   try {
     const v = localStorage.getItem(STORAGE_KEY);
     if (!v) return "auto";
-    if (v === "auto") return "auto";
-    if (SPEECH_LANG_OPTIONS.some((o) => o.value === v)) return v;
+    if (ALLOWED.has(v)) return v as SpeechLangPreference;
+    // Migrate older multi-language prefs → closest EN/FR/auto
+    const primary = primaryCode(v);
+    if (primary === "fr") return "fr";
+    if (primary === "en") return "en";
   } catch {
     /* private mode */
   }
@@ -173,7 +94,7 @@ export function loadDumpSpeechLang(): SpeechLangPreference {
 export function saveDumpSpeechLang(value: SpeechLangPreference) {
   if (typeof localStorage === "undefined") return;
   try {
-    localStorage.setItem(STORAGE_KEY, value);
+    localStorage.setItem(STORAGE_KEY, ALLOWED.has(value) ? value : "auto");
   } catch {
     /* private mode */
   }

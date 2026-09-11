@@ -188,14 +188,23 @@ export function PropInput({
         {ids.map((id) => {
           const hit = resolveLink(id, notes);
           return (
-            <button
-              key={id}
-              type="button"
-              className="rounded-full bg-paper-2 px-2.5 py-0.5 font-mono text-[11px] text-mute hover:text-ink"
-              onClick={() => hit && setView({ kind: "note", id: hit.id })}
-            >
-              {hit?.title ?? id}
-            </button>
+            <span key={id} className="inline-flex items-center gap-1 rounded-full bg-paper-2 pl-2.5 pr-1 py-0.5 font-mono text-[11px] text-mute">
+              <button
+                type="button"
+                className="hover:text-ink"
+                onClick={() => hit && setView({ kind: "note", id: hit.id })}
+              >
+                {hit?.title ?? id}
+              </button>
+              <button
+                type="button"
+                aria-label={`Remove relation ${hit?.title ?? id}`}
+                className="rounded-full px-1 text-faint hover:text-ink"
+                onClick={() => setVal(ids.filter((x) => x !== id))}
+              >
+                ×
+              </button>
+            </span>
           );
         })}
         <Select

@@ -2,6 +2,7 @@ import { Node, mergeAttributes } from "@tiptap/core";
 import { ReactNodeViewRenderer, NodeViewWrapper, NodeViewContent } from "@tiptap/react";
 import { CODE_LANGUAGES, normalizeLang } from "@/lib/shiki-highlight";
 import { MermaidBlock } from "@/lib/mermaid-block";
+import { Select } from "@/components/ui";
 import { useEffect, useState } from "react";
 
 function CodeBlockView({
@@ -33,15 +34,17 @@ function CodeBlockView({
           {isMermaid && (
             <button
               type="button"
-              className="rounded border border-rule bg-paper px-1.5 py-0.5 font-mono text-[10px] text-mute"
+              className="rounded-md border border-line bg-paper px-1.5 py-0.5 font-mono text-[10px] text-mute"
+              aria-label={preview ? "Edit diagram source" : "Preview diagram"}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => setPreview((p) => !p)}
             >
               {preview ? "Edit" : "Preview"}
             </button>
           )}
-          <select
-            className="rounded border border-rule bg-paper px-1.5 py-0.5 font-mono text-[10px] text-mute"
+          <Select
+            aria-label="Code language"
+            className="min-w-[7rem] text-[10px]"
             value={lang}
             onChange={(e) => updateAttributes({ language: e.target.value })}
             onMouseDown={(e) => e.stopPropagation()}
@@ -51,7 +54,7 @@ function CodeBlockView({
                 {l}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
       )}
       {isMermaid && preview ? (
@@ -59,8 +62,10 @@ function CodeBlockView({
           <MermaidBlock source={node.textContent} />
         </div>
       ) : (
-        <pre className="overflow-x-auto rounded-lg border border-rule bg-paper-2 p-3 pt-8 font-mono text-[13px] leading-relaxed">
-          <NodeViewContent as="code" className={`language-${lang}`} />
+        <pre className="overflow-x-auto rounded-lg border border-line bg-paper-2 p-3 pt-8 font-mono text-[13px] leading-relaxed">
+          <code className={`language-${lang}`}>
+            <NodeViewContent />
+          </code>
         </pre>
       )}
       {/* keep pos stable for ProseMirror */}

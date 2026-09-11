@@ -1,5 +1,12 @@
 @import "tailwindcss";
 
+/* Limit Oxide to app sources — scanning release/ or node_modules deadlocks vite build. */
+@source "./**/*.{js,ts,jsx,tsx,html}";
+@source not "../release/**";
+@source not "../node_modules/**";
+@source not "../dist/**";
+@source not "../web/**";
+
 @theme {
   --klever-titlebar-inset: 4.5rem;
 
@@ -12,8 +19,9 @@
   --color-blotter: #e3e5e0;
   --color-ink: #151716;
   --color-mute: #585c59;
-  --color-faint: #5a5e5a;
+  --color-faint: #6a6f6a;
   --color-line: #d5d8d2;
+  --color-rule: #d5d8d2;
   --color-accent: #151716;
   --color-ring: #3a5674;
   --color-tag: #4f6b58;
@@ -32,6 +40,10 @@
   --animate-blotter: klever-blotter 0.15s ease-out both;
   --animate-sheet: klever-sheet 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
   --animate-rewrite: klever-rewrite 1.15s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-ai-working: klever-ai-working 2.4s ease-in-out infinite;
+  --animate-ai-shimmer: klever-ai-shimmer 1.8s ease-in-out infinite;
+  --animate-decrypt-settle: klever-decrypt-settle 0.4s ease-out both;
+  --animate-edit-chip: klever-edit-chip 0.22s ease-out both;
 }
 
 @keyframes klever-blotter {
@@ -74,6 +86,206 @@
   border-radius: var(--radius-lg);
 }
 
+@keyframes klever-ai-working {
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 1px transparent;
+  }
+  40% {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-smart) 34%, transparent);
+  }
+  70% {
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-smart) 18%, transparent);
+  }
+}
+
+@keyframes klever-ai-shimmer {
+  0% {
+    background-position: 120% 0;
+    opacity: 0.35;
+  }
+  40% {
+    opacity: 0.7;
+  }
+  100% {
+    background-position: -40% 0;
+    opacity: 0.35;
+  }
+}
+
+.writing-ai-working {
+  position: relative;
+  animation: var(--animate-ai-working);
+  border-radius: var(--radius-xl);
+}
+
+.writing-ai-working::before {
+  content: "";
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  border-radius: inherit;
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-smart) 0%, transparent) 35%,
+    color-mix(in srgb, var(--color-smart) 14%, transparent) 50%,
+    color-mix(in srgb, var(--color-smart) 0%, transparent) 65%,
+    transparent 100%
+  );
+  background-size: 220% 100%;
+  animation: var(--animate-ai-shimmer);
+}
+
+.writing-ai-working-status {
+  position: sticky;
+  top: 0.5rem;
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.75rem 1rem 0;
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--color-smart) 28%, var(--color-line));
+  background: color-mix(in srgb, var(--color-paper) 88%, var(--color-smart));
+  color: var(--color-smart);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .writing-ai-working,
+  .writing-ai-working::before {
+    animation: none;
+  }
+  .writing-ai-working::before {
+    opacity: 0.2;
+    background: color-mix(in srgb, var(--color-smart) 8%, transparent);
+  }
+  .writing-scramble-done,
+  .writing-edit-chip-open {
+    animation: none;
+  }
+}
+
+.writing-edit-source-hidden .cm-editor,
+.writing-edit-source-hidden .tiptap {
+  visibility: hidden;
+}
+
+.writing-edit-source-locked .cm-editor,
+.writing-edit-source-locked .tiptap {
+  pointer-events: none;
+}
+
+.writing-edit-reveal {
+  position: absolute;
+  z-index: 20;
+  background: var(--color-paper);
+  pointer-events: auto;
+  font-size: inherit;
+  line-height: 1.75;
+}
+
+.writing-edit-reveal-full {
+  top: 0;
+  right: 0;
+  left: 0;
+  min-height: 100%;
+}
+
+.writing-scramble {
+  margin: 0;
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+  font-variant-ligatures: none;
+  font-feature-settings: "calt" 0;
+  line-height: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+
+.writing-scramble-live {
+  color: var(--color-mute);
+  user-select: none;
+}
+
+.writing-scramble-done {
+  color: var(--color-ink);
+  animation: var(--animate-decrypt-settle);
+}
+
+@keyframes klever-decrypt-settle {
+  from {
+    color: var(--color-mute);
+  }
+  to {
+    color: var(--color-ink);
+  }
+}
+
+.writing-edit-chip {
+  position: fixed;
+  bottom: 2.25rem;
+  left: 50%;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.2rem 0.25rem;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-paper);
+  box-shadow:
+    0 1px 2px color-mix(in srgb, var(--color-ink) 6%, transparent),
+    0 8px 20px color-mix(in srgb, var(--color-ink) 10%, transparent);
+  transform: translateX(-50%) translateY(0.4rem);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.writing-edit-chip-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(0);
+  animation: var(--animate-edit-chip);
+}
+
+.writing-edit-chip-meta {
+  max-width: 12rem;
+  margin: 0 0.35rem 0 0.45rem;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--color-mute);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.writing-edit-chip-rule {
+  width: 1px;
+  height: 1.15rem;
+  background: var(--color-line);
+}
+
+@keyframes klever-edit-chip {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(0.4rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+
 /* Spans a proofread run flagged. Decoration only — the text is unchanged. */
 .klever-grammar {
   text-decoration: underline wavy var(--color-smart);
@@ -88,8 +300,9 @@ html.dark {
   --color-blotter: #0c0d0c;
   --color-ink: #eceeea;
   --color-mute: #9aa09b;
-  --color-faint: #808480;
+  --color-faint: #8a8f8a;
   --color-line: #2a2d2a;
+  --color-rule: #2a2d2a;
   --color-accent: #eceeea;
   --color-ring: #8fa6c4;
   --color-tag: #8fa892;
@@ -116,7 +329,7 @@ html.dark {
     color: var(--color-ink);
     font-family: var(--font-sans);
     font-size: 16px;
-    line-height: 1.65;
+    line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
@@ -148,12 +361,47 @@ html.dark {
   }
 
   :focus-visible {
-    outline: none;
-  }
-
-  html.klever-a11y-focus :focus-visible {
     outline: 2px solid var(--color-ring);
     outline-offset: 2px;
+  }
+}
+
+/*
+  Instrument Serif is a display face with one real weight (400) plus italic.
+  Hierarchy is size, tracking, and leading — never synthesized bold.
+  Optical tracking: open at text sizes (modest x-height), tighter as display grows.
+*/
+@layer utilities {
+  .font-serif {
+    font-weight: 400;
+    font-synthesis-weight: none;
+    font-kerning: normal;
+    font-variant-ligatures: common-ligatures contextual;
+    letter-spacing: clamp(-0.03em, calc(0.22rem - 0.2em), 0.01em);
+  }
+
+  .font-serif.font-medium,
+  .font-serif.font-semibold,
+  .font-serif.font-bold,
+  .font-serif.tracking-tight,
+  .font-serif.tracking-tighter {
+    font-weight: 400;
+    letter-spacing: clamp(-0.032em, calc(0.2rem - 0.19em), 0.006em);
+  }
+
+  .klever-page-title {
+    font-weight: 400;
+    font-synthesis-weight: none;
+    font-size: clamp(1.85rem, 1.35rem + 1.7vw, 3.05rem);
+    line-height: 1.08;
+    letter-spacing: clamp(-0.03em, calc(0.18rem - 0.18em), 0.002em);
+    text-wrap: balance;
+    overflow-wrap: anywhere;
+  }
+
+  .font-sans .klever-page-title {
+    font-weight: 500;
+    letter-spacing: -0.022em;
   }
 }
 
@@ -195,21 +443,21 @@ html.klever-a11y-focus input[type="checkbox"]:focus-visible {
   outline-offset: 2px;
 }
 
-html.klever-a11y-focus .klever-focus:focus-visible {
+.klever-focus:focus-visible {
   outline: none;
   box-shadow:
     0 0 0 2px var(--color-paper),
     0 0 0 4px var(--color-ring);
 }
 
-html.klever-a11y-focus .klever-focus-solid:focus-visible {
+.klever-focus-solid:focus-visible {
   outline: none;
   box-shadow:
     0 0 0 2px var(--color-ink),
     0 0 0 4px var(--color-ring);
 }
 
-html.klever-a11y-focus .klever-focus-within:focus-within {
+.klever-focus-within:focus-within {
   box-shadow:
     0 0 0 2px var(--color-paper),
     0 0 0 4px var(--color-ring);
@@ -226,6 +474,8 @@ html.klever-a11y-focus .klever-focus-within:focus-within {
     transition: opacity 150ms ease-out;
   }
 
+  :hover > .klever-reveal,
+  :focus-within > .klever-reveal,
   .group\/page:hover .klever-reveal,
   .group\/page:focus-within .klever-reveal,
   .klever-reveal:focus,
@@ -242,6 +492,23 @@ html.klever-a11y-focus .klever-focus-within:focus-within {
 
 .klever-folio {
   border-left: 2px solid var(--color-ring);
+}
+
+.klever-split-ghost {
+  background-color: var(--color-blotter);
+}
+
+.klever-split-ghost-sheet {
+  background-color: var(--color-paper);
+  box-shadow: inset 0 0 0 1px var(--color-line);
+}
+
+.klever-split-ghost[data-corner="top"] .klever-split-ghost-sheet {
+  transform-origin: top center;
+}
+
+.klever-split-ghost[data-corner="bottom"] .klever-split-ghost-sheet {
+  transform-origin: bottom center;
 }
 
 button::-moz-focus-inner,
@@ -264,25 +531,26 @@ a,
 article:focus,
 article:focus-visible,
 main:focus,
-main:focus-visible,
+main:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
 .tiptap,
-.tiptap:focus,
-.tiptap:focus-visible,
 .ProseMirror,
-.ProseMirror:focus,
-.ProseMirror:focus-visible,
 .ProseMirror-focused,
-.ProseMirror-selectednode,
-.ProseMirror-selectednode::after,
-li.ProseMirror-selectednode::after,
-[contenteditable],
-[contenteditable]:focus,
-[contenteditable]:focus-visible,
 .cm-editor,
-.cm-editor.cm-focused,
 .cm-content {
-  outline: none !important;
-  box-shadow: none !important;
+  outline: none;
+}
+
+html.klever-quiet-focus :focus-visible {
+  outline: none;
+}
+
+html.klever-quiet-focus .klever-focus:focus-visible,
+html.klever-quiet-focus .klever-focus-solid:focus-visible {
+  box-shadow: none;
 }
 
 .ProseMirror-selectednode,
@@ -325,8 +593,18 @@ li.ProseMirror-selectednode::after {
 }
 
 .prose-klever {
-  font-size: 1.05rem;
-  line-height: 1.75;
+  font-size: 1.0625rem;
+  line-height: 1.65;
+  max-width: 68ch;
+  overflow-wrap: break-word;
+}
+
+.font-serif .prose-klever,
+.prose-klever.font-serif {
+  font-size: 1.1875rem;
+  line-height: 1.68;
+  max-width: 66ch;
+  letter-spacing: 0.004em;
 }
 
 .klever-block-hover {
@@ -334,14 +612,78 @@ li.ProseMirror-selectednode::after {
   background-color: color-mix(in srgb, var(--color-paper-2) 72%, transparent);
 }
 
+.klever-block-gutter {
+  height: 2rem;
+  width: 3.75rem;
+  gap: 0.125rem;
+  border-radius: 0.5rem;
+}
+
+.klever-block-gutter [data-block-handle] {
+  color: color-mix(in srgb, var(--color-ink) 45%, var(--color-mute));
+}
+
+.klever-block-gutter:hover [data-block-handle],
+.klever-block-gutter:focus-within [data-block-handle] {
+  color: var(--color-ink);
+  background-color: var(--color-paper-2);
+}
+
 .klever-block-dragging {
-  opacity: 0.4;
+  opacity: 0.28;
+  filter: grayscale(0.15);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-ink) 12%, transparent);
+}
+
+.klever-block-selected {
+  border-radius: 0.5rem;
+  background-color: color-mix(in srgb, var(--color-smart) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-smart) 28%, transparent);
+}
+
+.klever-block-drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 10050;
+  pointer-events: none;
+  box-sizing: border-box;
+  margin: 0;
+  max-width: min(18rem, calc(100vw - 2rem));
+  padding: 0.35rem 0.65rem;
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--color-paper) 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-ink) 8%, transparent);
+  box-shadow:
+    0 1px 2px color-mix(in srgb, var(--color-ink) 5%, transparent),
+    0 6px 16px color-mix(in srgb, var(--color-ink) 8%, transparent);
+  opacity: 0.55;
+  backdrop-filter: blur(2px);
+  will-change: transform;
+}
+
+.klever-block-drag-ghost-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.35;
+  font-weight: 500;
+  color: var(--color-ink);
 }
 
 .klever-editor-dragging,
 .klever-editor-dragging * {
   cursor: grabbing !important;
   user-select: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .klever-block-drag-ghost {
+    backdrop-filter: none;
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--color-ink) 8%, transparent);
+  }
 }
 
 .tiptap p.klever-block-hover,
@@ -358,17 +700,19 @@ li.ProseMirror-selectednode::after {
   border-radius: 1px;
 }
 
-/* Long-form Read mode — Instrument Serif, generous leading. */
+/* Long-form read typography (MarkdownPreview reading mode). */
 .prose-klever-read {
   font-family: var(--font-serif);
-  font-size: 1.125rem;
-  line-height: 1.85;
-  color: var(--color-ink);
+  font-size: var(--reader-size, 1.6rem);
+  line-height: var(--reader-leading, 1.75);
+  color: var(--reader-fg, var(--color-ink));
+  letter-spacing: 0.004em;
+  font-weight: 400;
+  font-synthesis-weight: none;
 }
 
 .prose-klever-read.prose-klever-read--small {
-  font-size: 1.05rem;
-  line-height: 1.75;
+  font-size: max(1.05rem, calc(var(--reader-size, 1.6rem) * 0.88));
 }
 
 .prose-klever [data-word-font="sans"],
@@ -389,40 +733,46 @@ li.ProseMirror-selectednode::after {
 .prose-klever-read h1,
 .prose-klever-read h2,
 .prose-klever-read h3 {
-  font-family: var(--font-serif);
+  font-family: inherit;
   font-weight: 400;
-  line-height: 1.25;
-  letter-spacing: -0.02em;
-  margin: 1.85em 0 0.55em;
+  font-synthesis-weight: none;
+  line-height: 1.18;
+  letter-spacing: -0.016em;
+  margin: 1.45em 0 0.4em;
+  color: var(--reader-fg, var(--color-ink));
+  text-wrap: balance;
 }
 
 .prose-klever-read h1 {
-  font-size: 1.85rem;
+  font-size: 1.55em;
   margin-top: 0;
+  letter-spacing: -0.022em;
+  line-height: 1.12;
 }
 
 .prose-klever-read h2 {
-  font-size: 1.4rem;
+  font-size: 1.28em;
 }
 
 .prose-klever-read h3 {
-  font-size: 1.2rem;
+  font-size: 1.12em;
+  letter-spacing: -0.01em;
 }
 
 .prose-klever-read p,
 .prose-klever-read ul,
 .prose-klever-read ol,
 .prose-klever-read blockquote {
-  margin: 1.05em 0;
+  margin: 1.15em 0;
 }
 
 .prose-klever-read li + li {
-  margin-top: 0.35em;
+  margin-top: 0.4em;
 }
 
 .prose-klever-read blockquote {
-  border-left-color: color-mix(in srgb, var(--color-ink) 28%, transparent);
-  color: var(--color-mute);
+  border-left-color: color-mix(in srgb, var(--reader-fg, var(--color-ink)) 28%, transparent);
+  color: var(--reader-mute, var(--color-mute));
 }
 
 .prose-klever-read code {
@@ -432,47 +782,58 @@ li.ProseMirror-selectednode::after {
 
 .prose-klever-read pre {
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: 0.72em;
   line-height: 1.55;
-  margin: 1.5em 0;
+  margin: 1.6em 0;
 }
 
 .prose-klever-read hr {
-  margin: 2.4em 0;
+  margin: 2.6em 0;
+  border-color: var(--reader-line, var(--color-line));
 }
 
 .prose-klever-read .hash-tag {
   font-family: var(--font-mono);
-  color: color-mix(in srgb, var(--color-tag) 70%, var(--color-mute));
+  color: color-mix(in srgb, var(--color-tag) 70%, var(--reader-mute, var(--color-mute)));
 }
 
 .prose-klever h1,
 .prose-klever h2,
 .prose-klever h3 {
   font-weight: 400;
+  font-synthesis-weight: none;
   line-height: 1.2;
-  letter-spacing: -0.02em;
-  margin: 1.6em 0 0.5em;
+  letter-spacing: -0.014em;
+  margin: 1.45em 0 0.4em;
+  text-wrap: balance;
 }
 
 .prose-klever h1 {
-  font-size: 2rem;
+  font-size: 1.85rem;
+  line-height: 1.14;
+  letter-spacing: -0.02em;
   margin-top: 0;
 }
 
 .prose-klever h2 {
-  font-size: 1.45rem;
+  font-size: 1.4rem;
+  letter-spacing: -0.016em;
 }
 
 .prose-klever h3 {
-  font-size: 1.2rem;
+  font-size: 1.18rem;
+  letter-spacing: -0.01em;
 }
 
 .prose-klever p,
 .prose-klever ul,
 .prose-klever ol,
 .prose-klever blockquote {
-  margin: 0.85em 0;
+  margin: 0.9em 0;
+}
+
+.prose-klever p {
+  text-wrap: pretty;
 }
 
 .prose-klever ul,
@@ -499,6 +860,12 @@ li.ProseMirror-selectednode::after {
 
 .prose-klever strong {
   font-weight: 600;
+}
+
+.font-serif .prose-klever :is(strong, b),
+.prose-klever.font-serif :is(strong, b) {
+  font-weight: 400;
+  font-style: italic;
 }
 
 .prose-klever em {
@@ -599,6 +966,79 @@ li.ProseMirror-selectednode::after {
 
 .ProseMirror .wiki-link {
   cursor: pointer;
+}
+
+.wiki-bento {
+  display: inline-block;
+  max-width: min(18rem, 100%);
+  vertical-align: top;
+  margin: 0.35rem 0.15rem;
+}
+
+.wiki-bento-card {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  background: var(--color-paper);
+  text-align: left;
+  color: inherit;
+}
+
+.wiki-bento-card--missing {
+  border-style: dashed;
+}
+
+.wiki-bento-cover {
+  display: block;
+  height: 4.5rem;
+  overflow: hidden;
+  background: var(--color-paper-2);
+}
+
+.wiki-bento-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.wiki-bento-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.65rem 0.75rem 0.75rem;
+}
+
+.wiki-bento-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.875rem;
+  color: var(--color-ink);
+}
+
+.wiki-bento-snippet {
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--color-mute);
+}
+
+.klever-shiki {
+  --shiki-foreground: var(--color-ink);
+  --shiki-background: var(--color-paper-2);
+  --shiki-token-constant: var(--color-smart);
+  --shiki-token-string: var(--color-tag);
+  --shiki-token-comment: var(--color-mute);
+  --shiki-token-keyword: var(--color-prop);
+  --shiki-token-parameter: var(--color-ink);
+  --shiki-token-function: var(--color-smart);
+  --shiki-token-string-expression: var(--color-tag);
+  --shiki-token-punctuation: var(--color-mute);
+  --shiki-token-link: var(--color-ring);
 }
 
 .prose-klever blockquote.callout,
@@ -772,6 +1212,355 @@ html.electron-mac .klever-titlebar {
   html.electron-mac .klever-titlebar {
     padding-left: calc(var(--klever-titlebar-inset) + 1rem);
   }
+}
+
+/* Lattice — 2D ink on blotter. */
+.klever-lattice {
+  background: var(--color-blotter);
+  cursor: grab;
+  touch-action: none;
+}
+
+.klever-lattice:active {
+  cursor: grabbing;
+}
+
+.klever-lattice-hud {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+}
+
+.klever-lattice-chip {
+  pointer-events: auto;
+  border: 1px solid var(--color-line);
+  background: var(--color-paper);
+  border-radius: var(--radius-md);
+}
+
+.klever-lattice-snap {
+  position: absolute;
+  border: 1.5px solid var(--color-ink);
+  border-radius: 999px;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  opacity: 0.42;
+}
+
+/* Present mode — the page as a keynote on the blotter. */
+.klever-present {
+  --present-well: #d8dbd4;
+  --present-stage: #f4f5f2;
+  --present-fg: #151716;
+  --present-mute: #585c59;
+  --present-faint: #7a7e7a;
+  --present-line: color-mix(in srgb, var(--present-fg) 12%, transparent);
+  --present-accent: #3a5674;
+  --present-display: var(--font-serif);
+  --present-copy: var(--font-sans);
+  --present-pad: clamp(1.75rem, 6vw, 4.25rem);
+  background: var(--present-well);
+  color: var(--present-fg);
+}
+
+.klever-present[data-template="lecture"] {
+  --present-well: #e3e5e0;
+  --present-stage: #f4f5f2;
+  --present-fg: #151716;
+  --present-mute: #585c59;
+  --present-faint: #6a6f6a;
+  --present-accent: #3a5674;
+  --present-display: var(--font-serif);
+  --present-copy: var(--font-sans);
+}
+
+.klever-present[data-template="chalk"] {
+  --present-well: #d5ddd3;
+  --present-stage: #e7ece4;
+  --present-fg: #243028;
+  --present-mute: #4f6b58;
+  --present-faint: #7a8c80;
+  --present-accent: #4f6b58;
+  --present-display: var(--font-serif);
+  --present-copy: var(--font-serif);
+}
+
+.klever-present[data-template="atlas"] {
+  --present-well: #d5ddd3;
+  --present-stage: #e7ece4;
+  --present-fg: #243028;
+  --present-mute: #4f6b58;
+  --present-faint: #7a8c80;
+  --present-accent: #4f6b58;
+  --present-display: var(--font-serif);
+  --present-copy: var(--font-sans);
+}
+
+.klever-present[data-template="signal"] {
+  --present-well: #d8dbd4;
+  --present-stage: #eceeea;
+  --present-fg: #151716;
+  --present-mute: #585c59;
+  --present-faint: #6a6f6a;
+  --present-accent: #151716;
+  --present-display: var(--font-sans);
+  --present-copy: var(--font-sans);
+}
+
+.klever-present[data-template="vellum"] {
+  --present-well: #e4d8c0;
+  --present-stage: #f3ead7;
+  --present-fg: #3a2f28;
+  --present-mute: #6b5c4f;
+  --present-faint: #9a8874;
+  --present-accent: #8b4a32;
+  --present-display: var(--font-serif);
+  --present-copy: var(--font-serif);
+}
+
+.klever-present-chrome {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  z-index: 40;
+  transition:
+    transform 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.22s ease;
+}
+
+.klever-present-chrome[data-hidden="true"] {
+  transform: translateY(-100%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.klever-present-frame {
+  width: min(100%, calc((100dvh - 9.5rem) * var(--present-ratio, 1.777)));
+  max-height: calc(100dvh - 9.5rem);
+  height: auto;
+  max-width: 100%;
+}
+
+.klever-present-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 0.85rem;
+  background: var(--present-stage);
+  color: var(--present-fg);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--present-fg) 8%, transparent),
+    0 28px 60px -36px color-mix(in srgb, #000 45%, transparent);
+  padding: var(--present-pad);
+}
+
+.klever-present[data-template="chalk"] .klever-present-stage {
+  background-image:
+    radial-gradient(circle at 18% 12%, color-mix(in srgb, var(--present-fg) 5%, transparent), transparent 42%),
+    linear-gradient(180deg, color-mix(in srgb, #fff 4%, transparent), transparent 28%);
+}
+
+.klever-present[data-template="vellum"] .klever-present-stage {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, #fff 18%, transparent),
+    transparent 24%,
+    color-mix(in srgb, #c4a574 8%, transparent) 100%
+  );
+}
+
+.klever-present[data-template="signal"] .klever-present-stage {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.klever-present-kicker {
+  font-family: var(--font-mono);
+  font-size: clamp(0.62rem, 1.1vw, 0.78rem);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--present-accent);
+}
+
+.klever-present-title {
+  font-family: var(--present-display);
+  font-weight: 400;
+  font-synthesis-weight: none;
+  letter-spacing: -0.032em;
+  line-height: 1.08;
+  text-wrap: balance;
+  font-size: clamp(1.85rem, 4.6vw, 3.6rem);
+  max-width: 18ch;
+}
+
+.klever-present[data-align="center"] .klever-present-title,
+.klever-present-title-hero,
+.klever-present-title-section {
+  max-width: 16ch;
+}
+
+.klever-present-title-hero {
+  font-size: clamp(2.4rem, 6.4vw, 5.2rem);
+  letter-spacing: -0.042em;
+}
+
+.klever-present-title-section {
+  font-size: clamp(2.1rem, 5.4vw, 4.4rem);
+}
+
+.klever-present-title-small {
+  font-size: clamp(1.2rem, 2.4vw, 1.85rem);
+  max-width: 28ch;
+}
+
+.klever-present-sub,
+.klever-present-copy {
+  font-family: var(--present-copy);
+  color: var(--present-mute);
+  line-height: 1.45;
+  text-wrap: pretty;
+  max-width: 42ch;
+  font-size: clamp(0.95rem, 1.7vw, 1.35rem);
+}
+
+.klever-present-quote {
+  font-family: var(--present-display);
+  font-size: clamp(1.7rem, 4vw, 3.1rem);
+  line-height: 1.18;
+  letter-spacing: -0.028em;
+  max-width: 18ch;
+  text-wrap: balance;
+}
+
+.klever-present-cite {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--present-faint);
+}
+
+.klever-present-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-width: 36ch;
+  font-family: var(--present-copy);
+  font-size: clamp(1rem, 1.8vw, 1.45rem);
+  line-height: 1.35;
+}
+
+.klever-present-list li {
+  padding-left: 1.1rem;
+  position: relative;
+}
+
+.klever-present-list li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.62em;
+  width: 0.45rem;
+  height: 1px;
+  background: var(--present-accent);
+}
+
+.klever-present-figure {
+  display: block;
+  width: min(100%, 52rem);
+  max-height: min(52vh, 28rem);
+  object-fit: contain;
+  border-radius: 0.4rem;
+}
+
+.klever-present-figure-empty {
+  min-height: 12rem;
+  background: color-mix(in srgb, var(--present-fg) 6%, transparent);
+}
+
+.klever-present-num {
+  position: absolute;
+  top: calc(var(--present-pad) * 0.45);
+  right: var(--present-pad);
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--present-faint);
+}
+
+.klever-present[data-align="center"] .klever-present-num {
+  right: auto;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.klever-present-foot {
+  margin-top: auto;
+  padding-top: 1.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--present-faint);
+}
+
+.klever-present-film {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0.75rem;
+  transition:
+    opacity 0.22s ease,
+    transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.klever-present-film[data-hidden="true"] {
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+}
+
+.klever-present-thumb {
+  width: 7.5rem;
+  min-height: 3.4rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--present-line);
+  background: var(--present-stage);
+  padding: 0.45rem 0.55rem;
+  text-align: left;
+}
+
+.klever-present-thumb:hover {
+  border-color: color-mix(in srgb, var(--present-fg) 28%, transparent);
+}
+
+.klever-present-thumb-on {
+  border-color: var(--present-fg);
+  box-shadow: inset 0 0 0 1px var(--present-fg);
+}
+
+.klever-present-progress {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 30;
+  height: 3px;
+  background: color-mix(in srgb, var(--present-fg) 10%, transparent);
+  pointer-events: none;
+}
+
+.klever-present-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--present-accent);
+  transition: width 0.18s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 html.electron-mac .klever-titlebar :is(

@@ -9,8 +9,31 @@ async function getMermaid() {
       mermaid.initialize({
         startOnLoad: false,
         securityLevel: "strict",
-        theme: "neutral",
+        theme: "base",
         fontFamily: "inherit",
+        themeVariables: document.documentElement.classList.contains("dark")
+          ? {
+              background: "#121413",
+              primaryColor: "#1a1c1a",
+              primaryTextColor: "#eceeea",
+              primaryBorderColor: "#2a2d2a",
+              lineColor: "#9aa09b",
+              secondaryColor: "#1a1c1a",
+              tertiaryColor: "#0c0d0c",
+              mainBkg: "#121413",
+              nodeBorder: "#2a2d2a",
+            }
+          : {
+              background: "#f4f5f2",
+              primaryColor: "#e9ebe6",
+              primaryTextColor: "#151716",
+              primaryBorderColor: "#d5d8d2",
+              lineColor: "#585c59",
+              secondaryColor: "#f4f5f2",
+              tertiaryColor: "#e3e5e0",
+              mainBkg: "#f4f5f2",
+              nodeBorder: "#d5d8d2",
+            },
       });
       return mermaid;
     });
@@ -49,7 +72,7 @@ export function MermaidBlock({ source }: { source: string }) {
 
   if (error) {
     return (
-      <div className="my-3 rounded-lg border border-rule bg-paper-2 p-3 font-mono text-[12px] text-mute">
+      <div className="my-3 rounded-lg border border-line bg-paper-2 p-3 font-mono text-[12px] text-mute">
         <div className="mb-1 text-[10px] uppercase tracking-wide">Mermaid error</div>
         <div>{error}</div>
         <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-ink/70">{source}</pre>
@@ -59,7 +82,7 @@ export function MermaidBlock({ source }: { source: string }) {
 
   if (!svg) {
     return (
-      <div className="my-3 rounded-lg border border-dashed border-rule px-3 py-6 text-center font-mono text-[11px] text-mute">
+      <div className="my-3 rounded-lg border border-dashed border-line px-3 py-6 text-center font-mono text-[11px] text-mute">
         Rendering diagram…
       </div>
     );
@@ -67,7 +90,7 @@ export function MermaidBlock({ source }: { source: string }) {
 
   return (
     <div
-      className="klever-mermaid my-3 flex justify-center overflow-x-auto rounded-lg border border-rule bg-paper p-4 [&_svg]:max-w-full"
+      className="klever-mermaid my-3 flex justify-center overflow-x-auto rounded-lg border border-line bg-paper p-4 [&_svg]:max-w-full"
       dangerouslySetInnerHTML={{ __html: svg }}
     />
   );

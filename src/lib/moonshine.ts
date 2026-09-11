@@ -49,7 +49,7 @@ export async function startMoonshineTranscription(
   }
   if (!moonshineReady()) {
     throw new Error(
-      "Moonshine needs a cross-origin isolated page (restart the Vite dev server so COOP/COEP headers apply).",
+      "Moonshine needs a cross-origin isolated page (restart the Vite dev server so COOP/COEP credentialless headers apply).",
     );
   }
 

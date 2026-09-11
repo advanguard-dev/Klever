@@ -1,3 +1,4 @@
+import { BoardTable } from "@/components/freeform/BoardTable";
 import { openNote } from "@/components/editor/WikiPeek";
 import {
   boardEmphasisClass,
@@ -8,7 +9,6 @@ import {
   polyToPointsAttr,
   resolveShapeTextColor,
   resolveStickyTextColor,
-  resizeTableCells,
   shapeOutline,
   stickyBgHex,
   strokeDashArray,
@@ -22,9 +22,10 @@ import { resolveAssetSrc } from "@/lib/assets";
 import { cn } from "@/lib/cn";
 import { plainSnippet } from "@/lib/parse";
 import { useApp } from "@/store";
+import type { FreeformPatch } from "@/lib/freeform-patch";
 import type { FreeformObject, FreeformShapeKind, FreeformStrokeDash } from "@/types";
-import { Database, ExternalLink, File, FileText, Minus, Plus, X } from "lucide-react";
-import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { Database, ExternalLink, File, FileText, X } from "lucide-react";
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 type Props = {
@@ -38,9 +39,10 @@ type Props = {
   onDragStart: (e: ReactPointerEvent, id: string) => void;
   onResizeStart?: (e: ReactPointerEvent, id: string, handle: ResizeHandle) => void;
   onRemove: (id: string) => void;
-  onPatch: (id: string, patch: Partial<FreeformObject>) => void;
+  onPatch: (id: string, patch: FreeformPatch) => void;
   onMindConnect?: (parentId: string) => void;
   onContextMenu?: (e: ReactMouseEvent, obj: FreeformObject) => void;
+  onTableRange?: (range: { r0: number; c0: number; r1: number; c1: number }) => void;
 };
 
 export function BoardObject({
@@ -56,9 +58,11 @@ export function BoardObject({
   onPatch,
   onMindConnect,
   onContextMenu,
+  onTableRange,
 }: Props) {
   const blobs = useApp((s) => s.blobs);
   const notes = useApp((s) => s.notes);
+  const ensureBlob = useApp((s) => s.ensureBlob);
 
   const shell = cn(
     "absolute overflow-visible select-none",
@@ -79,7 +83,7 @@ export function BoardObject({
     onContextMenu?.(e, obj);
   };
 
-  const chrome = selected && !editing && interactive && (
+  const chrome = selected && interactive && (obj.type === "table" || !editing) && (
     <>
       <button
         type="button"
@@ -181,7 +185,7 @@ export function BoardObject({
             style={textStyle}
             rows={Math.max(2, obj.text.split("\n").length)}
             value={obj.text}
-            onChange={(e) => onPatch(obj.id, { text: e.target.value } as Partial<FreeformObject>)}
+            onChange={(e) => onPatch(obj.id, { text: e.target.value })}
             onBlur={() => onEdit(null)}
             onPointerDown={(e) => e.stopPropagation()}
             onKeyDown={(e) => {
@@ -259,7 +263,7 @@ export function BoardObject({
             )}
             style={textStyle}
             value={obj.text}
-            onChange={(e) => onPatch(obj.id, { text: e.target.value } as Partial<FreeformObject>)}
+            onChange={(e) => onPatch(obj.id, { text: e.target.value })}
             onBlur={() => onEdit(null)}
             onPointerDown={(e) => e.stopPropagation()}
             onKeyDown={(e) => {
@@ -284,20 +288,16 @@ export function BoardObject({
   }
 
   if (obj.type === "image") {
-    const src = resolveAssetSrc(obj.src, blobs);
     return (
-      <div
-        className={cn(shell, "rounded-xl border border-line bg-paper-2")}
-        style={{ left: obj.x, top: obj.y, width: obj.w, height: obj.h, zIndex: obj.z }}
-        data-board-object=""
-        onPointerDown={handlePointerDown}
-        onContextMenu={handleContextMenu}
-      >
-        {chrome}
-        <div className="h-full w-full overflow-hidden rounded-xl">
-          <img src={src} alt={obj.alt} className="h-full w-full object-cover" draggable={false} />
-        </div>
-      </div>
+      <BoardImage
+        obj={obj}
+        src={resolveAssetSrc(obj.src, blobs)}
+        ensureBlob={ensureBlob}
+        shell={shell}
+        chrome={chrome}
+        handlePointerDown={handlePointerDown}
+        handleContextMenu={handleContextMenu}
+      />
     );
   }
 
@@ -329,7 +329,7 @@ export function BoardObject({
                 } catch {
                   /* keep */
                 }
-                onPatch(obj.id, { url, title } as Partial<FreeformObject>);
+                onPatch(obj.id, { url, title });
               }}
               onBlur={() => onEdit(null)}
               onKeyDown={(e) => {
@@ -361,93 +361,20 @@ export function BoardObject({
   }
 
   if (obj.type === "table") {
-    const cols = Math.max(1, obj.cols);
-    const rows = Math.max(1, obj.rows);
-    const cells = resizeTableCells(obj.cells, cols, rows);
-    const setGrid = (nextCols: number, nextRows: number) => {
-      onPatch(obj.id, {
-        cols: nextCols,
-        rows: nextRows,
-        cells: resizeTableCells(obj.cells, nextCols, nextRows),
-      } as Partial<FreeformObject>);
-    };
-
     return (
-      <div
-        className={cn(shell, "rounded-xl border border-line bg-paper")}
-        style={{ left: obj.x, top: obj.y, width: obj.w, height: obj.h, zIndex: obj.z }}
-        data-board-object=""
+      <BoardTable
+        obj={obj}
+        selected={selected}
+        editing={editing}
+        interactive={interactive}
+        shell={shell}
+        chrome={chrome}
         onPointerDown={handlePointerDown}
         onContextMenu={handleContextMenu}
-        onDoubleClick={(e) => {
-          e.stopPropagation();
-          onEdit(obj.id);
-        }}
-      >
-        {chrome}
-        {selected && interactive && (
-          <TableChrome
-            cols={cols}
-            rows={rows}
-            headerRow={!!obj.headerRow}
-            onCols={(n) => setGrid(n, rows)}
-            onRows={(n) => setGrid(cols, n)}
-            onHeader={() =>
-              onPatch(obj.id, { headerRow: !obj.headerRow } as Partial<FreeformObject>)
-            }
-          />
-        )}
-        <div
-          className="grid h-full w-full overflow-hidden rounded-xl"
-          style={{
-            gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
-            gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
-          }}
-        >
-          {cells.map((row, ri) =>
-            row.map((cell, ci) => (
-              <div
-                key={`${ri}-${ci}`}
-                className={cn(
-                  "flex min-h-0 min-w-0 border-line",
-                  ci < cols - 1 && "border-r",
-                  ri < rows - 1 && "border-b",
-                  obj.headerRow && ri === 0 && "bg-paper-2",
-                )}
-              >
-                {editing ? (
-                  <input
-                    className={cn(
-                      "h-full w-full min-w-0 bg-transparent px-2 py-1 font-mono text-[11px] text-ink outline-none",
-                      obj.headerRow && ri === 0 && "font-semibold",
-                    )}
-                    value={cell}
-                    onChange={(e) => {
-                      const next = obj.cells.map((r) => [...r]);
-                      if (!next[ri]) next[ri] = Array.from({ length: cols }, () => "");
-                      next[ri][ci] = e.target.value;
-                      onPatch(obj.id, { cells: next } as Partial<FreeformObject>);
-                    }}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") onEdit(null);
-                    }}
-                  />
-                ) : (
-                  <span
-                    className={cn(
-                      "flex h-full w-full items-center overflow-hidden px-2 py-1 font-mono text-[11px] text-ink",
-                      obj.headerRow && ri === 0 && "font-semibold",
-                    )}
-                  >
-                    {cell || <span className="text-faint">·</span>}
-                  </span>
-                )}
-              </div>
-            )),
-          )}
-        </div>
-      </div>
+        onEdit={onEdit}
+        onPatch={onPatch}
+        onRangeChange={onTableRange}
+      />
     );
   }
 
@@ -525,7 +452,7 @@ export function BoardObject({
             style={textStyle}
             rows={lines}
             value={obj.text}
-            onChange={(e) => onPatch(obj.id, { text: e.target.value } as Partial<FreeformObject>)}
+            onChange={(e) => onPatch(obj.id, { text: e.target.value })}
             onBlur={() => onEdit(null)}
             onPointerDown={(e) => e.stopPropagation()}
             onKeyDown={(e) => {
@@ -573,7 +500,7 @@ export function BoardObject({
           e.preventDefault();
           e.stopPropagation();
           if (obj.showLabel === false) {
-            onPatch(obj.id, { showLabel: true } as Partial<FreeformObject>);
+            onPatch(obj.id, { showLabel: true });
           }
           onEdit(obj.id);
         }}
@@ -617,7 +544,7 @@ export function BoardObject({
               rows={Math.max(1, (obj.text || "Label").split("\n").length)}
               value={obj.text}
               placeholder="Label"
-              onChange={(e) => onPatch(obj.id, { text: e.target.value } as Partial<FreeformObject>)}
+              onChange={(e) => onPatch(obj.id, { text: e.target.value })}
               onBlur={() => onEdit(null)}
               onPointerDown={(e) => e.stopPropagation()}
               onKeyDown={(e) => {
@@ -746,83 +673,6 @@ export function ShapeGraphic({
   return <polygon points={polyToPointsAttr(geom.points)} {...hit} />;
 }
 
-function TableChrome({
-  cols,
-  rows,
-  headerRow,
-  onCols,
-  onRows,
-  onHeader,
-}: {
-  cols: number;
-  rows: number;
-  headerRow: boolean;
-  onCols: (n: number) => void;
-  onRows: (n: number) => void;
-  onHeader: () => void;
-}) {
-  const stop = (e: ReactPointerEvent) => e.stopPropagation();
-  const btn =
-    "flex h-6 w-6 items-center justify-center rounded-full text-mute hover:bg-paper-2 hover:text-ink";
-
-  return (
-    <>
-      <div
-        className="absolute left-1/2 z-30 flex items-center gap-1 rounded-full border border-line bg-paper px-1 py-0.5 shadow-sm"
-        style={{
-          top: -38,
-          transform: "translateX(-50%) scale(var(--board-ui-scale))",
-          transformOrigin: "center bottom",
-        }}
-        title="Columns"
-        onPointerDown={stop}
-        onDoubleClick={(e) => e.stopPropagation()}
-      >
-        <span className="pl-1.5 font-mono text-[9px] uppercase tracking-wide text-faint">Cols</span>
-        <button type="button" aria-label="Fewer columns" className={btn} onClick={() => onCols(Math.max(1, cols - 1))}>
-          <Minus size={12} strokeWidth={1.5} />
-        </button>
-        <span className="min-w-4 text-center font-mono text-[11px] tabular-nums text-mute">{cols}</span>
-        <button type="button" aria-label="More columns" className={btn} onClick={() => onCols(Math.min(12, cols + 1))}>
-          <Plus size={12} strokeWidth={1.5} />
-        </button>
-        <span className="h-3.5 w-px bg-line" aria-hidden />
-        <button
-          type="button"
-          aria-pressed={headerRow}
-          aria-label={headerRow ? "Header row on" : "Header row off"}
-          className={cn(
-            "rounded-full px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide",
-            headerRow ? "bg-paper-2 text-ink" : "text-mute hover:text-ink",
-          )}
-          onClick={onHeader}
-        >
-          Header
-        </button>
-      </div>
-      <div
-        className="absolute top-1/2 z-30 flex flex-col items-center gap-0.5 rounded-full border border-line bg-paper px-0.5 py-1 shadow-sm"
-        style={{
-          right: -38,
-          transform: "translateY(-50%) scale(var(--board-ui-scale))",
-          transformOrigin: "left center",
-        }}
-        title="Rows"
-        onPointerDown={stop}
-        onDoubleClick={(e) => e.stopPropagation()}
-      >
-        <button type="button" aria-label="Fewer rows" className={btn} onClick={() => onRows(Math.max(1, rows - 1))}>
-          <Minus size={12} strokeWidth={1.5} />
-        </button>
-        <span className="min-h-4 text-center font-mono text-[11px] tabular-nums text-mute">{rows}</span>
-        <button type="button" aria-label="More rows" className={btn} onClick={() => onRows(Math.min(20, rows + 1))}>
-          <Plus size={12} strokeWidth={1.5} />
-        </button>
-      </div>
-    </>
-  );
-}
-
 function ResizeHandles({
   onPointerDown,
 }: {
@@ -940,6 +790,62 @@ function MentionChip({
           </Panel>,
           document.body,
         )}
+    </div>
+  );
+}
+
+function BoardImage({
+  obj,
+  src,
+  ensureBlob,
+  shell,
+  chrome,
+  handlePointerDown,
+  handleContextMenu,
+}: {
+  obj: Extract<FreeformObject, { type: "image" }>;
+  src: string;
+  ensureBlob: (path: string) => Promise<void>;
+  shell: string;
+  chrome: ReactNode;
+  handlePointerDown: (e: ReactPointerEvent) => void;
+  handleContextMenu: (e: ReactMouseEvent) => void;
+}) {
+  const [broken, setBroken] = useState(false);
+
+  useEffect(() => {
+    setBroken(false);
+  }, [src, obj.src]);
+
+  useEffect(() => {
+    if (src || !obj.src) return;
+    void ensureBlob(obj.src.replace(/^\.\//, ""));
+  }, [src, obj.src, ensureBlob]);
+
+  return (
+    <div
+      className={cn(shell, "rounded-xl border border-line bg-paper-2")}
+      style={{ left: obj.x, top: obj.y, width: obj.w, height: obj.h, zIndex: obj.z }}
+      data-board-object=""
+      onPointerDown={handlePointerDown}
+      onContextMenu={handleContextMenu}
+    >
+      {chrome}
+      <div className="flex h-full w-full items-center justify-center overflow-hidden rounded-xl">
+        {src && !broken ? (
+          <img
+            src={src}
+            alt={obj.alt}
+            className="h-full w-full object-cover"
+            draggable={false}
+            onError={() => setBroken(true)}
+          />
+        ) : (
+          <span className="px-3 text-center font-mono text-[10px] text-mute">
+            {broken ? obj.alt || "Image could not be displayed" : "Loading image…"}
+          </span>
+        )}
+      </div>
     </div>
   );
 }

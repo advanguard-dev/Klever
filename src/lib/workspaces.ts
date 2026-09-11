@@ -47,7 +47,8 @@ export function normalizeWorkspaceTools(tools?: Partial<WorkspaceTools> | null):
 }
 
 export function normalizeAiMode(mode?: string | null): WorkspaceAiMode {
-  return mode === "local" ? "local" : "remote";
+  if (mode === "remote") return "remote";
+  return "local";
 }
 
 export function createWorkspaceDraft(opts?: {
