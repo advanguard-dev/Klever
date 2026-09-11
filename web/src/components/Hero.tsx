@@ -1,4 +1,3 @@
-import Magnet from "@/bits/Magnet";
 import { GraphLattice } from "@/components/GraphLattice";
 import { GhostLink, Kbd, MonoLabel, SolidLink } from "@/components/ui";
 import { copy, DOWNLOAD_HREF, GITHUB_HREF, shortcuts } from "@/content";
@@ -14,11 +13,9 @@ export function Hero() {
           </h1>
           <p className="mt-6 max-w-md text-base leading-7 text-mute">{copy.deck}</p>
           <div className="mt-8 flex flex-wrap items-center gap-2">
-            <Magnet padding={28} magnetStrength={8}>
-              <SolidLink href={DOWNLOAD_HREF} rel="noopener noreferrer" target="_blank">
-                {copy.download}
-              </SolidLink>
-            </Magnet>
+            <SolidLink href={DOWNLOAD_HREF} rel="noopener noreferrer" target="_blank">
+              {copy.download}
+            </SolidLink>
             <GhostLink href={GITHUB_HREF} rel="noopener noreferrer" target="_blank">
               {copy.github}
             </GhostLink>

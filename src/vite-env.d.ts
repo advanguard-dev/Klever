@@ -51,6 +51,10 @@ interface KleverDesktopApi {
   openFile: (relativePath: string) => Promise<{ ok: boolean; error?: string }>;
   revealAbsolute: (absPath: string) => Promise<{ ok: boolean; error?: string }>;
   openAbsolute: (absPath: string) => Promise<{ ok: boolean; error?: string }>;
+  /** Read a disk file for in-app preview (blob URL). Does not copy into the vault. */
+  readAbsolute: (
+    absPath: string,
+  ) => Promise<{ ok: boolean; mime?: string; dataBase64?: string; error?: string }>;
   revealBytes: (name: string, dataBase64: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
   openBytes: (name: string, dataBase64: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
   touchAvailable: () => Promise<boolean>;
@@ -58,13 +62,34 @@ interface KleverDesktopApi {
   touchUnlock: (cipherB64: string, reason: string) => Promise<string>;
   startDictation: () => Promise<{ ok: boolean; error?: string }>;
   stopDictation: () => Promise<{ ok: boolean; error?: string }>;
+  askMicrophone: () => Promise<boolean>;
   fetchText: (url: string) => Promise<{ ok: boolean; text: string; status?: number; error?: string }>;
+  /** Whether DEEPSEEK_API_KEY is present in the desktop process (never returns the key). */
+  aiStatus: () => Promise<{ configured: boolean; endpoint: string; defaultModel: string }>;
+  aiChat: (payload: {
+    system?: string;
+    user: string;
+    model?: string;
+    temperature?: number;
+    requestId?: string;
+  }) => Promise<{
+    ok: boolean;
+    content?: string;
+    model?: string;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null;
+    endpoint?: string;
+    status?: number;
+    aborted?: boolean;
+    error?: string;
+  }>;
+  aiCancel: (requestId: string) => Promise<{ ok: boolean }>;
   gitStatus: () => Promise<KleverGitStatus>;
   configureLocalApi: (opts: {
     enabled: boolean;
     port: number;
     token: string;
   }) => Promise<{ ok: boolean; enabled: boolean; port: number; token: string }>;
+  onEditCommand?: (handler: (action: "undo" | "redo") => void) => () => void;
 }
 
 interface Window {
@@ -79,4 +104,12 @@ interface NavigatorUAData {
 
 interface Navigator {
   userAgentData?: NavigatorUAData;
+}
+
+declare module "turndown-plugin-gfm" {
+  import type TurndownService from "turndown";
+  export function gfm(service: TurndownService): void;
+  export function tables(service: TurndownService): void;
+  export function strikethrough(service: TurndownService): void;
+  export function taskListItems(service: TurndownService): void;
 }

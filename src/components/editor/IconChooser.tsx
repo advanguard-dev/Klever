@@ -10,8 +10,8 @@ import {
 } from "@/lib/page-icons";
 import type { LucideIcon } from "lucide-react";
 import { Search } from "lucide-react";
-import dynamicIconImports from "lucide-react/dynamicIconImports";
 import { useMemo, useState } from "react";
+import { LUCIDE_ICON_NAMES } from "@/lib/lucide-icon-names";
 
 const EMOJI_MARKS = ["✦", "◇", "○", "★", "✎", "▣", "▤", "📌", "💡", "🔥", "🌱", "📚"];
 
@@ -217,7 +217,5 @@ function extraLucideNames(query: string, curatedHits: string[]): string[] {
   const q = toKebab(query);
   if (q.length < 2) return [];
   const have = new Set(curatedHits);
-  return Object.keys(dynamicIconImports)
-    .filter((n) => !have.has(n) && n.includes(q))
-    .slice(0, 24);
+  return LUCIDE_ICON_NAMES.filter((n) => !have.has(n) && n.includes(q)).slice(0, 24);
 }

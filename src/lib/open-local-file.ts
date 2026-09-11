@@ -1,6 +1,13 @@
-import { resolveAssetSrc } from "@/lib/assets";
+import { displayMime, isImageAsset, resolveAssetSrc } from "@/lib/assets";
 import { isMacOS } from "@/lib/electron";
 import type { BlobRecord } from "@/types";
+
+function base64ToArrayBuffer(b64: string): ArrayBuffer {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
 
 export type OpenLocalFileMode = "reveal" | "open";
 
@@ -96,13 +103,48 @@ export function blobsFromDesktopPayload(
 /** Register an external file reference without copying bytes into the vault. */
 export function externalFileBlob(
   file: File,
-  opts?: { localPath?: string; handle?: FileSystemFileHandle },
+  opts?: { localPath?: string; handle?: FileSystemFileHandle; data?: ArrayBuffer },
 ): BlobRecord {
   return {
-    mime: file.type || "application/octet-stream",
-    data: new ArrayBuffer(0),
+    mime: displayMime(file.name, file.type),
+    data: opts?.data ?? new ArrayBuffer(0),
     external: true,
     ...(opts?.localPath ? { localPath: opts.localPath } : {}),
     ...(opts?.handle ? { handle: opts.handle } : {}),
   };
+}
+
+/** Read a disk path for in-app preview (Electron). */
+export async function readAbsoluteFile(localPath: string): Promise<{ mime: string; data: ArrayBuffer } | null> {
+  const desktop = window.kleverDesktop;
+  if (!desktop?.readAbsolute || !localPath) return null;
+  try {
+    const res = await desktop.readAbsolute(localPath);
+    if (!res?.ok || !res.dataBase64) return null;
+    return { mime: res.mime || displayMime(localPath), data: base64ToArrayBuffer(res.dataBase64) };
+  } catch {
+    return null;
+  }
+}
+
+/** Bytes for rendering an image — from the File, or from disk when the picker gave an empty File. */
+export async function imageBytesForDisplay(opts: {
+  path: string;
+  mime?: string;
+  file?: File;
+  localPath?: string;
+}): Promise<{ mime: string; data: ArrayBuffer } | null> {
+  if (!isImageAsset(opts.path, opts.mime, opts.file?.name)) return null;
+  if (opts.file && opts.file.size > 0) {
+    return {
+      mime: displayMime(opts.path, opts.file.type || opts.mime),
+      data: await opts.file.arrayBuffer(),
+    };
+  }
+  if (opts.localPath) {
+    const loaded = await readAbsoluteFile(opts.localPath);
+    if (!loaded) return null;
+    return { mime: displayMime(opts.path, loaded.mime || opts.mime), data: loaded.data };
+  }
+  return null;
 }

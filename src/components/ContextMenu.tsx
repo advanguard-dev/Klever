@@ -49,6 +49,7 @@ function flatten(items: ContextMenuItem[]): ContextMenuItem[] {
   const out: ContextMenuItem[] = [];
   for (const item of items) {
     if (isSep(item)) {
+      if (item.hidden) continue;
       if (out.length && !isSep(out[out.length - 1]!)) out.push(item);
       continue;
     }
@@ -142,6 +143,7 @@ export function ContextMenuHost({ children }: { children: ReactNode }) {
           title={confirm.title}
           description={confirm.description}
           confirmLabel={confirm.confirmLabel ?? "Confirm"}
+          danger
           onConfirm={() => {
             confirm.onConfirm();
             setConfirm(null);

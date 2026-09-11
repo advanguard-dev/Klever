@@ -1,4 +1,4 @@
-import { assetKindFromPath } from "@/lib/assets";
+import { assetKindFromPath, isImageAsset } from "@/lib/assets";
 import {
   defaultFileDisplay,
   fileNameFromPath,
@@ -15,12 +15,17 @@ import { wordFontSyntaxToHtml } from "@/lib/word-font";
 import { mathSyntaxToHtml } from "@/lib/math-render";
 import { marked } from "marked";
 import TurndownService from "turndown";
+import { tables } from "turndown-plugin-gfm";
 
 marked.setOptions({ gfm: true, breaks: false });
 
 function vaultFileHtml(src: string, name: string, kind: ReturnType<typeof assetKindFromPath>, display: FileDisplay) {
   // Non-empty content so TipTap/DOMParser keeps the atom node; unwrap from <p> in mdToHtml.
   return `<div data-vault-file data-src="${escapeAttr(src)}" data-name="${escapeAttr(name)}" data-kind="${kind}" data-display="${display}">&#8203;</div>`;
+}
+
+function imageHtml(src: string, alt: string) {
+  return `<img src="${escapeAttr(src)}" alt="${escapeAttr(alt)}">`;
 }
 
 marked.use({
@@ -34,14 +39,22 @@ marked.use({
       const label = stripTags(args.text ?? "");
       const kind = assetKindFromPath(href, label);
       const display = parseFileDisplay(args.title) ?? defaultFileDisplay(kind);
+      if (kind === "image" && display !== "link") {
+        return imageHtml(href, label);
+      }
       return vaultFileHtml(href, fileNameFromPath(href, label), kind, display);
     },
     image(args) {
       const href = args.href ?? "";
-      if (!isLocalAssetHref(href)) return false;
+      if (/^(https?:|data:|blob:)/i.test(href)) return false;
+      if (!isLocalAssetHref(href) && !isAttachedFileHref(href)) return false;
       const name = args.text || fileNameFromPath(href);
-      const display = parseFileDisplay(args.title) ?? defaultFileDisplay("image");
-      return vaultFileHtml(href, name, "image", display);
+      const display = parseFileDisplay(args.title);
+      if (isImageAsset(href, undefined, name) && display !== "link") {
+        return imageHtml(href, name);
+      }
+      const kind = assetKindFromPath(href, name);
+      return vaultFileHtml(href, name, kind, display ?? defaultFileDisplay(kind));
     },
   },
 });
@@ -60,6 +73,7 @@ const td = new TurndownService({
   bulletListMarker: "-",
   emDelimiter: "*",
 });
+td.use(tables);
 
 td.addRule("taskItem", {
   filter: (node) => {
@@ -114,24 +128,6 @@ td.addRule("wikiLink", {
       display: el.getAttribute("data-display"),
       embed: el.getAttribute("data-embed") === "true",
     });
-  },
-});
-
-td.addRule("table", {
-  filter: "table",
-  replacement: (_content, node) => {
-    const table = node as HTMLTableElement;
-    const rows = [...table.querySelectorAll("tr")];
-    if (!rows.length) return "";
-    const cells = (row: Element) =>
-      [...row.querySelectorAll("th,td")].map((c) => c.textContent?.trim().replace(/\|/g, "\\|") ?? "");
-    const header = cells(rows[0]);
-    const lines = [
-      `| ${header.join(" | ")} |`,
-      `| ${header.map(() => "---").join(" | ")} |`,
-      ...rows.slice(1).map((r) => `| ${cells(r).join(" | ")} |`),
-    ];
-    return `\n${lines.join("\n")}\n\n`;
   },
 });
 
@@ -212,7 +208,8 @@ export function mdToHtml(md: string) {
   return raw
     .replace(/<p>\s*(<div\b[^>]*\bdata-vault-file\b[\s\S]*?<\/div>)\s*<\/p>/gi, "$1")
     .replace(/<p>\s*(<div\b[^>]*\bdata-url-embed\b[\s\S]*?<\/div>)\s*<\/p>/gi, "$1")
-    .replace(/<p>\s*(<div\b[^>]*\bklever-math-block\b[\s\S]*?<\/div>)\s*<\/p>/gi, "$1");
+    .replace(/<p>\s*(<div\b[^>]*\bklever-math-block\b[\s\S]*?<\/div>)\s*<\/p>/gi, "$1")
+    .replace(/<p>\s*(<img\b[^>]*>)\s*<\/p>/gi, "$1");
 }
 
 export function htmlToMd(html: string) {

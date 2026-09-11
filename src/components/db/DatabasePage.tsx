@@ -2,7 +2,7 @@ import { IconChooser } from "@/components/editor/IconChooser";
 import { PropInput } from "@/components/editor/PropInput";
 import { PropertyManager } from "@/components/db/PropertyManager";
 import { RecordCard } from "@/components/db/RecordCard";
-import { Chip, ConfirmDialog, EmptyState, Field, GhostButton, IconButton, MonoLabel, Panel, Select, SolidButton, TextButton } from "@/components/ui";
+import { AnchoredMenu, Chip, ConfirmDialog, EmptyState, Field, GhostButton, IconButton, MonoLabel, Panel, Select, SolidButton, TextButton } from "@/components/ui";
 import { contextMenuFromKey, useContextMenu } from "@/components/ContextMenu";
 import { noteMenuItems } from "@/lib/context-menus";
 import { cn } from "@/lib/cn";
@@ -48,23 +48,6 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
     if (draftTitle === note.title) return;
     setDraftTitle(note.title);
   }, [note.title, note.id, draftTitle]);
-
-  useEffect(() => {
-    if (!addViewOpen) return;
-    const onPointer = (e: PointerEvent) => {
-      if (addViewRef.current?.contains(e.target as Node)) return;
-      setAddViewOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setAddViewOpen(false);
-    };
-    document.addEventListener("pointerdown", onPointer);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onPointer);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [addViewOpen]);
 
   const addView = (type: DbViewType) => {
     const view = newView(type);
@@ -128,7 +111,7 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
                 (e.target as HTMLInputElement).blur();
               }
             }}
-            className="klever-focus mt-2 block rounded-md bg-transparent font-serif text-3xl font-semibold tracking-tight md:text-4xl"
+            className="klever-focus klever-page-title mt-2 block w-full rounded-md bg-transparent font-serif"
             placeholder="Untitled"
             aria-label="Database title"
           />
@@ -234,7 +217,7 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
               </button>
             )}
             {v.id === active.id && (
-              <span className="ml-0.5 hidden items-center group-hover/tab:flex group-focus-within/tab:flex">
+              <span className="klever-reveal ml-0.5 inline-flex items-center">
                 <IconButton aria-label="Move tab left" onClick={() => moveTab(v.id, -1)}>
                   <ChevronLeft size={13} strokeWidth={1.4} />
                 </IconButton>
@@ -254,12 +237,11 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
           >
             <Plus size={14} strokeWidth={1.4} />
           </IconButton>
-          {addViewOpen && (
-            <div
-              role="menu"
-              aria-label="Add view"
-              className="absolute left-0 top-full z-30 mt-1 min-w-[9.5rem] rounded-md border border-line bg-paper py-1 shadow-md"
-            >
+          <AnchoredMenu
+            open={addViewOpen}
+            onClose={() => setAddViewOpen(false)}
+            anchorRef={addViewRef}
+          >
               {DB_VIEW_TYPES.map((t) => (
                 <button
                   key={t}
@@ -272,8 +254,7 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
                   {t}
                 </button>
               ))}
-            </div>
-          )}
+          </AnchoredMenu>
         </div>
         <GhostButton
           className="ml-2 h-8 px-3 py-0 text-sm"
@@ -348,6 +329,7 @@ export function DatabasePage({ note, viewId }: { note: Note; viewId?: string }) 
           title="Delete this view?"
           description={`“${active.name}” is removed. Rows stay in the database.`}
           confirmLabel="Delete view"
+          danger
           onConfirm={() => {
             const next = views.filter((v) => v.id !== active.id);
             if (!next.length) {
@@ -587,6 +569,18 @@ function FilterEditor({
   );
 }
 
+const FILTER_OP_LABEL: Record<FilterOp, string> = {
+  eq: "is",
+  neq: "is not",
+  contains: "contains",
+  empty: "is empty",
+  not_empty: "is not empty",
+  gt: "greater than",
+  lt: "less than",
+  gte: "at least",
+  lte: "at most",
+};
+
 function FilterNodeEditor({
   node,
   depth,
@@ -624,7 +618,7 @@ function FilterNodeEditor({
         >
           {ops.map((o) => (
             <option key={o} value={o}>
-              {o.replace("_", " ")}
+              {FILTER_OP_LABEL[o]}
             </option>
           ))}
         </Select>
@@ -648,7 +642,7 @@ function FilterNodeEditor({
     <div
       className={cn(
         "space-y-2",
-        depth > 0 && "rounded-lg border border-rule bg-paper-2/50 p-2",
+        depth > 0 && "rounded-lg border border-line bg-paper-2/50 p-2",
       )}
     >
       {depth > 0 && (
@@ -992,8 +986,8 @@ function CalendarView({ rows, dateProp }: { rows: Note[]; dateProp: string }) {
   const setView = useApp((s) => s.setView);
   const { open } = useContextMenu();
   const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth();
+  const [cursor, setCursor] = useState({ year: now.getFullYear(), month: now.getMonth() });
+  const { year, month } = cursor;
   const first = new Date(year, month, 1);
   const start = (first.getDay() + 6) % 7;
   const days = new Date(year, month + 1, 0).getDate();
@@ -1006,9 +1000,38 @@ function CalendarView({ rows, dateProp }: { rows: Note[]; dateProp: string }) {
 
   return (
     <div>
-      <MonoLabel>
-        {now.toLocaleString(undefined, { month: "long", year: "numeric" })}
-      </MonoLabel>
+      <div className="flex flex-wrap items-center gap-1">
+        <IconButton
+          aria-label="Previous month"
+          onClick={() =>
+            setCursor((c) => {
+              const d = new Date(c.year, c.month - 1, 1);
+              return { year: d.getFullYear(), month: d.getMonth() };
+            })
+          }
+        >
+          <ChevronLeft size={14} strokeWidth={1.4} />
+        </IconButton>
+        <MonoLabel className="min-w-[9rem] text-center">
+          {first.toLocaleString(undefined, { month: "long", year: "numeric" })}
+        </MonoLabel>
+        <IconButton
+          aria-label="Next month"
+          onClick={() =>
+            setCursor((c) => {
+              const d = new Date(c.year, c.month + 1, 1);
+              return { year: d.getFullYear(), month: d.getMonth() };
+            })
+          }
+        >
+          <ChevronRight size={14} strokeWidth={1.4} />
+        </IconButton>
+        <TextButton
+          onClick={() => setCursor({ year: now.getFullYear(), month: now.getMonth() })}
+        >
+          Today
+        </TextButton>
+      </div>
       <div className="mt-4 grid grid-cols-7 gap-px bg-line">
         {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
           <div key={d} className="bg-paper px-2 py-2 font-mono text-[10px] text-mute">

@@ -26,7 +26,7 @@ export function ImageBlock({
   onCaption?: (caption: string) => void;
   /** Point markdown at a derived crop so the original file stays untouched. */
   onReplaceSrc?: (next: string) => void;
-  /** Hide crop / resize chrome (Read mode). */
+  /** Hide crop / resize chrome. */
   readOnly?: boolean;
 }) {
   const blobs = useApp((s) => s.blobs);
@@ -37,8 +37,13 @@ export function ImageBlock({
   const [zoom, setZoom] = useState(false);
   const [crop, setCrop] = useState(false);
   const [fit, setFit] = useState<"contain" | "actual">("contain");
+  const [broken, setBroken] = useState(false);
   const dragging = useRef<{ startX: number; startW: number } | null>(null);
   const editable = !readOnly;
+
+  useEffect(() => {
+    setBroken(false);
+  }, [src, url]);
 
   useEffect(() => {
     if (!src || hasData) return;
@@ -64,8 +69,20 @@ export function ImageBlock({
   return (
     <>
       <figure className="relative my-6" style={{ maxWidth: w }}>
-        <button type="button" className="block w-full" onClick={() => setZoom(true)}>
-          <img src={url} alt={caption} className="block w-full" style={{ maxWidth: w }} />
+        <button type="button" className="block w-full" onClick={() => url && !broken && setZoom(true)}>
+          {url && !broken ? (
+            <img
+              src={url}
+              alt={caption}
+              className="block w-full"
+              style={{ maxWidth: w }}
+              onError={() => setBroken(true)}
+            />
+          ) : (
+            <span className="flex min-h-24 items-center justify-center rounded-lg border border-dashed border-line bg-paper-2 px-3 py-6 font-mono text-[11px] text-mute">
+              {broken ? caption || "Image could not be displayed" : "Loading image…"}
+            </span>
+          )}
         </button>
         {caption && (
           <figcaption className="mt-2 font-mono text-[11px] text-mute">
@@ -111,12 +128,14 @@ export function ImageBlock({
               </div>
             </div>
             <div className="max-h-[70vh] overflow-auto">
-              <img
-                src={url}
-                alt={caption}
-                className={fit === "contain" ? "max-h-[70vh] w-full object-contain" : "max-w-none"}
-                draggable={false}
-              />
+              {url && !broken ? (
+                <img
+                  src={url}
+                  alt={caption}
+                  className={fit === "contain" ? "max-h-[70vh] w-full object-contain" : "max-w-none"}
+                  draggable={false}
+                />
+              ) : null}
             </div>
           </Panel>
         </Overlay>

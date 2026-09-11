@@ -27,6 +27,7 @@ import { useEffect, useRef, useState } from "react";
 
 export function MeetingNotesBlock({ note, readOnly }: { note: Note; readOnly?: boolean }) {
   const ai = useApp((s) => s.ai);
+  const aiConfigured = useApp((s) => s.aiConfigured);
   const notes = useApp((s) => s.notes);
   const setError = useApp((s) => s.setError);
   const workspaces = useApp((s) => s.workspaces);
@@ -147,8 +148,8 @@ export function MeetingNotesBlock({ note, readOnly }: { note: Note; readOnly?: b
       const result = useLocal
         ? heuristicMeetingNotes(text, meta)
         : await (async () => {
-            if (!ai.apiKey.trim()) {
-              throw new Error("Add a Gemini API key in Settings to summarize this meeting.");
+            if (!aiConfigured) {
+              throw new Error("Configure DEEPSEEK_API_KEY in the desktop app to summarize this meeting.");
             }
             return summarizeMeeting(ai, text, meta);
           })();

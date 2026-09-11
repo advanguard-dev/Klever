@@ -22,7 +22,7 @@ export const copy = {
 
 export const shortcuts = [
   { keys: "⌘K", label: "search" },
-  { keys: "⌘E", label: "block / source / read" },
+  { keys: "⌘E", label: "block / present" },
   { keys: "⌘⇧T", label: "today’s note" },
   { keys: "⌘⇧D", label: "brain dump" },
   { keys: "⌘⇧G", label: "graph" },

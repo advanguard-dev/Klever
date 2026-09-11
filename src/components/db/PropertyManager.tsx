@@ -1,4 +1,4 @@
-import { ConfirmDialog, GhostButton, IconButton, MonoLabel, Panel, Select, SolidButton, TextButton } from "@/components/ui";
+import { AnchoredMenu, ConfirmDialog, GhostButton, IconButton, MonoLabel, Panel, Select, SolidButton, TextButton } from "@/components/ui";
 import { cn } from "@/lib/cn";
 import { ChromeIcon, PROP_ICONS, accentIconClass } from "@/lib/chrome-icons";
 import { LOCALES, t as tx, propTypeMessageKey, type Locale, type MessageKey } from "@/lib/i18n";
@@ -244,38 +244,16 @@ export function PropTypeMenu({
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const onPointer = (e: PointerEvent) => {
-      if (ref.current?.contains(e.target as Node)) return;
-      setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      e.stopPropagation();
-      setOpen(false);
-    };
-    document.addEventListener("pointerdown", onPointer);
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("pointerdown", onPointer);
-      document.removeEventListener("keydown", onKey, true);
-    };
-  }, [open]);
-
   return (
     <div ref={ref} className="relative">
       {children({ open, toggle: () => setOpen((o) => !o) })}
-      {open && (
-        <div
-          role="menu"
-          aria-label={t("prop.typeMenu")}
-          className={cn(
-            "absolute z-30 mt-1 max-h-[min(24rem,70vh)] min-w-[12.5rem] overflow-y-auto rounded-md border border-line bg-paper py-1 shadow-md",
-            align === "right" ? "right-0" : "left-0",
-          )}
-        >
+      <AnchoredMenu
+        open={open}
+        onClose={() => setOpen(false)}
+        anchorRef={ref}
+        align={align === "right" ? "end" : "start"}
+        className="max-h-[min(24rem,70vh)] overflow-y-auto"
+      >
           {PROP_TYPE_GROUP_DEFS.map((g) => (
             <div key={g.key}>
               <p className="px-3 pt-1.5 pb-0.5 font-mono text-[10px] uppercase tracking-wide text-faint">
@@ -303,8 +281,7 @@ export function PropTypeMenu({
                 ))}
             </div>
           ))}
-        </div>
-      )}
+      </AnchoredMenu>
     </div>
   );
 }
@@ -568,6 +545,7 @@ export function PropertyManager({ note, onClose }: { note: Note; onClose: () => 
             name: schema.find((p) => p.key === pendingDelete)?.name ?? t("prop.property"),
           })}
           confirmLabel={t("prop.deleteConfirm")}
+          danger
           onConfirm={() => {
             removeProperty(pendingDelete);
             setOpenKey((k) => (k === pendingDelete ? null : k));

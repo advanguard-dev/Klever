@@ -23,4 +23,11 @@ export default defineConfig({
     port: 5174,
     strictPort: true,
   },
+  build: {
+    target: "esnext",
+    sourcemap: false,
+    modulePreload: {
+      polyfill: false,
+    },
+  },
 });

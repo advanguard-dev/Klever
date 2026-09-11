@@ -63,6 +63,10 @@ export function serializeFileMarkdown(opts: {
 }) {
   const { src, kind, display } = opts;
   const name = opts.name.trim() || fileNameFromPath(src);
+  if (kind === "image" && display !== "link") {
+    const alt = opts.width ? `${name}|${Math.round(opts.width)}` : name;
+    return `![${alt}](${src})`;
+  }
   const title = display === defaultFileDisplay(kind) ? "" : ` "${display}"`;
   return `[${name}](${src}${title})`;
 }

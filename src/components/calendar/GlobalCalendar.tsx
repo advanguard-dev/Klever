@@ -347,6 +347,7 @@ export function GlobalCalendar() {
               : "This local event is removed from the calendar. This cannot be undone."
           }
           confirmLabel={pendingDelete.sourceId ? t("cal.hideLocally") : t("cal.deleteEvent")}
+          danger={!pendingDelete.sourceId}
           onConfirm={() => {
             deleteEvent(pendingDelete.id);
             setSelectedId((id) => (id === pendingDelete.id ? null : id));
@@ -594,9 +595,7 @@ function CalEmbedOverlay({
         ) : (
           <div className="px-5 py-8">
             <p className="text-sm leading-relaxed text-ink">
-              Cal.com cannot run inside this window. Klever uses Cross-Origin-Embedder-Policy for on-device
-              speech (Moonshine), and Cal.com does not send the headers that would let the booking UI load in
-              an iframe.
+              Cal.com did not load in this window. Open the booking page in your browser.
             </p>
             <p className="mt-2 text-sm text-mute">Use the button below to book in your browser.</p>
             <SolidButton type="button" className="mt-5" onClick={openPage}>

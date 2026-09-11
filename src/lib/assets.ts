@@ -1,7 +1,7 @@
 import type { BlobRecord, ImageRef } from "@/types";
 import { nid } from "@/lib/ids";
 
-const urlCache = new Map<string, { url: string; data: ArrayBuffer }>();
+const urlCache = new Map<string, { url: string; data: ArrayBuffer; mime: string }>();
 
 export const IMAGE_EXTS = [
   ".png",
@@ -113,7 +113,13 @@ export function extFromName(name: string, mime?: string) {
     "image/svg+xml": "svg",
     "image/avif": "avif",
     "image/bmp": "bmp",
+    "image/x-ms-bmp": "bmp",
+    "image/x-icon": "ico",
+    "image/vnd.microsoft.icon": "ico",
+    "image/tiff": "tif",
     "image/heic": "heic",
+    "image/heif": "heif",
+    "image/apng": "apng",
     "audio/mpeg": "mp3",
     "audio/wav": "wav",
     "audio/ogg": "ogg",
@@ -128,12 +134,44 @@ export function extFromName(name: string, mime?: string) {
   return fromMime[mime ?? ""] || "bin";
 }
 
+/** Prefer a real image MIME so `<img>` / blob URLs actually decode (SVG especially). */
+export function displayMime(path: string, mime?: string) {
+  const given = (mime ?? "").toLowerCase().split(";")[0].trim();
+  const aliases: Record<string, string> = {
+    "image/jpg": "image/jpeg",
+    "image/pjpeg": "image/jpeg",
+    "image/x-png": "image/png",
+    "image/svg": "image/svg+xml",
+    "image/x-ms-bmp": "image/bmp",
+    "image/x-bmp": "image/bmp",
+    "image/vnd.microsoft.icon": "image/x-icon",
+  };
+  if (aliases[given]) return aliases[given];
+  if (given.startsWith("image/") && given !== "image/unknown") return given;
+  const fromPath = mimeFromPath(path);
+  if (fromPath.startsWith("image/")) return fromPath;
+  return given || fromPath;
+}
+
+export function isImageMime(mime?: string) {
+  const m = (mime ?? "").toLowerCase().split(";")[0].trim();
+  return m.startsWith("image/");
+}
+
+/** Path, MIME, or filename says this should render as an image. */
+export function isImageAsset(path: string, mime?: string, label?: string) {
+  if (isImageMime(mime)) return true;
+  if (isImagePath(path)) return true;
+  return Boolean(label && isImagePath(label));
+}
+
 export function blobUrl(path: string, rec: BlobRecord) {
+  const mime = displayMime(path, rec.mime);
   const prev = urlCache.get(path);
-  if (prev && prev.data === rec.data) return prev.url;
+  if (prev && prev.data === rec.data && prev.mime === mime) return prev.url;
   if (prev) URL.revokeObjectURL(prev.url);
-  const url = URL.createObjectURL(new Blob([rec.data], { type: rec.mime }));
-  urlCache.set(path, { url, data: rec.data });
+  const url = URL.createObjectURL(new Blob([rec.data], { type: mime }));
+  urlCache.set(path, { url, data: rec.data, mime });
   return url;
 }
 
@@ -211,7 +249,7 @@ export function isPdfPath(path: string) {
 
 export function assetKindFromPath(path: string, label?: string): AssetKind {
   const hint = (label ?? "").trim().toLowerCase();
-  if (isImagePath(path) || hint === "image") return "image";
+  if (isImageAsset(path, undefined, label) || hint === "image") return "image";
   if (isAudioPath(path) || hint === "audio") return "audio";
   if (isVideoPath(path) || hint === "video") return "video";
   if (isPdfPath(path)) return "pdf";

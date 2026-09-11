@@ -1,28 +1,24 @@
 import { BoardObject, ShapeGraphic } from "@/components/freeform/BoardObject";
+import { BoardFloatingChrome } from "@/components/freeform/BoardFloatingChrome";
+import { BoardMentionPicker } from "@/components/freeform/BoardMentionPicker";
 import {
-  ArrangeStudio,
-  BoardHud,
   BoardMoreMenu,
   BoardSearch,
   type BoardStudio,
-  BoardToolRail,
-  BoardViewHud,
-  HudConnectBtn,
-  InkStudio,
-  PaintWell,
-  ShapeStudio,
-  StickyStudio,
-  TOOL_BY_KEY,
-  TypeStudio,
 } from "@/components/freeform/board-chrome";
 import { exportBoardJson, exportBoardPng } from "@/components/freeform/board-export";
 import { useBoardHistory } from "@/components/freeform/board-history";
+import {
+  buildImageObjects,
+  fitDrop,
+  readClipboardImageFiles,
+  resolveImageFiles,
+} from "@/components/freeform/board-io";
 import {
   createImage,
   createLink,
   createMention,
   createMind,
-  createPath,
   createShape,
   createSticky,
   createTable,
@@ -33,7 +29,6 @@ import {
   findConnection,
   HIGHLIGHT_COLORS,
   HIGHLIGHTER_OPACITY,
-  hitPathObject,
   clampZoom,
   ZOOM_MAX,
   ZOOM_MIN,
@@ -44,40 +39,41 @@ import {
   mindNodeHeight,
   nextZ,
   objectSearchPreview,
-  pathBounds,
-  pointsToLocal,
   searchBoardObjects,
-  stickyContrastTextColor,
   STICKY_TEXT_SIZES,
   TEXT_SIZES,
 } from "@/components/freeform/board-model";
 import {
-  alignObjects,
-  applyResizeToObject,
-  boxesIntersect,
-  cloneSelection,
   GRID,
   hitBoardObjectAt,
-  marqueeBox,
-  nudgeZ,
-  PASTE_OFFSET,
-  shapeDraftBox,
-  resizeBox,
-  snapGroupMove,
-  snapResizeBox,
   type AlignEdge,
-  type Box,
   type Guide,
-  type ResizeHandle,
 } from "@/components/freeform/board-ops";
-import { ConfirmDialog, MonoLabel, ToolbarBtn } from "@/components/ui";
+import { INSERT_TOOLS, PLACE_TOOLS } from "@/components/freeform/board-pointer";
+import {
+  alignSelected,
+  bringIdsFront,
+  buildConnectorLinks,
+  nudgeIdsZ,
+  pasteFromClipboard,
+  selectedOfType,
+  sendIdsBack,
+  snapshotSelection,
+} from "@/components/freeform/board-selection";
+import { useBoardHotkeys } from "@/components/freeform/useBoardHotkeys";
+import { useBoardPointer } from "@/components/freeform/useBoardPointer";
+import { searchVaultHits, type VaultHit } from "@/components/freeform/board-vault";
+import { ConfirmDialog, EmptyState, MonoLabel, ToolbarBtn } from "@/components/ui";
 import { TitleBar } from "@/components/layout/TitleBar";
 import { useContextMenu } from "@/components/ContextMenu";
 import type { ContextMenuItem } from "@/lib/context-menus";
 import { openNote } from "@/components/editor/WikiPeek";
 import { cn } from "@/lib/cn";
+import { hasFileTransfer } from "@/lib/dnd";
+import { isImageAsset } from "@/lib/assets";
+import { filesFromFileList } from "@/lib/local-file-path";
 import { nid } from "@/lib/ids";
-import { plainSnippet } from "@/lib/parse";
+import type { TableRange } from "@/lib/table-sheet";
 import { useApp } from "@/store";
 import type {
   FreeformConnection,
@@ -91,14 +87,12 @@ import {
   ArrowLeft,
   Check,
   ChevronDown,
-  Database,
-  File,
-  FileText,
   Plus,
   Redo2,
   Trash2,
   Undo2,
 } from "lucide-react";
+import type { FreeformPatch } from "@/lib/freeform-patch";
 import {
   useCallback,
   useEffect,
@@ -106,70 +100,8 @@ import {
   useMemo,
   useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
 } from "react";
 
-const PLACE_TOOLS = new Set<FreeformTool>(["text", "sticky", "link", "table", "mind", "mention", "image"]);
-const INSERT_TOOLS = new Set<FreeformTool>([...PLACE_TOOLS]);
-
-type VaultHit = {
-  id: string;
-  title: string;
-  path: string;
-  kind: "page" | "database" | "file";
-  snippet: string;
-};
-
-const KIND_META: Record<
-  VaultHit["kind"],
-  { label: string; icon: typeof FileText }
-> = {
-  page: { label: "page", icon: FileText },
-  database: { label: "database", icon: Database },
-  file: { label: "file", icon: File },
-};
-
-type DragState =
-  | { kind: "pan"; sx: number; sy: number; cx: number; cy: number }
-  | {
-      kind: "pinch";
-      dist: number;
-      mx: number;
-      my: number;
-      cam: { x: number; y: number; zoom: number };
-    }
-  | {
-      kind: "move";
-      ids: string[];
-      sx: number;
-      sy: number;
-      origins: Record<string, { x: number; y: number }>;
-    }
-  | {
-      kind: "resize";
-      id: string;
-      handle: ResizeHandle;
-      sx: number;
-      sy: number;
-      origin: Box;
-      source: FreeformObject;
-    }
-  | { kind: "marquee"; x0: number; y0: number; x1: number; y1: number }
-  | { kind: "draw"; points: { x: number; y: number }[] }
-  | { kind: "shape"; x0: number; y0: number; x1: number; y1: number }
-  | { kind: "erase"; pushed: boolean }
-  | null;
-
-function pinchOf(pointers: Map<number, { x: number; y: number }>) {
-  const pts = [...pointers.values()];
-  if (pts.length < 2) return null;
-  const [a, b] = pts;
-  return {
-    dist: Math.hypot(b.x - a.x, b.y - a.y) || 1,
-    mx: (a.x + b.x) / 2,
-    my: (a.y + b.y) / 2,
-  };
-}
 
 export function FreeformView() {
   const boards = useApp((s) => s.boards);
@@ -188,6 +120,7 @@ export function FreeformView() {
   const deleteBoard = useApp((s) => s.deleteBoard);
   const leaveBoard = useApp((s) => s.leaveBoard);
   const linkLocalFile = useApp((s) => s.linkLocalFile);
+  const storeFileFromDrop = useApp((s) => s.storeFileFromDrop);
   const setView = useApp((s) => s.setView);
   const { open } = useContextMenu();
 
@@ -273,17 +206,18 @@ export function FreeformView() {
   const [connectFrom, setConnectFrom] = useState<string | null>(null);
   const [guides, setGuides] = useState<Guide[]>([]);
   const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [tableRange, setTableRange] = useState<TableRange | null>(null);
   const clipboardRef = useRef<{
     objects: FreeformObject[];
     connections: FreeformConnection[];
   } | null>(null);
   const pasteNRef = useRef(0);
+  const pasteFromOsRef = useRef<() => void>(() => {});
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const imagePlaceRef = useRef<{ x: number; y: number } | null>(null);
   const onToolClickRef = useRef<(id: FreeformTool) => void>(() => {});
-  const dragRef = useRef<DragState>(null);
-  const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const placeAtRef = useRef<(world: { x: number; y: number }, activeTool: FreeformTool) => void>(() => {});
   const cameraRef = useRef(board.camera);
   const placeStackRef = useRef(0);
   const toolBeforeSpaceRef = useRef<FreeformTool>("select");
@@ -426,7 +360,7 @@ export function FreeformView() {
   );
 
   const patchWithHistory = useCallback(
-    (id: string, patch: Partial<FreeformObject>, coalesceEdit = false) => {
+    (id: string, patch: FreeformPatch, coalesceEdit = false) => {
       if (coalesceEdit) {
         if (!editHistoryRef.current) {
           pushHistory();
@@ -457,13 +391,9 @@ export function FreeformView() {
   );
 
   const copySelection = useCallback(() => {
-    const ids = selectedRef.current;
-    if (!ids.length) return false;
-    const idSet = new Set(ids);
-    clipboardRef.current = {
-      objects: objectsRef.current.filter((o) => idSet.has(o.id)).map((o) => structuredClone(o)),
-      connections: connectionsRef.current.filter((c) => idSet.has(c.from) && idSet.has(c.to)),
-    };
+    const snap = snapshotSelection(objectsRef.current, connectionsRef.current, selectedRef.current);
+    if (!snap) return false;
+    clipboardRef.current = snap;
     pasteNRef.current = 0;
     return true;
   }, []);
@@ -473,22 +403,17 @@ export function FreeformView() {
       const clip = clipboardRef.current;
       if (!clip?.objects.length) return;
       pasteNRef.current += 1;
-      const offset = PASTE_OFFSET * pasteNRef.current;
-      const cloned = cloneSelection(
-        clip.objects,
-        clip.connections,
-        clip.objects.map((o) => o.id),
-        offset,
+      const pasted = pasteFromClipboard(
+        clip,
+        objectsRef.current,
+        connectionsRef.current,
+        pasteNRef.current,
       );
-      let z = nextZ(objectsRef.current);
-      const objects = cloned.objects.map((o) => ({ ...o, z: z++ }));
+      if (!pasted) return;
       withHistory(() => {
-        setBoard({
-          objects: [...objectsRef.current, ...objects],
-          connections: [...connectionsRef.current, ...cloned.connections],
-        });
+        setBoard({ objects: pasted.objects, connections: pasted.connections });
       });
-      setSelected(objects.map((o) => o.id));
+      setSelected(pasted.ids);
       setTool("select");
       if (asDuplicate) pasteNRef.current = 0;
     },
@@ -502,205 +427,80 @@ export function FreeformView() {
 
   const applyAlign = useCallback(
     (edge: AlignEdge) => {
-      const ids = selectedRef.current;
-      if (ids.length < 2) return;
+      const next = alignSelected(objectsRef.current, selectedRef.current, edge);
+      if (!next) return;
       withHistory(() => {
-        setBoard({ objects: alignObjects(objectsRef.current, ids, edge) });
+        setBoard({ objects: next });
       });
     },
     [setBoard, withHistory],
   );
 
   const bringFront = useCallback(() => {
-    const ids = selectedRef.current;
-    if (!ids.length) return;
-    let z = nextZ(objectsRef.current);
+    const next = bringIdsFront(objectsRef.current, selectedRef.current);
+    if (!next) return;
     withHistory(() => {
-      setBoard({
-        objects: objectsRef.current.map((o) => (ids.includes(o.id) ? { ...o, z: z++ } : o)),
-      });
+      setBoard({ objects: next });
     });
   }, [setBoard, withHistory]);
 
   const sendBack = useCallback(() => {
-    const ids = selectedRef.current;
-    if (!ids.length) return;
-    const min = objectsRef.current.reduce((m, o) => Math.min(m, o.z), 0);
-    let z = min - ids.length;
+    const next = sendIdsBack(objectsRef.current, selectedRef.current);
+    if (!next) return;
     withHistory(() => {
-      setBoard({
-        objects: objectsRef.current.map((o) => (ids.includes(o.id) ? { ...o, z: z++ } : o)),
-      });
+      setBoard({ objects: next });
     });
   }, [setBoard, withHistory]);
 
   const bringForward = useCallback(() => {
-    const ids = selectedRef.current;
-    if (!ids.length) return;
+    const next = nudgeIdsZ(objectsRef.current, selectedRef.current, 1);
+    if (!next) return;
     withHistory(() => {
-      setBoard({ objects: nudgeZ(objectsRef.current, ids, 1) });
+      setBoard({ objects: next });
     });
   }, [setBoard, withHistory]);
 
   const sendBackward = useCallback(() => {
-    const ids = selectedRef.current;
-    if (!ids.length) return;
+    const next = nudgeIdsZ(objectsRef.current, selectedRef.current, -1);
+    if (!next) return;
     withHistory(() => {
-      setBoard({ objects: nudgeZ(objectsRef.current, ids, -1) });
+      setBoard({ objects: next });
     });
   }, [setBoard, withHistory]);
 
-  useEffect(() => {
-    const inField = (t: EventTarget | null) =>
-      !!(t as HTMLElement)?.closest?.("input,textarea,[contenteditable]");
-
-    const down = (e: KeyboardEvent) => {
-      if (e.code === "Space" && !inField(e.target) && !e.repeat) {
-        e.preventDefault();
-        toolBeforeSpaceRef.current = tool;
-        setSpacePan(true);
-      }
-      const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key.toLowerCase() === "f") {
-        const t = e.target as HTMLElement | null;
-        if (t?.closest?.("[data-note-find],.cm-editor,.ProseMirror,[data-note-page]")) {
-          return;
-        }
-        e.preventDefault();
-        setSearchOpen(true);
-        window.setTimeout(() => {
-          searchInputRef.current?.focus();
-          searchInputRef.current?.select();
-        }, 0);
-        return;
-      }
-      if (mod && e.key.toLowerCase() === "z" && !inField(e.target)) {
-        e.preventDefault();
-        if (e.shiftKey) history.redo();
-        else history.undo();
-        return;
-      }
-      if (mod && e.key.toLowerCase() === "y" && !inField(e.target)) {
-        e.preventDefault();
-        history.redo();
-        return;
-      }
-      if (mod && e.key.toLowerCase() === "c" && !inField(e.target)) {
-        e.preventDefault();
-        copySelection();
-        return;
-      }
-      if (mod && e.key.toLowerCase() === "v" && !inField(e.target)) {
-        e.preventDefault();
-        pasteClipboard();
-        return;
-      }
-      if (mod && e.key.toLowerCase() === "d" && !inField(e.target)) {
-        e.preventDefault();
-        duplicateSelection();
-        return;
-      }
-      if (mod && e.key === "]" && !inField(e.target) && !editing) {
-        e.preventDefault();
-        bringForward();
-        return;
-      }
-      if (mod && e.key === "[" && !inField(e.target) && !editing) {
-        e.preventDefault();
-        sendBackward();
-        return;
-      }
-      if (!mod && !e.altKey && !inField(e.target) && !editing && !e.repeat) {
-        const next = TOOL_BY_KEY[e.key.toLowerCase()];
-        if (next) {
-          e.preventDefault();
-          onToolClickRef.current(next);
-          return;
-        }
-      }
-      if ((e.key === "Delete" || e.key === "Backspace") && selected.length && !editing) {
-        if (inField(e.target)) return;
-        withHistory(() => {
-          selected.forEach(removeBoardObject);
-        });
-        setSelected([]);
-      }
-      if (
-        (e.key === "ArrowLeft" ||
-          e.key === "ArrowRight" ||
-          e.key === "ArrowUp" ||
-          e.key === "ArrowDown") &&
-        selected.length &&
-        !editing &&
-        !searchOpen &&
-        !inField(e.target)
-      ) {
-        e.preventDefault();
-        const step = e.shiftKey ? GRID : 1;
-        const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
-        const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
-        withHistory(() => {
-          setBoard({
-            objects: objectsRef.current.map((o) =>
-              selected.includes(o.id) ? { ...o, x: o.x + dx, y: o.y + dy } : o,
-            ),
-          });
-        });
-      }
-      if (e.key === "Escape") {
-        if (searchOpen) {
-          e.preventDefault();
-          closeSearch();
-          return;
-        }
-        setEditing(null);
-        setMentionPos(null);
-        setConnectFrom(null);
-        setGuides([]);
-        setMarquee(null);
-        if (selected.length) setSelected([]);
-      }
-      if (mod && !inField(e.target) && (e.key === "=" || e.key === "+" || e.key === "-" || e.key === "0")) {
-        e.preventDefault();
-        const el = viewportRef.current;
-        if (!el) return;
-        const r = el.getBoundingClientRect();
-        const cx = r.left + r.width / 2;
-        const cy = r.top + r.height / 2;
-        const z = cameraRef.current.zoom;
-        if (e.key === "0") zoomAt(cx, cy, 1, true);
-        else if (e.key === "-") zoomAt(cx, cy, z * 0.92, true);
-        else zoomAt(cx, cy, z * 1.08, true);
-      }
-    };
-    const up = (e: KeyboardEvent) => {
-      if (e.code === "Space") {
-        setSpacePan(false);
-      }
-    };
-    window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
-    return () => {
-      window.removeEventListener("keydown", down);
-      window.removeEventListener("keyup", up);
-    };
-  }, [
-    bringForward,
-    closeSearch,
-    copySelection,
-    duplicateSelection,
+  useBoardHotkeys({
+    tool,
     editing,
-    history,
-    pasteClipboard,
-    removeBoardObject,
     searchOpen,
     selected,
+    history,
+    toolBeforeSpaceRef,
+    searchInputRef,
+    clipboardRef,
+    pasteFromOsRef,
+    onToolClickRef,
+    objectsRef,
+    viewportRef,
+    cameraRef,
+    setSpacePan,
+    setSearchOpen,
+    setSelected,
+    setEditing,
+    setMentionPos,
+    setConnectFrom,
+    setGuides,
+    setMarquee,
+    copySelection,
+    pasteClipboard,
+    duplicateSelection,
+    bringForward,
     sendBackward,
-    setBoard,
-    tool,
+    closeSearch,
     withHistory,
+    removeBoardObject,
+    setBoard,
     zoomAt,
-  ]);
+  });
 
   useEffect(() => {
     editHistoryRef.current = false;
@@ -727,44 +527,10 @@ export function FreeformView() {
     setSearchIndex(0);
   }, [searchQ]);
 
-  const connectorLinks = useMemo(() => {
-    const byId = new Map(board.objects.map((o) => [o.id, o]));
-    const links: { x1: number; y1: number; x2: number; y2: number; key: string }[] = [];
-    const seen = new Set<string>();
-
-    for (const o of board.objects) {
-      if (o.type !== "mind" || !o.parentId) continue;
-      const p = byId.get(o.parentId);
-      if (!p) continue;
-      const key = `mind:${p.id}-${o.id}`;
-      seen.add(`${p.id}::${o.id}`);
-      links.push({
-        key,
-        x1: p.x + p.w / 2,
-        y1: p.y + p.h,
-        x2: o.x + o.w / 2,
-        y2: o.y,
-      });
-    }
-
-    for (const c of board.connections ?? []) {
-      const a = byId.get(c.from);
-      const b = byId.get(c.to);
-      if (!a || !b) continue;
-      const pair = `${c.from}::${c.to}`;
-      const rev = `${c.to}::${c.from}`;
-      if (seen.has(pair) || seen.has(rev)) continue;
-      seen.add(pair);
-      links.push({
-        key: c.id,
-        x1: a.x + a.w / 2,
-        y1: a.y + a.h / 2,
-        x2: b.x + b.w / 2,
-        y2: b.y + b.h / 2,
-      });
-    }
-    return links;
-  }, [board.objects, board.connections]);
+  const connectorLinks = useMemo(
+    () => buildConnectorLinks(board.objects, board.connections),
+    [board.objects, board.connections],
+  );
 
   const toggleConnection = useCallback(
     (from: string, to: string) => {
@@ -824,10 +590,28 @@ export function FreeformView() {
     };
   }, []);
 
-  /** Center on the drop point. Do not scale w/h/fontSize — zoom is camera-only. */
-  const fitDrop = (obj: FreeformObject, center = true) => {
-    if (!center) return obj;
-    return { ...obj, x: obj.x - obj.w / 2, y: obj.y - obj.h / 2 };
+  const placeImagePaths = (world: { x: number; y: number }, items: { path: string; name: string }[]) => {
+    if (!items.length) return;
+    const placed = buildImageObjects(world, items, nextZ(objectsRef.current));
+    withHistory(() => {
+      setBoard({ objects: [...objectsRef.current, ...placed] });
+    });
+    setSelected(placed.map((o) => o.id));
+    setTool("select");
+  };
+
+  const placeImageFiles = async (world: { x: number; y: number }, files: File[]) => {
+    const items = await resolveImageFiles(files, storeFileFromDrop);
+    placeImagePaths(world, items);
+  };
+
+  const pasteOsImages = async (world: { x: number; y: number }) => {
+    const files = await readClipboardImageFiles();
+    if (files.length) await placeImageFiles(world, files);
+  };
+
+  pasteFromOsRef.current = () => {
+    void pasteOsImages(nextPlacePos());
   };
 
   const finishInsert = () => {
@@ -870,6 +654,7 @@ export function FreeformView() {
       const obj = fitDrop(createTable(world.x, world.y, z));
       upsertWithHistory(obj);
       setSelected([obj.id]);
+      setEditing(obj.id);
       finishInsert();
       return;
     }
@@ -940,336 +725,47 @@ export function FreeformView() {
   };
   onToolClickRef.current = onToolClick;
 
-  const eraseAt = (wx: number, wy: number, drag: Extract<DragState, { kind: "erase" }>) => {
-    const hit = [...objectsRef.current]
-      .filter((o): o is Extract<FreeformObject, { type: "path" }> => o.type === "path")
-      .reverse()
-      .find((o) => hitPathObject(o, wx, wy, 10 / cameraRef.current.zoom));
-    if (!hit) return;
-    if (!drag.pushed) {
-      pushHistory();
-      drag.pushed = true;
-    }
-    removeBoardObject(hit.id);
-    setSelected((s) => s.filter((x) => x !== hit.id));
-  };
+  placeAtRef.current = placeAt;
 
-  const startPinch = (pointerId: number) => {
-    const m = pinchOf(pointersRef.current);
-    if (!m) return false;
-    dragRef.current = {
-      kind: "pinch",
-      dist: m.dist,
-      mx: m.mx,
-      my: m.my,
-      cam: { ...cameraRef.current },
-    };
-    setMarquee(null);
-    setDraftPath(null);
-    setDraftShape(null);
-    setGuides([]);
-    try {
-      viewportRef.current?.setPointerCapture(pointerId);
-    } catch {
-      /* already captured */
-    }
-    return true;
-  };
-
-  const onPointerDown = (e: ReactPointerEvent) => {
-    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointersRef.current.size >= 2) {
-      e.preventDefault();
-      startPinch(e.pointerId);
-      return;
-    }
-    if (e.button === 1 || e.button === 2 || tool === "pan" || spacePan) {
-      if (e.button === 2) e.preventDefault();
-      e.preventDefault();
-      const cam = cameraRef.current;
-      dragRef.current = { kind: "pan", sx: e.clientX, sy: e.clientY, cx: cam.x, cy: cam.y };
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-      return;
-    }
-    if (tool === "draw") {
-      const w = screenToWorld(e.clientX, e.clientY);
-      if (inkTool === "eraser") {
-        dragRef.current = { kind: "erase", pushed: false };
-        eraseAt(w.x, w.y, dragRef.current);
-        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-        return;
-      }
-      dragRef.current = { kind: "draw", points: [w] };
-      setDraftPath([w]);
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-      return;
-    }
-    if (tool === "shape") {
-      setStudio(null);
-      setTool("select");
-      setDraftShape(null);
-      setSelected([]);
-      setEditing(null);
-      return;
-    }
-    if (PLACE_TOOLS.has(tool) && e.button === 0) {
-      e.preventDefault();
-      const w = screenToWorld(e.clientX, e.clientY);
-      placeAt(w, tool);
-      return;
-    }
-    if (connectFrom) {
-      setConnectFrom(null);
-      setSelected([]);
-      setEditing(null);
-      return;
-    }
-    setSelected([]);
-    setEditing(null);
-    setMentionPos(null);
-    if (tool === "select" && e.button === 0) {
-      if (e.pointerType === "touch" || e.pointerType === "pen") {
-        const cam = cameraRef.current;
-        dragRef.current = { kind: "pan", sx: e.clientX, sy: e.clientY, cx: cam.x, cy: cam.y };
-        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-        return;
-      }
-      const w = screenToWorld(e.clientX, e.clientY);
-      dragRef.current = { kind: "marquee", x0: w.x, y0: w.y, x1: w.x, y1: w.y };
-      setMarquee({ x: w.x, y: w.y, w: 0, h: 0 });
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    }
-  };
-
-  /** Select (arrow) tool — and any non-pan/draw mode — can move objects anytime. */
-  const onObjectDragStart = (e: ReactPointerEvent, id: string) => {
-    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointersRef.current.size >= 2) {
-      startPinch(e.pointerId);
-      return;
-    }
-    if (tool === "pan" || spacePan) return;
-    if (tool === "draw" || tool === "shape") return;
-    let ids = selectedRef.current.includes(id) ? selectedRef.current : [id];
-    let origins: Record<string, { x: number; y: number }> = {};
-    pushHistory();
-    if (e.altKey) {
-      const cloned = cloneSelection(objectsRef.current, connectionsRef.current, ids, 0);
-      setBoard({
-        objects: [...objectsRef.current, ...cloned.objects],
-        connections: [...connectionsRef.current, ...cloned.connections],
-      });
-      ids = cloned.objects.map((o) => o.id);
-      for (const o of cloned.objects) origins[o.id] = { x: o.x, y: o.y };
-      setSelected(ids);
-    } else {
-      for (const oid of ids) {
-        const o = objectsRef.current.find((x) => x.id === oid);
-        if (o) origins[oid] = { x: o.x, y: o.y };
-      }
-    }
-    const w = screenToWorld(e.clientX, e.clientY);
-    dragRef.current = { kind: "move", ids, sx: w.x, sy: w.y, origins };
-    (viewportRef.current as HTMLElement | null)?.setPointerCapture(e.pointerId);
-  };
-
-  const onResizeStart = (e: ReactPointerEvent, id: string, handle: ResizeHandle) => {
-    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointersRef.current.size >= 2) {
-      startPinch(e.pointerId);
-      return;
-    }
-    if (tool === "pan" || spacePan || tool === "draw" || tool === "shape") return;
-    const o = objectsRef.current.find((x) => x.id === id);
-    if (!o) return;
-    setSelected([id]);
-    pushHistory();
-    const w = screenToWorld(e.clientX, e.clientY);
-    dragRef.current = {
-      kind: "resize",
-      id,
-      handle,
-      sx: w.x,
-      sy: w.y,
-      origin: { x: o.x, y: o.y, w: o.w, h: o.h },
-      source: structuredClone(o),
-    };
-    (viewportRef.current as HTMLElement | null)?.setPointerCapture(e.pointerId);
-  };
-
-  const onPointerMove = (e: ReactPointerEvent) => {
-    if (pointersRef.current.has(e.pointerId)) {
-      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    }
-    const drag = dragRef.current;
-    if (!drag) return;
-    if (drag.kind === "pinch") {
-      const m = pinchOf(pointersRef.current);
-      const el = viewportRef.current;
-      if (!m || !el) return;
-      const rect = el.getBoundingClientRect();
-      const nextZoom = clampZoom(drag.cam.zoom * (m.dist / drag.dist));
-      const wx = (drag.mx - rect.left - drag.cam.x) / drag.cam.zoom;
-      const wy = (drag.my - rect.top - drag.cam.y) / drag.cam.zoom;
-      applyCameraLive({
-        zoom: nextZoom,
-        x: m.mx - rect.left - wx * nextZoom,
-        y: m.my - rect.top - wy * nextZoom,
-      });
-      return;
-    }
-    if (drag.kind === "pan") {
-      const next = {
-        ...cameraRef.current,
-        x: drag.cx + (e.clientX - drag.sx),
-        y: drag.cy + (e.clientY - drag.sy),
-      };
-      applyCameraLive(next);
-      return;
-    }
-    if (drag.kind === "draw") {
-      const w = screenToWorld(e.clientX, e.clientY);
-      const points = [...drag.points, w];
-      drag.points = points;
-      setDraftPath(points);
-      return;
-    }
-    if (drag.kind === "shape") {
-      const w = screenToWorld(e.clientX, e.clientY);
-      drag.x1 = w.x;
-      drag.y1 = w.y;
-      setDraftShape(shapeDraftBox(drag.x0, drag.y0, drag.x1, drag.y1, { shift: e.shiftKey, fromCenter: e.altKey }));
-      return;
-    }
-    if (drag.kind === "erase") {
-      const w = screenToWorld(e.clientX, e.clientY);
-      eraseAt(w.x, w.y, drag);
-      return;
-    }
-    if (drag.kind === "marquee") {
-      const w = screenToWorld(e.clientX, e.clientY);
-      drag.x1 = w.x;
-      drag.y1 = w.y;
-      setMarquee(marqueeBox(drag.x0, drag.y0, drag.x1, drag.y1));
-      return;
-    }
-    if (drag.kind === "move") {
-      const w = screenToWorld(e.clientX, e.clientY);
-      let rawDx = w.x - drag.sx;
-      let rawDy = w.y - drag.sy;
-      if (e.shiftKey) {
-        if (Math.abs(rawDx) >= Math.abs(rawDy)) rawDy = 0;
-        else rawDx = 0;
-      }
-      const moving = drag.ids
-        .map((id) => {
-          const o = objectsRef.current.find((x) => x.id === id);
-          const origin = drag.origins[id];
-          if (!o || !origin) return null;
-          return { id, origin: { x: origin.x, y: origin.y, w: o.w, h: o.h } };
-        })
-        .filter((m): m is { id: string; origin: Box } => Boolean(m));
-      const others = objectsRef.current
-        .filter((o) => !drag.ids.includes(o.id))
-        .map((o) => ({ x: o.x, y: o.y, w: o.w, h: o.h }));
-      const snapped = snapGroupMove(moving, others, rawDx, rawDy, GRID);
-      setGuides(snapped.guides);
-      for (const id of drag.ids) {
-        const o = drag.origins[id];
-        if (!o) continue;
-        patchBoardObject(id, { x: o.x + snapped.dx, y: o.y + snapped.dy } as Partial<FreeformObject>);
-      }
-      return;
-    }
-    if (drag.kind === "resize") {
-      const w = screenToWorld(e.clientX, e.clientY);
-      const box = resizeBox(drag.origin, drag.handle, w.x - drag.sx, w.y - drag.sy, e.shiftKey);
-      const others = objectsRef.current
-        .filter((o) => o.id !== drag.id)
-        .map((o) => ({ x: o.x, y: o.y, w: o.w, h: o.h }));
-      const snapped = snapResizeBox(box, others, GRID);
-      setGuides(snapped.guides);
-      patchBoardObject(drag.id, applyResizeToObject(drag.source, snapped.box));
-    }
-  };
-
-  const onPointerUp = (e: ReactPointerEvent) => {
-    pointersRef.current.delete(e.pointerId);
-    const drag = dragRef.current;
-    if (drag?.kind === "pinch") {
-      if (pointersRef.current.size < 2) {
-        persistCamera(cameraRef.current);
-        dragRef.current = null;
-        const leftover = [...pointersRef.current.values()][0];
-        if (leftover) {
-          dragRef.current = {
-            kind: "pan",
-            sx: leftover.x,
-            sy: leftover.y,
-            cx: cameraRef.current.x,
-            cy: cameraRef.current.y,
-          };
-        }
-      }
-      return;
-    }
-    dragRef.current = null;
-    setGuides([]);
-    if (drag?.kind === "pan") {
-      persistCamera(cameraRef.current);
-      return;
-    }
-    if (drag?.kind === "marquee") {
-      const box = marqueeBox(drag.x0, drag.y0, drag.x1, drag.y1);
-      setMarquee(null);
-      if (box.w < 4 && box.h < 4) return;
-      setSelected(
-        objectsRef.current
-          .filter((o) => boxesIntersect(box, { x: o.x, y: o.y, w: o.w, h: o.h }))
-          .map((o) => o.id),
-      );
-      return;
-    }
-    if (drag?.kind === "draw" && drag.points.length > 1) {
-      const bounds = pathBounds(drag.points);
-      const local = pointsToLocal(drag.points, bounds.x, bounds.y);
-      const isHi = inkTool === "highlighter";
-      upsertWithHistory(
-        createPath(bounds.x, bounds.y, nextZ(board.objects), local, {
-          stroke: isHi ? highlighterColor : penColor,
-          strokeWidth: isHi ? highlighterWidth : penWidth,
-          opacity: isHi ? HIGHLIGHTER_OPACITY : 1,
-        }),
-      );
-      setDraftPath(null);
-      return;
-    }
-    if (drag?.kind === "shape") {
-      const box = shapeDraftBox(drag.x0, drag.y0, drag.x1, drag.y1, {
-        shift: e.shiftKey,
-        fromCenter: e.altKey,
-      });
-      setDraftShape(null);
-      const w = Math.max(24, box.w);
-      const h = Math.max(24, box.h);
-      const tiny = box.w < 8 && box.h < 8;
-      const obj = createShape(
-        tiny ? box.x : box.x,
-        tiny ? box.y : box.y,
-        tiny ? DROP.shape.w : w,
-        tiny ? DROP.shape.h : h,
-        nextZ(board.objects),
-        { shape: shapeKind, fill: shapeFill, stroke: shapeStroke, strokeWidth: shapeWidth, strokeDash: shapeDash },
-      );
-      upsertWithHistory(tiny ? fitDrop(obj) : obj);
-      setSelected([obj.id]);
-      setTool("select");
-      setStudio(null);
-      return;
-    }
-    setDraftPath(null);
-    setDraftShape(null);
-  };
+  const { onPointerDown, onPointerMove, onPointerUp, onObjectDragStart, onResizeStart } = useBoardPointer({
+    viewportRef,
+    objectsRef,
+    connectionsRef,
+    cameraRef,
+    selectedRef,
+    tool,
+    spacePan,
+    inkTool,
+    penColor,
+    highlighterColor,
+    penWidth,
+    highlighterWidth,
+    shapeKind,
+    shapeFill,
+    shapeStroke,
+    shapeWidth,
+    shapeDash,
+    connectFrom,
+    pushHistory,
+    upsertWithHistory,
+    applyCameraLive,
+    persistCamera,
+    screenToWorld,
+    placeAt: (world, activeTool) => placeAtRef.current(world, activeTool),
+    setBoard,
+    patchBoardObject,
+    removeBoardObject,
+    setSelected,
+    setEditing,
+    setMentionPos,
+    setConnectFrom,
+    setTool,
+    setStudio,
+    setDraftPath,
+    setDraftShape,
+    setGuides,
+    setMarquee,
+  });
 
   const addMindChild = (parentId: string) => {
     const parent = board.objects.find((o) => o.id === parentId);
@@ -1283,72 +779,35 @@ export function FreeformView() {
     setEditing(obj.id);
   };
 
-  const mentionHits = useMemo(() => {
-    const q = mentionQ.trim().toLowerCase();
-    const noteHits: VaultHit[] = notes.map((n) => {
-      const kind = n.type === "database" ? ("database" as const) : ("page" as const);
-      const snippet =
-        kind === "database"
-          ? `${(n.schema ?? []).length} fields · Database`
-          : plainSnippet(n.body, 120) || "Empty page";
-      return {
-        id: n.id,
-        title: n.title || n.path,
-        path: n.path,
-        kind,
-        snippet,
-      };
-    });
-    const notePaths = new Set(notes.map((n) => n.path));
-    const fileHits: VaultHit[] = Object.keys(blobs)
-      .filter((path) => !notePaths.has(path))
-      .map((path) => {
-        const rec = blobs[path];
-        return {
-          id: path,
-          title: path.split("/").pop() || path,
-          path,
-          kind: "file" as const,
-          snippet: rec?.mime ? rec.mime : "File",
-        };
-      });
-    const all = [...noteHits, ...fileHits];
-    const filtered = !q
-      ? all
-      : all.filter(
-          (h) =>
-            h.title.toLowerCase().includes(q) ||
-            h.path.toLowerCase().includes(q) ||
-            h.kind.includes(q) ||
-            h.snippet.toLowerCase().includes(q),
-        );
-    return filtered.slice(0, 12);
-  }, [blobs, mentionQ, notes]);
+  const mentionHits = useMemo(
+    () => searchVaultHits(notes, blobs, mentionQ),
+    [blobs, mentionQ, notes],
+  );
 
-  const selectedSticky = useMemo(() => {
-    const id = selected[0];
-    if (!id || selected.length !== 1) return null;
-    const o = board.objects.find((x) => x.id === id);
-    return o?.type === "sticky" ? o : null;
-  }, [board.objects, selected]);
+  const selectedSticky = useMemo(
+    () => selectedOfType(board.objects, selected, "sticky"),
+    [board.objects, selected],
+  );
+  const selectedTextObj = useMemo(
+    () => selectedOfType(board.objects, selected, "text") ?? undefined,
+    [board.objects, selected],
+  );
+  const selectedMind = useMemo(
+    () => selectedOfType(board.objects, selected, "mind"),
+    [board.objects, selected],
+  );
+  const selectedShape = useMemo(
+    () => selectedOfType(board.objects, selected, "shape"),
+    [board.objects, selected],
+  );
+  const selectedTable = useMemo(
+    () => selectedOfType(board.objects, selected, "table"),
+    [board.objects, selected],
+  );
 
-  const selectedTextObj = useMemo(() => {
-    if (selected.length !== 1) return undefined;
-    const o = board.objects.find((x) => x.id === selected[0]);
-    return o?.type === "text" ? o : undefined;
-  }, [board.objects, selected]);
-
-  const selectedMind = useMemo(() => {
-    if (selected.length !== 1) return null;
-    const o = board.objects.find((x) => x.id === selected[0]);
-    return o?.type === "mind" ? o : null;
-  }, [board.objects, selected]);
-
-  const selectedShape = useMemo(() => {
-    if (selected.length !== 1) return null;
-    const o = board.objects.find((x) => x.id === selected[0]);
-    return o?.type === "shape" ? o : null;
-  }, [board.objects, selected]);
+  useEffect(() => {
+    setTableRange(null);
+  }, [selectedTable?.id]);
 
   const selectedAny = useMemo(() => {
     if (selected.length !== 1) return null;
@@ -1372,136 +831,29 @@ export function FreeformView() {
       : TEXT_SIZES;
   const typeColorKey = selectedSticky ? ("textColor" as const) : ("color" as const);
 
-  const viewHud = (
-    <BoardViewHud
-      zoomPct={zoomPct}
-      minPct={Math.round(ZOOM_MIN * 100)}
-      maxPct={Math.round(ZOOM_MAX * 100)}
-      dotted={board.dotted}
-      onZoomOut={() => {
-        const el = viewportRef.current;
-        if (!el) return;
-        const r = el.getBoundingClientRect();
-        zoomAt(r.left + r.width / 2, r.top + r.height / 2, cam.zoom * 0.92, true);
-      }}
-      onZoomReset={() => {
-        const el = viewportRef.current;
-        if (!el) return;
-        const r = el.getBoundingClientRect();
-        zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1, true);
-      }}
-      onZoomIn={() => {
-        const el = viewportRef.current;
-        if (!el) return;
-        const r = el.getBoundingClientRect();
-        zoomAt(r.left + r.width / 2, r.top + r.height / 2, cam.zoom * 1.08, true);
-      }}
-      onZoomPct={(pct) => {
-        const el = viewportRef.current;
-        if (!el) return;
-        const r = el.getBoundingClientRect();
-        zoomAt(r.left + r.width / 2, r.top + r.height / 2, pct / 100, true);
-      }}
-      onDots={() => setBoard({ dotted: !board.dotted })}
-    />
-  );
+  const pickMention = (hit: VaultHit) => {
+    if (!mentionPos) return;
+    const obj = fitDrop(
+      createMention(
+        mentionPos.x,
+        mentionPos.y,
+        nextZ(board.objects),
+        hit.id,
+        hit.title,
+        hit.kind,
+      ),
+    );
+    upsertWithHistory(obj);
+    setSelected([obj.id]);
+    setMentionPos(null);
+  };
 
-  const hud = selected.length > 0 ? (
-    <BoardHud
-      studio={studio}
-      onStudio={setStudio}
-      paint={
-        <PaintWell
-          fill={selectedSticky?.color ?? selectedShape?.fill}
-          stroke={selectedShape?.stroke ?? "ink"}
-          fillOnly={Boolean(selectedSticky)}
-          open={studio === "paint"}
-          onToggle={() => setStudio(studio === "paint" ? null : "paint")}
-        />
-      }
-      paintOpen={studio === "paint"}
-      paintPanel={
-        selectedSticky ? (
-          <StickyStudio
-            color={selectedSticky.color}
-            onColor={(id) => {
-              setStickyColor(id as FreeformStickyColor);
-              patchWithHistory(selectedSticky.id, {
-                color: id,
-                textColor: stickyContrastTextColor(id),
-              } as Partial<FreeformObject>);
-            }}
-          />
-        ) : selectedShape ? (
-          <ShapeStudio
-            kind={selectedShape.shape}
-            fill={selectedShape.fill}
-            stroke={selectedShape.stroke}
-            width={selectedShape.strokeWidth}
-            dash={selectedShape.strokeDash}
-            onKind={(k) => {
-              setShapeKind(k);
-              patchWithHistory(selectedShape.id, { shape: k } as Partial<FreeformObject>);
-            }}
-            onFill={(id) => {
-              setShapeFill(id);
-              patchWithHistory(selectedShape.id, { fill: id } as Partial<FreeformObject>);
-            }}
-            onStroke={(id) => {
-              setShapeStroke(id);
-              patchWithHistory(selectedShape.id, { stroke: id } as Partial<FreeformObject>);
-            }}
-            onWidth={(n) => {
-              setShapeWidth(n);
-              patchWithHistory(selectedShape.id, { strokeWidth: n } as Partial<FreeformObject>);
-            }}
-            onDash={(d) => {
-              setShapeDash(d);
-              patchWithHistory(selectedShape.id, { strokeDash: d } as Partial<FreeformObject>);
-            }}
-            showLabel={selectedShape.showLabel !== false}
-            onShowLabel={(on) => {
-              patchWithHistory(selectedShape.id, { showLabel: on } as Partial<FreeformObject>);
-            }}
-          />
-        ) : null
-      }
-      hasPaint={Boolean(selectedSticky || selectedShape)}
-      hasType={Boolean(typeObj)}
-      typePanel={
-        typeObj ? (
-          <TypeStudio
-            obj={typeObj}
-            sizes={typeSizes}
-            colorKey={typeColorKey}
-            onPatch={(id, patch) => patchWithHistory(id, patch)}
-            onEdit={(id) => setEditing(id)}
-          />
-        ) : null
-      }
-      arrangePanel={
-        <ArrangeStudio
-          multi={selected.length > 1}
-          onForward={bringForward}
-          onFront={bringFront}
-          onBackward={sendBackward}
-          onBack={sendBack}
-          onAlign={applyAlign}
-        />
-      }
-      connect={
-        selectedAny ? (
-          <HudConnectBtn
-            active={connectFrom === selectedAny.id}
-            onClick={() => {
-              setTool("select");
-              setConnectFrom((cur) => (cur === selectedAny.id ? null : selectedAny.id));
-            }}
-          />
-        ) : null
-      }
-    />
-  ) : null;
+  const zoomFromCenter = (nextZoom: number) => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    zoomAt(r.left + r.width / 2, r.top + r.height / 2, nextZoom, true);
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -1672,6 +1024,14 @@ export function FreeformView() {
       </TitleBar>
 
       <div className="relative min-h-0 flex-1">
+      {!board.objects.length && !(board.connections ?? []).length && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+          <EmptyState
+            title="Blank board"
+            description="Drop a page onto the blotter, or pick a tool and place something."
+          />
+        </div>
+      )}
       <div
         ref={viewportRef}
         className={cn(
@@ -1690,16 +1050,29 @@ export function FreeformView() {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onDragOver={(e) => {
+          if (!hasFileTransfer(e)) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+        }}
+        onDrop={(e) => {
+          if (!hasFileTransfer(e)) return;
+          const files = filesFromFileList(e.dataTransfer.files).filter((f) => isImageAsset(f.name, f.type));
+          if (!files.length) return;
+          e.preventDefault();
+          e.stopPropagation();
+          void placeImageFiles(screenToWorld(e.clientX, e.clientY), files);
+        }}
         onDoubleClick={(e) => {
           if (e.button !== 0) return;
           if (tool !== "select") return;
           const w = screenToWorld(e.clientX, e.clientY);
           const hit = hitBoardObjectAt(objectsRef.current, w.x, w.y);
-          if (hit && (hit.type === "shape" || hit.type === "mind")) {
+          if (hit && (hit.type === "shape" || hit.type === "mind" || hit.type === "table")) {
             e.preventDefault();
             e.stopPropagation();
             if (hit.type === "shape" && hit.showLabel === false) {
-              patchWithHistory(hit.id, { showLabel: true } as Partial<FreeformObject>);
+              patchWithHistory(hit.id, { showLabel: true });
             }
             setSelected([hit.id]);
             setEditing(hit.id);
@@ -1719,8 +1092,10 @@ export function FreeformView() {
               id: "paste",
               label: "Paste",
               hint: "⌘V",
-              disabled: !clipboardRef.current?.objects.length,
-              onSelect: () => pasteClipboard(),
+              onSelect: () => {
+                if (clipboardRef.current?.objects.length) pasteClipboard();
+                else pasteFromOsRef.current();
+              },
             },
           ];
           if (selectedRef.current.length) {
@@ -1892,6 +1267,7 @@ export function FreeformView() {
                 ];
                 open(e, items);
               }}
+              onTableRange={obj.type === "table" && selected.includes(obj.id) ? setTableRange : undefined}
               onPatch={(id, patch) => {
                 const target = board.objects.find((o) => o.id === id);
                 const bag = patch as Record<string, unknown>;
@@ -1905,7 +1281,7 @@ export function FreeformView() {
                     {
                       ...patch,
                       h: mindNodeHeight(bag.text, fontSize),
-                    } as Partial<FreeformObject>,
+                    },
                     isTextBody && editing === id,
                   );
                   return;
@@ -1917,145 +1293,76 @@ export function FreeformView() {
           ))}
 
           {mentionPos && (
-            <div
-              className="absolute z-50 w-80 rounded-lg border border-line bg-paper p-2 shadow-lg"
-              style={{ left: mentionPos.x, top: mentionPos.y }}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              <input
-                autoFocus
-                className="klever-focus mb-2 w-full rounded-md border border-line bg-paper-2 px-2 py-1.5 text-sm"
-                aria-label="Mention a page, database, or file"
-                placeholder="@ page, database, or file…"
-                value={mentionQ}
-                onChange={(e) => setMentionQ(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Escape") setMentionPos(null);
-                  if (e.key === "Enter" && mentionHits[0]) {
-                    const hit = mentionHits[0];
-                    const obj = fitDrop(
-                      createMention(
-                        mentionPos.x,
-                        mentionPos.y,
-                        nextZ(board.objects),
-                        hit.id,
-                        hit.title,
-                        hit.kind,
-                      ),
-                    );
-                    upsertWithHistory(obj);
-                    setSelected([obj.id]);
-                    setMentionPos(null);
-                  }
-                }}
-              />
-              <ul className="max-h-64 overflow-y-auto">
-                {mentionHits.map((hit) => {
-                  const meta = KIND_META[hit.kind];
-                  const Icon = meta.icon;
-                  return (
-                    <li key={`${hit.kind}:${hit.id}`}>
-                      <button
-                        type="button"
-                        className="flex w-full items-start gap-2 rounded-lg px-2 py-2 text-left hover:bg-paper-2"
-                        onClick={() => {
-                          const obj = fitDrop(
-                            createMention(
-                              mentionPos.x,
-                              mentionPos.y,
-                              nextZ(board.objects),
-                              hit.id,
-                              hit.title,
-                              hit.kind,
-                            ),
-                          );
-                          upsertWithHistory(obj);
-                          setSelected([obj.id]);
-                          setMentionPos(null);
-                        }}
-                      >
-                        <Icon size={12} strokeWidth={1.4} className="mt-1 shrink-0 text-mute" />
-                        <span className="min-w-0 flex-1">
-                          <span className="flex items-center gap-2">
-                            <span className="truncate text-sm text-ink">{hit.title}</span>
-                            <span className="shrink-0 font-mono text-[9px] uppercase tracking-wide text-faint">
-                              {meta.label}
-                            </span>
-                          </span>
-                          <span className="mt-0.5 block truncate font-mono text-[10px] text-faint">
-                            {hit.path}
-                          </span>
-                          <span className="mt-1 line-clamp-2 text-[12px] leading-snug text-mute">
-                            {hit.snippet}
-                          </span>
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-                {!mentionHits.length && (
-                  <li className="px-2 py-2 font-mono text-[10px] text-faint">Nothing matches.</li>
-                )}
-              </ul>
-            </div>
+            <BoardMentionPicker
+              pos={mentionPos}
+              query={mentionQ}
+              hits={mentionHits}
+              onQuery={setMentionQ}
+              onClose={() => setMentionPos(null)}
+              onPick={pickMention}
+            />
           )}
         </div>
       </div>
 
-      <div className="pointer-events-none absolute inset-0 z-20">
-        <div className="absolute bottom-3 left-1/2 z-20 -translate-x-1/2 md:bottom-auto md:left-3 md:top-1/2 md:translate-x-0 md:-translate-y-1/2">
-          <BoardToolRail
-            tool={tool}
-            studio={studio}
-            onTool={onToolClick}
-            onStudio={setStudio}
-            shape={
-              <ShapeStudio
-                kind={shapeKind}
-                fill={shapeFill}
-                stroke={shapeStroke}
-                width={shapeWidth}
-                dash={shapeDash}
-                onKind={(k) => {
-                  setShapeKind(k);
-                  placeAt(nextPlacePos(), "shape", { shape: k });
-                }}
-                onFill={setShapeFill}
-                onStroke={setShapeStroke}
-                onWidth={setShapeWidth}
-                onDash={setShapeDash}
-              />
-            }
-            ink={
-              <InkStudio
-                tool={inkTool}
-                color={strokeColor}
-                width={activeWidth}
-                swatches={strokeSwatches}
-                minW={inkTool === "highlighter" ? 8 : 1}
-                maxW={inkTool === "highlighter" ? 32 : 6}
-                onTool={setInkTool}
-                onColor={setStrokeColor}
-                onWidth={(n) =>
-                  inkTool === "highlighter" ? setHighlighterWidth(n) : setPenWidth(n)
-                }
-              />
-            }
-            sticky={
-              <StickyStudio
-                color={stickyColor}
-                onColor={(id) => setStickyColor(id as FreeformStickyColor)}
-              />
-            }
-          />
-        </div>
-        {hud && (
-          <div className="absolute bottom-[4.75rem] left-1/2 z-20 -translate-x-1/2 md:bottom-4">
-            {hud}
-          </div>
-        )}
-        <div className="absolute right-3 top-3 z-20 md:bottom-4 md:right-4 md:top-auto">{viewHud}</div>
-      </div>
+      <BoardFloatingChrome
+        tool={tool}
+        studio={studio}
+        onTool={onToolClick}
+        onStudio={setStudio}
+        shapeKind={shapeKind}
+        shapeFill={shapeFill}
+        shapeStroke={shapeStroke}
+        shapeWidth={shapeWidth}
+        shapeDash={shapeDash}
+        onShapeKind={setShapeKind}
+        onShapeFill={setShapeFill}
+        onShapeStroke={setShapeStroke}
+        onShapeWidth={setShapeWidth}
+        onShapeDash={setShapeDash}
+        placeShape={(k) => placeAt(nextPlacePos(), "shape", { shape: k })}
+        inkTool={inkTool}
+        strokeColor={strokeColor}
+        activeWidth={activeWidth}
+        strokeSwatches={strokeSwatches}
+        onInkTool={setInkTool}
+        onStrokeColor={setStrokeColor}
+        onStrokeWidth={(n) =>
+          inkTool === "highlighter" ? setHighlighterWidth(n) : setPenWidth(n)
+        }
+        stickyColor={stickyColor}
+        onStickyColor={setStickyColor}
+        selectedCount={selected.length}
+        selectedSticky={selectedSticky}
+        selectedShape={selectedShape}
+        selectedTable={selectedTable}
+        selectedAny={selectedAny}
+        typeObj={typeObj}
+        typeSizes={typeSizes}
+        typeColorKey={typeColorKey}
+        tableRange={tableRange}
+        connectFrom={connectFrom}
+        onPatch={(id, patch) => patchWithHistory(id, patch)}
+        onEdit={setEditing}
+        onBringForward={bringForward}
+        onBringFront={bringFront}
+        onSendBackward={sendBackward}
+        onSendBack={sendBack}
+        onAlign={applyAlign}
+        onConnectToggle={(id) =>
+          setConnectFrom((cur) => (cur === id ? null : id))
+        }
+        onSetTool={setTool}
+        zoomPct={zoomPct}
+        minZoomPct={Math.round(ZOOM_MIN * 100)}
+        maxZoomPct={Math.round(ZOOM_MAX * 100)}
+        dotted={board.dotted}
+        onZoomOut={() => zoomFromCenter(cam.zoom * 0.92)}
+        onZoomReset={() => zoomFromCenter(1)}
+        onZoomIn={() => zoomFromCenter(cam.zoom * 1.08)}
+        onZoomPct={(pct) => zoomFromCenter(pct / 100)}
+        onDots={() => setBoard({ dotted: !board.dotted })}
+      />
       </div>
 
       {confirmClear && (
@@ -2063,6 +1370,7 @@ export function FreeformView() {
           title="Clear this board?"
           description="Every object and connection on this board is removed. You can undo with ⌘Z."
           confirmLabel="Clear board"
+          danger
           onConfirm={() => {
             withHistory(() => clearBoard());
             setSelected([]);

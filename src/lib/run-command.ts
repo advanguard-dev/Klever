@@ -50,6 +50,9 @@ export async function runCommand(cmd: InsertCommand) {
     case "page":
       app.createPage();
       return;
+    case "split-page":
+      if (currentNoteId()) app.setPageSplitOpen(true);
+      return;
     case "daily":
       app.createDaily();
       return;

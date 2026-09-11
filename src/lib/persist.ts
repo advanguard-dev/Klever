@@ -178,7 +178,7 @@ export async function loadMeta(): Promise<PersistedMeta> {
     cal: migrateCalSettings(meta?.cal),
     calendarSources: migrateCalendarSources(meta?.calendarSources),
     displayName: meta?.displayName || "You",
-    strongFocus: Boolean(meta?.strongFocus),
+    strongFocus: meta?.strongFocus !== false,
     locale,
     dev: normalizeDevSettings(meta?.dev),
     lastPath: meta?.lastPath,

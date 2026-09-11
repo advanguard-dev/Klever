@@ -1,4 +1,5 @@
 import { nid } from "@/lib/ids";
+import type { FreeformPatch } from "@/lib/freeform-patch";
 import type { FreeformConnection, FreeformObject } from "@/types";
 
 export const GRID = 8;
@@ -200,15 +201,17 @@ export function scalePathPoints(
 export function applyResizeToObject(
   obj: FreeformObject,
   box: Box,
-): Partial<FreeformObject> {
+): FreeformPatch {
   if (obj.type === "path") {
     return {
       ...box,
       points: scalePathPoints(obj, box),
-    } as Partial<FreeformObject>;
+    };
   }
-  return box as Partial<FreeformObject>;
+  return box;
 }
+
+export { mergeObjectPatch } from "@/lib/freeform-patch";
 
 /**
  * Snap a moving group: alignment to other objects wins, then optional grid.

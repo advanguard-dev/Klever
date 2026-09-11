@@ -7,14 +7,33 @@ import { NoteLabel } from "@/lib/chrome-icons";
 import { copyFromTipTap, cutFromTipTap, insertClipboardIntoTipTap, pasteIntoTipTap } from "@/lib/clipboard-editing";
 import { htmlLooksExplosive, sanitizePastedHtml } from "@/lib/paste-guard";
 import { registerBeforeFlush } from "@/lib/save-hooks";
-import { registerLinkEmbed, registerWysiwyg } from "@/lib/editor-bridge";
+import { registerLinkEmbed, registerSelection, registerUndoRedo, registerWysiwyg } from "@/lib/editor-bridge";
 import { coerceHttpUrl, urlEmbedHtml, urlHostname } from "@/lib/url-embed";
 import { UrlEmbed } from "@/lib/url-embed-ext";
 import { LinkEmbedDialog } from "@/components/editor/LinkEmbedDialog";
-import { resolveAssetSrc } from "@/lib/assets";
+import { ImageBlock } from "@/components/editor/ImageBlock";
+import { isImageAsset, parseAlt } from "@/lib/assets";
 import { hasFileTransfer } from "@/lib/dnd";
 import { handleDroppedFiles } from "@/lib/drop-files";
 import { filesFromFileList } from "@/lib/local-file-path";
+import {
+  type BlockSpan,
+  blockRangeFromDom,
+  closestBlock,
+  countBlocksInSpan,
+  createBlockDragGhost,
+  deleteBlock,
+  dropAnchor,
+  duplicateBlock,
+  moveBlock,
+  moveSpan,
+  paintBlockSelection,
+  relocateSpan,
+  spanCovers,
+  spanFromCaret,
+  spanFromTextSelection,
+  unionBlockSpans,
+} from "@/lib/block-span";
 import { htmlToMd, mdToHtml } from "@/lib/markdown-io";
 import { resolveLink } from "@/lib/parse";
 import { runCommand } from "@/lib/run-command";
@@ -33,32 +52,36 @@ import Placeholder from "@tiptap/extension-placeholder";
 import { TableKit } from "@tiptap/extension-table";
 import TaskItem from "@tiptap/extension-task-item";
 import TaskList from "@tiptap/extension-task-list";
-import { Fragment } from "@tiptap/pm/model";
 import { TextSelection } from "@tiptap/pm/state";
-import type { EditorView } from "@tiptap/pm/view";
 import { BubbleMenu } from "@tiptap/react/menus";
-import { EditorContent, useEditor, type Editor } from "@tiptap/react";
+import { EditorContent, NodeViewWrapper, ReactNodeViewRenderer, useEditor, type Editor, type ReactNodeViewProps } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Bold, GripVertical, Heading2, Italic, Link2, Plus, Strikethrough } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 
+function AssetImageView({ node, updateAttributes, editor }: ReactNodeViewProps) {
+  const src = String(node.attrs.src ?? "");
+  const parsed = parseAlt(String(node.attrs.alt ?? ""));
+  const writeAlt = (caption: string, width?: number) => {
+    updateAttributes({ alt: width ? `${caption}|${Math.round(width)}` : caption });
+  };
+  return (
+    <NodeViewWrapper as="div" className="klever-asset-image">
+      <ImageBlock
+        src={src}
+        caption={parsed.caption}
+        width={parsed.width}
+        readOnly={!editor.isEditable}
+        onWidth={(w) => writeAlt(parsed.caption, w)}
+        onCaption={(c) => writeAlt(c, parsed.width)}
+      />
+    </NodeViewWrapper>
+  );
+}
+
 const AssetImage = Image.extend({
   addNodeView() {
-    return ({ node }) => {
-      const img = document.createElement("img");
-      img.alt = node.attrs.alt ?? "";
-      img.className = "max-w-full";
-      const src = String(node.attrs.src ?? "");
-      img.src = resolveAssetSrc(src, useApp.getState().blobs);
-      return {
-        dom: img,
-        update: (n) => {
-          img.alt = n.attrs.alt ?? "";
-          img.src = resolveAssetSrc(String(n.attrs.src ?? ""), useApp.getState().blobs);
-          return true;
-        },
-      };
-    };
+    return ReactNodeViewRenderer(AssetImageView);
   },
 });
 
@@ -106,11 +129,14 @@ export function BlockEditor({
   markdown,
   onChange,
   editable = true,
+  bridgeActive = true,
 }: {
   noteId: string;
   markdown: string;
   onChange: (md: string) => void;
   editable?: boolean;
+  /** When false, another pane owns the global editor bridge. */
+  bridgeActive?: boolean;
 }) {
   const notes = useApp((s) => s.notes);
   const setPlusOpen = useApp((s) => s.setPlusOpen);
@@ -132,7 +158,12 @@ export function BlockEditor({
   const gutterStateRef = useRef(gutter);
   gutterStateRef.current = gutter;
   const [dropLine, setDropLine] = useState<number | null>(null);
-  const dragRef = useRef<{ from: number; size: number } | null>(null);
+  const dragRef = useRef<BlockSpan | null>(null);
+  const dragGhostRef = useRef<HTMLElement | null>(null);
+  const dragGhostOffsetRef = useRef({ x: 0, y: 0 });
+  const blockSelRef = useRef<BlockSpan | null>(null);
+  const blockSelAnchorRef = useRef<BlockSpan | null>(null);
+  const [blockSelTick, setBlockSelTick] = useState(0);
   const lastEmitted = useRef(markdown);
   const syncingRef = useRef(false);
   const onChangeRef = useRef(onChange);
@@ -188,8 +219,28 @@ export function BlockEditor({
         },
         transformPastedHTML: (html) => sanitizePastedHtml(html) || html,
         handlePaste: (_view, event) => {
+          const list = event.clipboardData?.files;
+          const fromList = list?.length ? filesFromFileList(list) : [];
+          const fromItems: File[] = [];
+          const items = event.clipboardData?.items;
+          if (items) {
+            for (const item of items) {
+              if (item.kind !== "file") continue;
+              const file = item.getAsFile();
+              if (file) fromItems.push(file);
+            }
+          }
+          const imageFiles = [...fromList, ...fromItems].filter(
+            (f, i, arr) =>
+              isImageAsset(f.name, f.type) && arr.findIndex((x) => x === f || (x.name === f.name && x.size === f.size)) === i,
+          );
           const html = event.clipboardData?.getData("text/html") ?? "";
           const text = event.clipboardData?.getData("text/plain") ?? "";
+          if (imageFiles.length && html.length < 400) {
+            event.preventDefault();
+            void handleDroppedFiles(imageFiles, { attachToNoteId: noteId });
+            return true;
+          }
           if (!html && !text) return false;
           if (!htmlLooksExplosive(html, text) && html.length + text.length < 24_000) return false;
           event.preventDefault();
@@ -243,15 +294,48 @@ export function BlockEditor({
             const $pos = editorView.state.doc.resolve(coords.pos);
             editorView.dispatch(editorView.state.tr.setSelection(TextSelection.near($pos)));
           }
-          const appView = useApp.getState().view;
-          const noteId = appView.kind === "note" ? appView.id : undefined;
           void handleDroppedFiles(files, { attachToNoteId: noteId, at });
           return true;
         },
         handleKeyDown: (_view, event) => {
+          const mod = event.metaKey || event.ctrlKey;
+          if (mod && event.key.toLowerCase() === "z") {
+            const ed = editorRef.current;
+            if (ed) {
+              const ok = event.shiftKey ? ed.commands.redo() : ed.commands.undo();
+              if (ok) {
+                event.preventDefault();
+                return true;
+              }
+            }
+          }
+          if (mod && !event.shiftKey && event.key.toLowerCase() === "y") {
+            const ed = editorRef.current;
+            if (ed?.commands.redo()) {
+              event.preventDefault();
+              return true;
+            }
+          }
           if (event.altKey && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
             const ed = editorRef.current;
-            if (ed && moveBlock(ed, event.key === "ArrowDown" ? 1 : -1)) {
+            if (!ed) return false;
+            const dir = event.key === "ArrowDown" ? 1 : -1;
+            const span =
+              blockSelRef.current ??
+              spanFromTextSelection(ed) ??
+              spanFromCaret(ed);
+            if (span) {
+              const next = moveSpan(ed, span, dir);
+              if (next) {
+                blockSelRef.current = next;
+                blockSelAnchorRef.current = { from: next.from, size: next.size };
+                paintBlockSelection(ed.view, wrapRef.current, next);
+                setBlockSelTick((n) => n + 1);
+                event.preventDefault();
+                return true;
+              }
+            }
+            if (moveBlock(ed, dir)) {
               event.preventDefault();
               return true;
             }
@@ -364,6 +448,7 @@ export function BlockEditor({
   }, [editor, editable]);
 
   useEffect(() => {
+    if (!bridgeActive) return;
     registerLinkEmbed((opts) => {
       const ed = editorRef.current;
       const selected =
@@ -378,9 +463,10 @@ export function BlockEditor({
       });
     });
     return () => registerLinkEmbed(null);
-  }, []);
+  }, [bridgeActive]);
 
   useEffect(() => {
+    if (!bridgeActive) return;
     if (!editor || editor.isDestroyed) return;
     registerWysiwyg({
       snippet: (md, at) => {
@@ -397,14 +483,32 @@ export function BlockEditor({
       },
       command: (id) => applyCommand(editor, id),
     });
-    return () => registerWysiwyg(null);
-  }, [editor]);
+    registerUndoRedo({
+      undo: () => editor.commands.undo(),
+      redo: () => editor.commands.redo(),
+    });
+    registerSelection({
+      read: () => {
+        if (editor.isDestroyed || editor.state.selection.empty) return "";
+        return editor.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to, "\n");
+      },
+      replace: (md) => {
+        if (editor.isDestroyed) return false;
+        return editor.chain().focus().deleteSelection().insertContent(mdToHtml(md)).run();
+      },
+    });
+    return () => {
+      registerWysiwyg(null);
+      registerUndoRedo(null);
+      registerSelection(null);
+    };
+  }, [editor, bridgeActive]);
 
   const applyMarkdown = (ed: Editor, md: string) => {
     syncingRef.current = true;
     try {
       ed.commands.setContent(mdToHtml(md), { emitUpdate: false });
-      hydrateWikiMarks(ed);
+      hydrateWikiNodes(ed);
       lastEmitted.current = htmlToMd(ed.getHTML());
     } finally {
       syncingRef.current = false;
@@ -455,23 +559,61 @@ export function BlockEditor({
     setGutter({ top: br.top - wr.top + wrap.scrollTop, dom: block });
   };
 
+  const setBlockSelection = (span: BlockSpan | null, opts?: { anchor?: BlockSpan | null }) => {
+    const ed = editorRef.current;
+    blockSelRef.current = span;
+    if (opts && "anchor" in opts) blockSelAnchorRef.current = opts.anchor ?? null;
+    else if (!span) blockSelAnchorRef.current = null;
+    if (ed) paintBlockSelection(ed.view, wrapRef.current, span);
+    setBlockSelTick((n) => n + 1);
+  };
+
   const onWrapMouseMove = (e: ReactMouseEvent) => {
     if (dragRef.current) return;
     const t = e.target as HTMLElement;
     if (t.closest("[data-block-gutter]")) return;
     const ed = editorRef.current;
-    if (!ed) return;
-    const block = closestBlock(t, ed.view.dom);
+    const wrap = wrapRef.current;
+    if (!ed || !wrap) return;
+    let block = closestBlock(t, ed.view.dom);
+    // Left strip is easy to miss — resolve the block under the pointer Y when hovering the gutter column.
+    if (!block) {
+      const wr = wrap.getBoundingClientRect();
+      if (e.clientX <= wr.left + 52) {
+        const hit = dropAnchor(ed.view, wrap, e.clientY);
+        if (hit) {
+          try {
+            const dom = ed.view.nodeDOM(hit.from);
+            if (dom instanceof HTMLElement) block = closestBlock(dom, ed.view.dom) ?? dom;
+            else if (dom instanceof Element) block = closestBlock(dom as HTMLElement, ed.view.dom);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    }
     placeGutter(block);
+  };
+
+  const clearDragGhost = () => {
+    dragGhostRef.current?.remove();
+    dragGhostRef.current = null;
   };
 
   const endDrag = () => {
     const wrap = wrapRef.current;
     wrap?.classList.remove("klever-editor-dragging");
-    gutterDomRef.current?.classList.remove("klever-block-dragging");
+    wrap?.querySelectorAll(".klever-block-dragging").forEach((el) => el.classList.remove("klever-block-dragging"));
+    clearDragGhost();
     dragRef.current = null;
     setDropLine(null);
   };
+
+  useEffect(() => {
+    const ed = editorRef.current;
+    if (!ed || ed.isDestroyed) return;
+    paintBlockSelection(ed.view, wrapRef.current, blockSelRef.current);
+  }, [blockSelTick, editor, markdown]);
 
   useEffect(() => {
     if (!editable || !editor) return;
@@ -480,7 +622,12 @@ export function BlockEditor({
       if (e.button !== 0) return;
       const t = e.target as HTMLElement | null;
       const handle = t?.closest("[data-block-gutter]") as HTMLElement | null;
-      if (!handle) return;
+      if (!handle) {
+        if (t?.closest(".ProseMirror") && !e.shiftKey) {
+          if (blockSelRef.current) setBlockSelection(null, { anchor: null });
+        }
+        return;
+      }
       if (t?.closest("[data-block-insert]")) return;
       const ed = editorRef.current;
       const wrap = wrapRef.current;
@@ -490,19 +637,56 @@ export function BlockEditor({
         (block ? blockRangeFromDom(ed.view, block) : null) ??
         dropAnchor(ed.view, wrap, handle.getBoundingClientRect().top + 8);
       if (!range) return;
-      const from = range.from;
-      const $from = ed.state.doc.resolve(from);
-      const node = $from.nodeAfter;
-      if (!node) return;
+      const clicked: BlockSpan = { from: range.from, size: range.size };
+      let span = clicked;
+      if (e.shiftKey && blockSelAnchorRef.current) {
+        span = unionBlockSpans(ed.state.doc, blockSelAnchorRef.current, clicked) ?? clicked;
+      } else {
+        blockSelAnchorRef.current = clicked;
+      }
+      // If clicking a block already inside a multi-selection without shift, keep the group for drag.
+      if (
+        !e.shiftKey &&
+        blockSelRef.current &&
+        spanCovers(blockSelRef.current, clicked.from) &&
+        blockSelRef.current.size > clicked.size
+      ) {
+        span = blockSelRef.current;
+      } else {
+        setBlockSelection(span, { anchor: e.shiftKey ? blockSelAnchorRef.current : clicked });
+      }
+
       e.preventDefault();
       e.stopPropagation();
-      dragRef.current = { from, size: node.nodeSize };
-      block?.classList.add("klever-block-dragging");
-      wrap.classList.add("klever-editor-dragging");
       const pointerId = e.pointerId;
+      const startY = e.clientY;
+      let dragging = false;
+
+      const markDragging = (s: BlockSpan, clientX: number, clientY: number) => {
+        paintBlockSelection(ed.view, wrap, s);
+        wrap.querySelectorAll(".klever-block-selected").forEach((el) => el.classList.add("klever-block-dragging"));
+        wrap.classList.add("klever-editor-dragging");
+        clearDragGhost();
+        const ghost = createBlockDragGhost(ed.view, s, clientX, clientY);
+        if (ghost) {
+          dragGhostRef.current = ghost.el;
+          dragGhostOffsetRef.current = { x: ghost.offsetX, y: ghost.offsetY };
+        }
+      };
 
       const onMove = (ev: PointerEvent) => {
-        if (ev.pointerId !== pointerId || !dragRef.current) return;
+        if (ev.pointerId !== pointerId) return;
+        if (!dragging && Math.abs(ev.clientY - startY) > 4) {
+          dragging = true;
+          dragRef.current = span;
+          markDragging(span, ev.clientX, ev.clientY);
+        }
+        if (!dragRef.current) return;
+        const ghost = dragGhostRef.current;
+        if (ghost) {
+          const { x, y } = dragGhostOffsetRef.current;
+          ghost.style.transform = `translate3d(${ev.clientX - x}px, ${ev.clientY - y}px, 0)`;
+        }
         const drop = dropAnchor(ed.view, wrap, ev.clientY);
         setDropLine(drop?.line ?? null);
       };
@@ -512,10 +696,15 @@ export function BlockEditor({
         window.removeEventListener("pointerup", onUp, true);
         window.removeEventListener("pointercancel", onUp, true);
         const drag = dragRef.current;
-        const drop = dropAnchor(ed.view, wrap, ev.clientY);
+        const drop = dragging ? dropAnchor(ed.view, wrap, ev.clientY) : null;
         endDrag();
-        if (!drag || !drop) return;
-        relocateBlock(ed, drag.from, drag.size, drop.dest);
+        if (!dragging || !drag || !drop) {
+          paintBlockSelection(ed.view, wrap, blockSelRef.current);
+          return;
+        }
+        const next = relocateSpan(ed, drag, drop.dest);
+        if (next) setBlockSelection(next, { anchor: { from: next.from, size: next.size } });
+        else paintBlockSelection(ed.view, wrap, blockSelRef.current);
       };
       window.addEventListener("pointermove", onMove, true);
       window.addEventListener("pointerup", onUp, true);
@@ -528,10 +717,14 @@ export function BlockEditor({
 
   if (!editor) return <p className="text-mute">Loading editor…</p>;
 
+  const selCount = blockSelRef.current
+    ? countBlocksInSpan(editor.state.doc, blockSelRef.current)
+    : 0;
+
   return (
     <div
       ref={wrapRef}
-      className="relative outline-none md:-ml-8 md:pl-8"
+      className="relative outline-none md:-ml-12 md:pl-12"
       onContextMenu={(e) => {
         if (!editable) return;
         const coords = editor.view.posAtCoords({ left: e.clientX, top: e.clientY });
@@ -550,42 +743,47 @@ export function BlockEditor({
       {editable && gutter && (
         <div
           data-block-gutter
-          className="absolute left-0 z-10 hidden h-6 w-8 touch-none items-center md:flex [&_svg]:pointer-events-none"
-          style={{ top: gutter.top + 2, cursor: "grab" }}
+          className="klever-block-gutter absolute left-0 z-10 hidden touch-none items-center md:flex [&_svg]:pointer-events-none"
+          style={{ top: Math.max(0, gutter.top - 2), cursor: "grab" }}
         >
           <button
             type="button"
             data-block-insert
             aria-label="Insert block"
             title="Insert"
-            className="klever-focus flex h-6 w-4 items-center justify-center rounded-md text-mute hover:bg-paper-2 hover:text-ink"
+            className="klever-focus flex h-8 w-7 items-center justify-center rounded-md text-mute hover:bg-paper-2 hover:text-ink"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
               editor.chain().focus().run();
               setPlusOpen(true, "editor");
             }}
           >
-            <Plus size={13} strokeWidth={1.4} />
+            <Plus size={15} strokeWidth={1.5} />
           </button>
           <span
             role="button"
             tabIndex={0}
-            aria-label="Move block. Drag, or Option Up and Option Down"
-            title="Move · ⌥↑ ⌥↓"
-            className="klever-focus flex h-6 w-4 items-center justify-center rounded-md text-mute hover:bg-paper-2 hover:text-ink"
+            data-block-handle
+            aria-label={
+              selCount > 1
+                ? `Move ${selCount} blocks. Drag, or Option Up and Option Down. Shift-click to extend selection.`
+                : "Move block. Drag, or Option Up and Option Down. Shift-click to select multiple."
+            }
+            title={selCount > 1 ? `Move ${selCount} · ⌥↑ ⌥↓ · ⇧ click` : "Move · ⌥↑ ⌥↓ · ⇧ click"}
+            className="klever-focus flex h-8 w-8 items-center justify-center rounded-md text-mute hover:bg-paper-2 hover:text-ink active:bg-line"
             onKeyDown={(e) =>
               contextMenuFromKey(e, (ev) =>
                 open(ev, blockMenuItems(editor, () => setPlusOpen(true, "editor"))),
               )
             }
           >
-            <GripVertical size={14} strokeWidth={1.4} />
+            <GripVertical size={16} strokeWidth={1.6} />
           </span>
         </div>
       )}
       {editable && dropLine != null && (
         <div
-          className="pointer-events-none absolute left-0 right-0 z-20 h-0.5 rounded-full bg-ink md:left-8"
+          className="pointer-events-none absolute left-0 right-0 z-20 h-0.5 rounded-full bg-ink md:left-12"
           style={{ top: dropLine }}
         />
       )}
@@ -763,29 +961,6 @@ export function BlockEditor({
   );
 }
 
-function currentBlock(editor: Editor) {
-  const { $from } = editor.state.selection;
-  for (let depth = $from.depth; depth > 0; depth--) {
-    const parent = $from.node(depth - 1);
-    if (parent.type.spec.tableRole) continue;
-    const node = $from.node(depth);
-    if (node.isBlock) return { pos: $from.before(depth), node };
-  }
-  return null;
-}
-
-function duplicateBlock(editor: Editor) {
-  const b = currentBlock(editor);
-  if (!b) return;
-  editor.commands.insertContentAt(b.pos + b.node.nodeSize, b.node.toJSON());
-}
-
-function deleteBlock(editor: Editor) {
-  const b = currentBlock(editor);
-  if (!b) return;
-  editor.chain().focus().deleteRange({ from: b.pos, to: b.pos + b.node.nodeSize }).run();
-}
-
 function blockMenuItems(editor: Editor, insert: () => void): ContextMenuItem[] {
   const hasSel = !editor.state.selection.empty;
   return [
@@ -810,6 +985,9 @@ function blockMenuItems(editor: Editor, insert: () => void): ContextMenuItem[] {
       onSelect: () => void pasteIntoTipTap(editor),
     },
     { type: "sep" },
+    { id: "undo", label: "Undo", hint: "⌘Z", onSelect: () => editor.commands.undo() },
+    { id: "redo", label: "Redo", hint: "⇧⌘Z", onSelect: () => editor.commands.redo() },
+    { type: "sep" },
     { id: "dup", label: "Duplicate block", onSelect: () => duplicateBlock(editor) },
     { id: "up", label: "Move up", hint: "⌥↑", onSelect: () => moveBlock(editor, -1) },
     { id: "down", label: "Move down", hint: "⌥↓", onSelect: () => moveBlock(editor, 1) },
@@ -828,142 +1006,6 @@ function blockMenuItems(editor: Editor, insert: () => void): ContextMenuItem[] {
       onSelect: () => deleteBlock(editor),
     },
   ];
-}
-
-/** Swap the current block with its neighbor (Craft-style ⌥↑ / ⌥↓). */
-function moveBlock(editor: Editor, dir: -1 | 1) {
-  const { state } = editor;
-  const $from = state.selection.$from;
-  for (let depth = $from.depth; depth > 0; depth--) {
-    const parent = $from.node(depth - 1);
-    if (parent.type.spec.tableRole) continue;
-    const idx = $from.index(depth - 1);
-    const swap = idx + dir;
-    if (swap < 0 || swap >= parent.childCount) continue;
-    const current = parent.child(idx);
-    const other = parent.child(swap);
-    const currentPos = $from.before(depth);
-    const fromPos = dir > 0 ? currentPos : currentPos - other.nodeSize;
-    const toPos = dir > 0 ? currentPos + current.nodeSize + other.nodeSize : currentPos + current.nodeSize;
-    const first = dir > 0 ? other : current;
-    const second = dir > 0 ? current : other;
-    const tr = state.tr.replaceWith(fromPos, toPos, Fragment.from([first, second]));
-    editor.view.dispatch(tr.scrollIntoView());
-    return true;
-  }
-  return false;
-}
-
-function closestBlock(target: HTMLElement | null, viewDom: HTMLElement): HTMLElement | null {
-  if (!target || !viewDom.contains(target)) return null;
-  const li = target.closest("li");
-  if (li instanceof HTMLElement && viewDom.contains(li)) return li;
-  const top = target.closest(".ProseMirror > *");
-  if (top instanceof HTMLElement && viewDom.contains(top)) return top;
-  return null;
-}
-
-function blockRangeFromDom(view: EditorView, dom: HTMLElement) {
-  const fromPos = (pos: number) => {
-    const $pos = view.state.doc.resolve(pos);
-    for (let d = $pos.depth; d > 0; d--) {
-      const node = $pos.node(d);
-      const parent = $pos.node(d - 1);
-      if (
-        parent.type.name === "doc" ||
-        node.type.name === "listItem" ||
-        node.type.name === "taskItem"
-      ) {
-        const from = $pos.before(d);
-        return { from, size: node.nodeSize, node };
-      }
-    }
-    return null;
-  };
-  try {
-    const found = fromPos(view.posAtDOM(dom, 0));
-    if (found) return found;
-  } catch {
-    /* fall through */
-  }
-  const r = dom.getBoundingClientRect();
-  const hit = view.posAtCoords({ left: r.left + Math.min(24, r.width / 2), top: r.top + 8 });
-  return hit ? fromPos(hit.pos) : null;
-}
-
-/** Drop target from Y. Prefer the DOM block (so list items win over the whole list). */
-function dropAnchor(
-  view: EditorView,
-  wrap: HTMLElement,
-  clientY: number,
-): { dest: number; line: number; from: number; size: number } | null {
-  const wr = wrap.getBoundingClientRect();
-  const lineOf = (top: number, bottom: number, from: number, size: number) => {
-    const before = clientY < (top + bottom) / 2;
-    return {
-      dest: before ? from : from + size,
-      line: (before ? top : bottom) - wr.top + wrap.scrollTop,
-      from,
-      size,
-    };
-  };
-  const box = view.dom.getBoundingClientRect();
-  const x = Math.min(box.left + 48, box.right - 8);
-  const y = Math.max(box.top + 2, Math.min(clientY, box.bottom - 2));
-  const el = document.elementFromPoint(x, y) as HTMLElement | null;
-  const block = closestBlock(el, view.dom);
-  if (block) {
-    const range = blockRangeFromDom(view, block);
-    if (range) {
-      const r = block.getBoundingClientRect();
-      return lineOf(r.top, r.bottom, range.from, range.size);
-    }
-  }
-  const hit = view.posAtCoords({ left: x, top: y });
-  if (!hit) return null;
-  const $pos = view.state.doc.resolve(hit.pos);
-  let found: { from: number; size: number } | null = null;
-  for (let d = $pos.depth; d > 0; d--) {
-    const node = $pos.node(d);
-    if (node.type.name === "listItem" || node.type.name === "taskItem") {
-      found = { from: $pos.before(d), size: node.nodeSize };
-      break;
-    }
-  }
-  if (!found) {
-    for (let d = $pos.depth; d > 0; d--) {
-      if ($pos.node(d - 1).type.name === "doc") {
-        const node = $pos.node(d);
-        found = { from: $pos.before(d), size: node.nodeSize };
-        break;
-      }
-    }
-  }
-  if (!found) return null;
-  let top = y;
-  let bottom = y;
-  try {
-    top = view.coordsAtPos(Math.min(found.from + 1, view.state.doc.content.size)).top;
-    bottom = view.coordsAtPos(Math.max(found.from + 1, found.from + found.size - 1)).bottom;
-  } catch {
-    /* keep y */
-  }
-  return lineOf(top, bottom, found.from, found.size);
-}
-
-function relocateBlock(editor: Editor, from: number, _size: number, dest: number) {
-  const $from = editor.state.doc.resolve(from);
-  const node = $from.nodeAfter;
-  if (!node) return;
-  const sz = node.nodeSize;
-  if (dest >= from && dest <= from + sz) return;
-  const insertAt = dest < from ? dest : dest - sz;
-  const tr = editor.state.tr.delete(from, from + sz);
-  if (insertAt < 0 || insertAt > tr.doc.content.size) return;
-  const $ins = tr.doc.resolve(insertAt);
-  if (!$ins.parent.canReplaceWith($ins.index(), $ins.index(), node.type)) return;
-  tr.insert(insertAt, node);
-  editor.view.dispatch(tr.scrollIntoView());
 }
 
 function FontBtn({
@@ -1059,24 +1101,27 @@ function insertWiki(editor: Editor, title: string, embed: boolean) {
     .focus()
     .deleteRange({ from, to })
     .insertContent({
-      type: "text",
-      text: title,
-      marks: [{ type: "wikiLink", attrs: { target: title, embed } }],
+      type: "wikiLink",
+      attrs: {
+        target: title,
+        label: title,
+        embed,
+        display: embed ? "card" : "mention",
+      },
     })
     .insertContent(" ")
     .run();
 }
 
-/** Turn leftover [[target]] text into wikiLink marks after HTML load. */
-function hydrateWikiMarks(editor: Editor) {
+/** Turn leftover [[target]] text into wikiLink nodes after HTML load. */
+function hydrateWikiNodes(editor: Editor) {
   if (editor.isDestroyed) return;
-  const markType = editor.schema.marks.wikiLink;
-  if (!markType) return;
+  const nodeType = editor.schema.nodes.wikiLink;
+  if (!nodeType) return;
   const re = /(!?)\[\[([^\]|#]+)(?:\|([^\]]+))?\]\]/g;
   const reps: { from: number; to: number; target: string; label: string; embed: boolean }[] = [];
   editor.state.doc.descendants((node, pos) => {
     if (!node.isText || !node.text) return;
-    if (markType.isInSet(node.marks)) return;
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(node.text))) {
@@ -1094,8 +1139,13 @@ function hydrateWikiMarks(editor: Editor) {
   if (!reps.length) return;
   let { tr } = editor.state;
   for (const r of reps.sort((a, b) => b.from - a.from)) {
-    const mark = markType.create({ target: r.target, embed: r.embed });
-    tr = tr.replaceWith(r.from, r.to, editor.schema.text(r.label, [mark]));
+    const wiki = nodeType.create({
+      target: r.target,
+      label: r.label,
+      embed: r.embed,
+      display: r.embed ? "card" : "mention",
+    });
+    tr = tr.replaceWith(r.from, r.to, wiki);
   }
   tr.setMeta("addToHistory", false);
   editor.view.dispatch(tr);

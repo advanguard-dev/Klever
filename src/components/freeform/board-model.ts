@@ -170,6 +170,7 @@ export const STICKY_COLORS: {
 
 export const TEXT_SIZES = [14, 16, 20, 28, 36] as const;
 export const STICKY_TEXT_SIZES = [12, 14, 16, 20, 24] as const;
+export { TABLE_TEXT_SIZES } from "@/lib/table-sheet";
 
 export const TEXT_COLORS: { id: string; label: string; className: string; hex: string }[] = [
   { id: "ink", label: "Ink", className: "text-ink", hex: "#151716" },
@@ -559,7 +560,7 @@ export const DROP = {
   shape: { w: 160, h: 100, fontSize: 14 },
   image: { w: 280, h: 200 },
   link: { w: 240, h: 72 },
-  table: { w: 280, h: 160 },
+  table: { w: 420, h: 240 },
   mind: { w: 180, h: 64, fontSize: 14 },
   mention: { w: 240, h: 56 },
 } as const;
@@ -707,6 +708,10 @@ export function createTable(x: number, y: number, z: number): FreeformObject {
     rows: 3,
     cells: emptyTable(3, 3),
     headerRow: true,
+    fontSize: 13,
+    fontFamily: "sans",
+    align: "left",
+    valign: "middle",
   };
 }
 
@@ -729,8 +734,8 @@ export function resizeTableCells(
 
 export function tablePixelSize(cols: number, rows: number) {
   return {
-    w: Math.max(160, cols * 88),
-    h: Math.max(96, rows * 36 + 8),
+    w: Math.max(280, cols * 96 + 28),
+    h: Math.max(160, rows * 34 + 44),
   };
 }
 

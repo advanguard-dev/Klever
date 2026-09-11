@@ -3,16 +3,17 @@ import { AppShell } from "@/components/layout/AppShell";
 import { Welcome } from "@/components/layout/Welcome";
 import { UnlockWorkspace } from "@/components/layout/UnlockWorkspace";
 import { WorkspaceSetup } from "@/components/layout/WorkspaceSetup";
+import { runEditorRedo, runEditorUndo } from "@/lib/editor-bridge";
 import { defaultWorkspaceTools } from "@/lib/workspaces";
 import { applyDocumentLang } from "@/lib/i18n";
 import { useT } from "@/lib/use-t";
 import { useApp } from "@/store";
-import { nextEditorMode } from "@/types";
 import { useEffect } from "react";
 
 declare global {
   interface Window {
     __kleverFlush?: () => Promise<void>;
+    __kleverSeedOrchard?: () => Promise<void>;
   }
 }
 
@@ -28,14 +29,15 @@ export function App() {
   const createPage = useApp((s) => s.createPage);
   const toggleSidebar = useApp((s) => s.toggleSidebar);
   const createDaily = useApp((s) => s.createDaily);
-  const setMode = useApp((s) => s.setMode);
-  const mode = useApp((s) => s.mode);
+  const presenting = useApp((s) => s.presenting);
+  const setPresenting = useApp((s) => s.setPresenting);
   const commandOpen = useApp((s) => s.commandOpen);
   const dumpOpen = useApp((s) => s.dumpOpen);
   const setSettingsOpen = useApp((s) => s.setSettingsOpen);
   const setPlusOpen = useApp((s) => s.setPlusOpen);
   const closeWorkspaceSetup = useApp((s) => s.closeWorkspaceSetup);
   const flushNow = useApp((s) => s.flushNow);
+  const startGraphFixture = useApp((s) => s.startGraphFixture);
   const workspaces = useApp((s) => s.workspaces);
   const activeWorkspaceId = useApp((s) => s.activeWorkspaceId);
   const tools =
@@ -46,11 +48,20 @@ export function App() {
   }, [hydrate]);
 
   useEffect(() => {
+    const unsub = window.kleverDesktop?.onEditCommand?.((action) => {
+      if (action === "undo") runEditorUndo();
+      else runEditorRedo();
+    });
+    return () => unsub?.();
+  }, []);
+
+  useEffect(() => {
     applyDocumentLang(locale);
   }, [locale]);
 
   useEffect(() => {
     window.__kleverFlush = flushNow;
+    if (import.meta.env.DEV) window.__kleverSeedOrchard = startGraphFixture;
     const onHide = () => {
       if (document.visibilityState !== "hidden") return;
       void flushNow();
@@ -62,10 +73,11 @@ export function App() {
     window.addEventListener("pagehide", onPageHide);
     return () => {
       delete window.__kleverFlush;
+      delete window.__kleverSeedOrchard;
       document.removeEventListener("visibilitychange", onHide);
       window.removeEventListener("pagehide", onPageHide);
     };
-  }, [flushNow]);
+  }, [flushNow, startGraphFixture]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -104,14 +116,15 @@ export function App() {
       }
       if (meta && e.key.toLowerCase() === "e") {
         e.preventDefault();
-        setMode(nextEditorMode(mode));
+        setPresenting(!presenting);
       }
       if (e.key === "Escape") {
-        if (mode === "read") return;
+        if (presenting) return;
         setCommandOpen(false);
         setDumpOpen(false);
         setSettingsOpen(false);
         setPlusOpen(false);
+        useApp.getState().setPageSplitOpen(false);
         closeWorkspaceSetup();
       }
     };
@@ -123,10 +136,10 @@ export function App() {
     createDaily,
     createPage,
     dumpOpen,
-    mode,
+    presenting,
     setCommandOpen,
     setDumpOpen,
-    setMode,
+    setPresenting,
     setSettingsOpen,
     setView,
     setPlusOpen,

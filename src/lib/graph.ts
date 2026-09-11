@@ -1,5 +1,6 @@
 import type { GraphEdge, GraphNode, Note } from "@/types";
 import { applyOutsideCode, extractWikilinks, resolveLink, WIKI_RE } from "@/lib/parse";
+import { asRelationList, isRelationPropKey, relationKindLabel } from "@/lib/relations";
 
 export function buildGraph(notes: Note[]): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const nodes: GraphNode[] = notes.map((n) => ({
@@ -16,12 +17,12 @@ export function buildGraph(notes: Note[]): { nodes: GraphNode[]; edges: GraphEdg
 
   const edges: GraphEdge[] = [];
   const seen = new Set<string>();
-  const add = (source: string, target: string, kind: GraphEdge["kind"]) => {
+  const add = (source: string, target: string, kind: GraphEdge["kind"], label?: string) => {
     if (source === target) return;
-    const key = `${kind}:${source}->${target}`;
+    const key = `${kind}:${label ?? ""}:${source}->${target}`;
     if (seen.has(key)) return;
     seen.add(key);
-    edges.push({ source, target, kind });
+    edges.push({ source, target, kind, label });
   };
 
   for (const note of notes) {
@@ -33,16 +34,10 @@ export function buildGraph(notes: Note[]): { nodes: GraphNode[]; edges: GraphEdg
       const schema =
         notes.find((n) => n.id === note.parent)?.schema?.find((s) => s.key === key) ??
         note.schema?.find((s) => s.key === key);
-      const isRel =
-        schema?.type === "relation" ||
-        schema?.type === "people" ||
-        key === "related" ||
-        key === "people";
-      if (!isRel) continue;
-      const list = Array.isArray(val) ? val : val ? [val] : [];
-      for (const item of list) {
-        const hit = resolveLink(String(item), notes);
-        if (hit) add(note.id, hit.id, "relation");
+      if (!isRelationPropKey(key, schema?.type)) continue;
+      for (const item of asRelationList(val)) {
+        const hit = resolveLink(item, notes);
+        if (hit) add(note.id, hit.id, "relation", relationKindLabel(key));
       }
     }
     for (const t of note.tags) add(note.id, `tag:${t}`, "tag");
@@ -80,17 +75,10 @@ export function relationsTo(noteId: string, notes: Note[]): Note[] {
       const schema =
         notes.find((d) => d.id === n.parent)?.schema?.find((s) => s.key === key) ??
         n.schema?.find((s) => s.key === key);
-      if (
-        schema &&
-        schema.type !== "relation" &&
-        schema.type !== "people" &&
-        key !== "related" &&
-        key !== "people"
-      ) {
-        return false;
-      }
-      const list = Array.isArray(val) ? val : val ? [val] : [];
-      return list.some((item) => resolveLink(String(item), notes)?.id === noteId || String(item) === note?.title);
+      if (!isRelationPropKey(key, schema?.type)) return false;
+      return asRelationList(val).some(
+        (item) => resolveLink(item, notes)?.id === noteId || item === note?.title,
+      );
     });
   });
 }

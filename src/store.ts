@@ -10,6 +10,7 @@ import type {
   DevSettings,
   EditorMode,
   FreeformBoard,
+  FreeformConnection,
   FreeformObject,
   InsertContext,
   Note,
@@ -21,8 +22,11 @@ import type {
   WorkspaceAiMode,
   WorkspaceLock,
   WorkspaceTools,
+  PageSplit,
+  SplitSide,
 } from "@/types";
-import { defaultAi } from "@/lib/ai";
+import { normalizeEditorMode } from "@/types";
+import { defaultAi, probeAiConfigured } from "@/lib/ai";
 import { defaultDevSettings, normalizeDevSettings } from "@/lib/dev-settings";
 import { applyDocumentLang, detectBrowserLocale, resolveLocale, type Locale } from "@/lib/i18n";
 import {
@@ -36,7 +40,7 @@ import {
 } from "@/lib/calendar-sync";
 import { defaultCalSettings } from "@/lib/calcom";
 import { DEMO_FILES } from "@/lib/demo";
-import { assetPathFor, mimeFromPath, pickFiles, pickLocalFiles, refreshBlobFromHandle, refreshBlobsFromDisk, safeFileName } from "@/lib/assets";
+import { assetPathFor, displayMime, isImageAsset, pickFiles, pickLocalFiles, refreshBlobFromHandle, refreshBlobsFromDisk, safeFileName } from "@/lib/assets";
 import { nid, slugify, todayDate, todayIso } from "@/lib/ids";
 import { handleDroppedFiles } from "@/lib/drop-files";
 import { isElectron } from "@/lib/electron";
@@ -53,9 +57,13 @@ import {
 import { clearSessionDek, isSessionUnlocked, sessionDekFor, setSessionDek } from "@/lib/vault-session";
 import { isEncryptedWorkspace, lockFromWrap, wrapFromLock } from "@/lib/workspace-lock";
 import { isTouchCancel, touchEncryptSecret, touchUnlockSecret } from "@/lib/touch-id";
-import { blobsFromDesktopPayload, blobsToDesktopPayload, externalFileBlob } from "@/lib/open-local-file";
+import { blobsFromDesktopPayload, blobsToDesktopPayload, externalFileBlob, imageBytesForDisplay, readAbsoluteFile } from "@/lib/open-local-file";
 import { localPathFromFile } from "@/lib/local-file-path";
 import { fileToNote, normalizeNote, noteToFile, notesFromFiles } from "@/lib/parse";
+import { draftNoteBody, replaceOpenNoteBody } from "@/lib/editor-bridge";
+import { mergeObjectPatch, type FreeformPatch } from "@/lib/freeform-patch";
+import { planPageSplit } from "@/lib/split-page";
+import { buildSplit, pickSplitMate, sanitizeSplit, splitAfterNavigate } from "@/lib/split-session";
 import { defaultViews, newView } from "@/lib/views";
 import {
   canMoveFolder,
@@ -64,13 +72,14 @@ import {
   mergeFolderIcons,
   nestedFolderPath,
   nextFolderPath,
+  noteFolder,
   notesToDeleteWithFolder,
   omitFolderIcons,
   remapFolderIcons,
   rewritePathPrefix,
   uniqueFolderPath,
 } from "@/lib/folders";
-import { createWorkspaceDraft, normalizeWorkspaceTools } from "@/lib/workspaces";
+import { createWorkspaceDraft, defaultWorkspaceTools, normalizeWorkspaceTools } from "@/lib/workspaces";
 import {
   defaultFreeformBoard,
   loadBlobs,
@@ -224,18 +233,24 @@ interface AppState {
   propsOpen: boolean;
   theme: "light" | "dark";
   mode: EditorMode;
+  /** Full-screen Present viewer (not an editor mode). */
+  presenting: boolean;
   strongFocus: boolean;
   /** UI chrome locale. Note bodies are not translated. */
   locale: Locale;
   displayName: string;
   peers: Peer[];
   ai: AiSettings;
+  /** True when Electron main has DEEPSEEK_API_KEY (never stores the key). */
+  aiConfigured: boolean;
   cal: CalSettings;
   calendarSources: CalendarSource[];
   calendarSyncing: boolean;
   dev: DevSettings;
   commandOpen: boolean;
   dumpOpen: boolean;
+  /** Page id whose Relate dialog is open. */
+  relateNoteId: string | null;
   settingsOpen: boolean;
   plusOpen: boolean;
   plusContext: InsertContext;
@@ -245,6 +260,10 @@ interface AppState {
   recents: string[];
   starred: string[];
   openTabs: string[];
+  /** Two notes side by side, or null when the workspace is a single sheet. */
+  split: PageSplit | null;
+  /** Chooser for cutting the current page into two files. */
+  pageSplitOpen: boolean;
   /** Vault folder path → icon (emoji or lucide:name). */
   folderIcons: Record<string, string>;
   workspaces: Workspace[];
@@ -255,6 +274,8 @@ interface AppState {
   unlocked: boolean;
   hydrate: () => Promise<void>;
   startDemo: () => Promise<void>;
+  /** New IndexedDB workspace with a dense lattice. Does not touch the active disk vault. */
+  startGraphFixture: () => Promise<void>;
   startEmpty: () => void;
   openFolder: () => Promise<void>;
   saveToFolder: () => Promise<void>;
@@ -282,16 +303,22 @@ interface AppState {
   closeWorkspaceSetup: () => void;
   setView: (view: AppView) => void;
   closeOpenTab: (id: string) => void;
+  splitPage: (opts: { side: SplitSide; withId?: string; focusIncoming?: boolean }) => void;
+  closeSplit: () => void;
+  setPageSplitOpen: (open: boolean) => void;
+  commitPageSplit: (side: SplitSide) => void;
   toggleStar: (id: string) => void;
   setTheme: (theme: "light" | "dark") => void;
   setStrongFocus: (on: boolean) => void;
   setLocale: (locale: Locale) => void;
   setMode: (mode: EditorMode) => void;
+  setPresenting: (on: boolean) => void;
   setDisplayName: (name: string) => void;
   addComment: (noteId: string, body: string) => void;
   resolveComment: (noteId: string, commentId: string, resolved?: boolean) => void;
   removeComment: (noteId: string, commentId: string) => void;
   setAi: (ai: Partial<AiSettings>) => void;
+  refreshAiStatus: () => Promise<boolean>;
   setCal: (cal: Partial<CalSettings>) => void;
   setDev: (p: Partial<DevSettings>) => void;
   addCalendarSource: (opts: { url: string; name?: string; kind?: CalendarSource["kind"] }) => Promise<void>;
@@ -304,6 +331,7 @@ interface AppState {
   toggleProps: () => void;
   setCommandOpen: (open: boolean) => void;
   setDumpOpen: (open: boolean) => void;
+  setRelateNoteId: (id: string | null) => void;
   setSettingsOpen: (open: boolean) => void;
   setPlusOpen: (open: boolean, context?: InsertContext) => void;
   upsertNote: (note: Note, opts?: { renameFrom?: string }) => void;
@@ -347,10 +375,13 @@ interface AppState {
   deleteEvent: (id: string) => void;
   setBoard: (patch: Partial<FreeformBoard>) => void;
   upsertBoardObject: (obj: FreeformObject) => void;
-  patchBoardObject: (id: string, patch: Partial<FreeformObject>) => void;
+  patchBoardObject: (id: string, patch: FreeformPatch) => void;
   removeBoardObject: (id: string) => void;
   clearBoard: () => void;
-  createBoard: (title?: string) => string;
+  createBoard: (
+    title?: string,
+    seed?: { objects?: FreeformObject[]; connections?: FreeformConnection[] },
+  ) => string;
   deleteBoard: (id: string) => void;
   leaveBoard: () => void;
   duplicateNote: (id: string) => string;
@@ -385,7 +416,7 @@ function applyTheme(theme: "light" | "dark") {
 }
 
 function applyStrongFocus(on: boolean) {
-  document.documentElement.classList.toggle("klever-a11y-focus", on);
+  document.documentElement.classList.toggle("klever-quiet-focus", !on);
 }
 
 function applyLocale(locale: Locale) {
@@ -401,10 +432,13 @@ function lockedShell(folderName: string | null) {
     recents: [] as string[],
     starred: [] as string[],
     openTabs: [] as string[],
+    split: null as PageSplit | null,
     query: "",
     dumpOpen: false,
+    relateNoteId: null,
     plusOpen: false,
     commandOpen: false,
+    pageSplitOpen: false,
     settingsOpen: false,
     workspaceSetupOpen: false,
     workspaceSetupId: null as string | null,
@@ -548,6 +582,7 @@ async function loadWorkspaceIntoState(workspaceId: string) {
         recents: (vaultMeta.recents ?? []).filter((id) => notes.some((n) => n.id === id)),
         starred: (vaultMeta.starred ?? []).filter((id) => notes.some((n) => n.id === id)),
         openTabs: seedOpenTabs(vaultMeta.openTabs ?? [], viewNoteId(homeView(notes)), notes),
+        split: null as PageSplit | null,
         view: homeView(notes),
         unlocked: true,
       };
@@ -562,6 +597,7 @@ async function loadWorkspaceIntoState(workspaceId: string) {
       recents: vaultMeta.recents ?? [],
       starred: vaultMeta.starred ?? [],
       openTabs: vaultMeta.openTabs ?? [],
+      split: null as PageSplit | null,
       view: { kind: "welcome" as const },
       unlocked: true,
     };
@@ -603,18 +639,22 @@ export const useApp = create<AppState>((set, get) => {
     sidebarOpen: true,
     propsOpen: false,
     theme: "light",
-    strongFocus: false,
+    strongFocus: true,
     locale: detectBrowserLocale(),
     mode: "wysiwyg",
+    presenting: false,
     displayName: "You",
     peers: [],
     ai: defaultAi(),
+    aiConfigured: false,
     cal: defaultCalSettings(),
     calendarSources: defaultCalendarSources(),
     calendarSyncing: false,
     dev: defaultDevSettings(),
     commandOpen: false,
     dumpOpen: false,
+    pageSplitOpen: false,
+    relateNoteId: null,
     settingsOpen: false,
     plusOpen: false,
     plusContext: "sidebar",
@@ -624,6 +664,7 @@ export const useApp = create<AppState>((set, get) => {
     recents: [],
     starred: [],
     openTabs: [],
+    split: null,
     folderIcons: {},
     workspaces: [],
     activeWorkspaceId: "",
@@ -695,6 +736,8 @@ export const useApp = create<AppState>((set, get) => {
           unlocked: true,
           error: err instanceof Error ? err.message : "Could not load this vault",
         });
+      } finally {
+        void get().refreshAiStatus();
       }
     },
 
@@ -707,10 +750,28 @@ export const useApp = create<AppState>((set, get) => {
         boards: [defaultFreeformBoard()],
         view: { kind: "note", id: "welcome" },
         openTabs: ["welcome"],
+        split: null,
         folderName: "Sample vault",
         folderIcons: mergeFolderIcons(DEMO_FILES),
       });
       schedule();
+    },
+
+    startGraphFixture: async () => {
+      const { bootGraphFixture } = await import("@/lib/graph-fixture-boot");
+      await bootGraphFixture({
+        get,
+        flush: (s) => flush(s as Parameters<typeof flush>[0]),
+        clearPersistTimer: () => window.clearTimeout(persistTimer),
+        detachVault: () => {
+          dirHandle = null;
+          vaultRootPath = null;
+          if (window.kleverDesktop?.setVaultRoot) void window.kleverDesktop.setVaultRoot("");
+        },
+        vaultFiles,
+        set,
+        schedule,
+      });
     },
 
     startEmpty: () => {
@@ -724,6 +785,7 @@ export const useApp = create<AppState>((set, get) => {
         boards: [defaultFreeformBoard()],
         view: clampViewToTools({ kind: "graph" }, tools, [defaultFreeformBoard()]),
         openTabs: [],
+        split: null,
         folderIcons: {},
         folderName:
           get().workspaces.find((w) => w.id === get().activeWorkspaceId)?.name ?? "Vault",
@@ -920,6 +982,7 @@ export const useApp = create<AppState>((set, get) => {
         view: clampViewToTools(loaded.view, tools, loaded.boards),
         query: "",
         dumpOpen: false,
+        relateNoteId: null,
         plusOpen: false,
         workspaceSetupOpen: false,
         workspaceSetupId: null,
@@ -976,9 +1039,11 @@ export const useApp = create<AppState>((set, get) => {
         recents: [],
         starred: [],
         openTabs: [],
+        split: null,
         folderIcons: {},
         query: "",
         dumpOpen: false,
+        relateNoteId: null,
         plusOpen: false,
         workspaceSetupOpen: false,
         workspaceSetupId: null,
@@ -1168,20 +1233,25 @@ export const useApp = create<AppState>((set, get) => {
       const s = get();
       const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
       if (isEncryptedWorkspace(ws) && !s.unlocked) {
-        set({ view: { kind: "unlock" } });
+        set({ view: { kind: "unlock" }, split: null });
         return;
       }
       const tools = ws?.tools ?? normalizeWorkspaceTools();
       const next = clampViewToTools(view, tools, get().boards);
       const noteId = viewNoteId(next);
-      if (noteId) {
-        const recents = [noteId, ...get().recents.filter((x) => x !== noteId)].slice(0, 3);
-        const openTabs = withOpenTab(get().openTabs, noteId);
-        set({ view: next, recents, openTabs });
-        schedule();
-      } else {
-        set({ view: next });
+      if (!noteId) {
+        set({ view: next, split: null });
+        ping();
+        return;
       }
+      const recents = [noteId, ...get().recents.filter((x) => x !== noteId)].slice(0, 3);
+      const openTabs = withOpenTab(get().openTabs, noteId);
+      const splitRaw = sanitizeSplit(get().split, get().notes);
+      const inSplit =
+        splitRaw && (noteId === splitRaw.leftId || noteId === splitRaw.rightId);
+      const split = inSplit && splitRaw ? splitAfterNavigate(splitRaw, noteId) : null;
+      set({ view: next, recents, openTabs, split, presenting: false });
+      schedule();
       ping();
     },
     closeOpenTab: (id) => {
@@ -1190,13 +1260,68 @@ export const useApp = create<AppState>((set, get) => {
       if (i < 0) return;
       const openTabs = prev.filter((x) => x !== id);
       const current = viewNoteId(get().view);
-      set({ openTabs });
+      const split = get().split;
+      const splitHit = split && (split.leftId === id || split.rightId === id);
+      const keepId = splitHit ? (split.leftId === id ? split.rightId : split.leftId) : undefined;
+      set({ openTabs, split: splitHit ? null : split });
       if (current === id) {
-        const neighborId = openTabs[i] ?? openTabs[i - 1];
+        const neighborId = keepId ?? openTabs[i] ?? openTabs[i - 1];
         const neighbor = neighborId ? get().notes.find((n) => n.id === neighborId) : undefined;
         if (neighbor) get().setView(noteAppView(neighbor));
       }
       schedule();
+    },
+    splitPage: ({ side, withId, focusIncoming = true }) => {
+      const current = viewNoteId(get().view);
+      if (!current) return;
+      if (get().split) return;
+      let other = withId && withId !== current ? withId : undefined;
+      if (other && !get().notes.some((n) => n.id === other)) other = undefined;
+      if (!other) other = pickSplitMate(current, get().notes, get().recents, get().openTabs);
+      // Do not invent Untitled vault pages just to fill a pane.
+      if (!other || other === current) return;
+      const split = buildSplit(current, other, side, focusIncoming);
+      const focusId = split.focus === "left" ? split.leftId : split.rightId;
+      const note = get().notes.find((n) => n.id === focusId);
+      if (!note) return;
+      const next = noteAppView(note);
+      const recents = [focusId, ...get().recents.filter((x) => x !== focusId)].slice(0, 3);
+      const openTabs = withOpenTab(withOpenTab(get().openTabs, split.leftId), split.rightId);
+      set({ view: next, recents, openTabs, split, presenting: false });
+      schedule();
+      ping();
+    },
+    closeSplit: () => {
+      if (!get().split) return;
+      set({ split: null });
+    },
+    setPageSplitOpen: (pageSplitOpen) => set({ pageSplitOpen, commandOpen: pageSplitOpen ? false : get().commandOpen }),
+    commitPageSplit: (side) => {
+      const current = viewNoteId(get().view);
+      if (!current) return;
+      const note = get().notes.find((n) => n.id === current);
+      if (!note || note.type !== "page") return;
+      const body = draftNoteBody(note.body);
+      const plan = planPageSplit(body, note.title, side);
+      if (!plan) return;
+      // Persist keep-body synchronously; bridge is optional UI sync.
+      get().patchNote(current, { body: plan.keepBody });
+      replaceOpenNoteBody(plan.keepBody);
+      const folder = noteFolder(note.path);
+      const nextId = get().createPage({
+        title: plan.nextTitle,
+        body: plan.nextBody,
+        tags: note.tags,
+        parent: note.parent,
+        folder: folder || undefined,
+        stay: true,
+      });
+      set({
+        pageSplitOpen: false,
+        openTabs: withOpenTab(withOpenTab(get().openTabs, current), nextId),
+      });
+      schedule();
+      ping();
     },
     toggleStar: (id) => {
       const starred = get().starred.includes(id)
@@ -1220,7 +1345,13 @@ export const useApp = create<AppState>((set, get) => {
       set({ locale, ai: { ...get().ai, locale } });
       schedule();
     },
-    setMode: (mode) => set({ mode }),
+    setMode: (mode) => {
+      set({ mode: normalizeEditorMode(mode) });
+    },
+    setPresenting: (presenting) => {
+      if (presenting && !get().presenting) runBeforeFlushHooks();
+      set({ presenting, mode: "wysiwyg" });
+    },
     setDisplayName: (displayName) => {
       // Keep raw value while typing; callers commit trim/fallback on blur.
       // Coercing to "You" on every keystroke made the controlled field snap
@@ -1230,12 +1361,17 @@ export const useApp = create<AppState>((set, get) => {
       ping();
     },
     setAi: (ai) => {
-      const next: AiSettings = { ...get().ai, ...ai };
+      const next: AiSettings = { ...get().ai, ...ai, apiKey: "" };
       if ("writingSystemPrompt" in ai && !ai.writingSystemPrompt) delete next.writingSystemPrompt;
       if ("writingPrompts" in ai && !ai.writingPrompts) delete next.writingPrompts;
       if ("lastCustomPrompt" in ai && !ai.lastCustomPrompt) delete next.lastCustomPrompt;
       set({ ai: next });
       schedule();
+    },
+    refreshAiStatus: async () => {
+      const configured = await probeAiConfigured();
+      set({ aiConfigured: configured });
+      return configured;
     },
     setCal: (cal) => {
       set({ cal: { ...get().cal, ...cal } });
@@ -1368,8 +1504,9 @@ export const useApp = create<AppState>((set, get) => {
     setError: (error) => set({ error }),
     toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
     toggleProps: () => set({ propsOpen: !get().propsOpen }),
-    setCommandOpen: (commandOpen) => set({ commandOpen }),
+    setCommandOpen: (commandOpen) => set({ commandOpen, pageSplitOpen: commandOpen ? false : get().pageSplitOpen }),
     setDumpOpen: (dumpOpen) => set({ dumpOpen }),
+    setRelateNoteId: (relateNoteId) => set({ relateNoteId }),
     setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
     setPlusOpen: (plusOpen, context) =>
       set({ plusOpen, plusContext: context ?? get().plusContext }),
@@ -1469,7 +1606,7 @@ export const useApp = create<AppState>((set, get) => {
         const fallback = fallbackId ? notes.find((n) => n.id === fallbackId) : undefined;
         nextView = fallback ? noteAppView(fallback) : { kind: "graph" };
       }
-      set({ notes, openTabs, view: nextView });
+      set({ notes, openTabs, view: nextView, split: sanitizeSplit(get().split, notes) });
       schedule();
     },
 
@@ -1503,7 +1640,7 @@ export const useApp = create<AppState>((set, get) => {
       };
       get().upsertNote(note);
       if (!opts?.stay) {
-        set({ mode: "wysiwyg" });
+        set({ mode: "wysiwyg", presenting: false });
         get().setView(parent ? { kind: "database", id: parent } : { kind: "note", id });
       }
       return id;
@@ -1553,7 +1690,7 @@ export const useApp = create<AppState>((set, get) => {
       const path = `Daily/${date}.md`;
       const existing = get().notes.find((n) => n.path === path || n.title === date);
       if (existing) {
-        set({ mode: "wysiwyg" });
+        set({ mode: "wysiwyg", presenting: false });
         get().setView({ kind: "note", id: existing.id });
         return existing.id;
       }
@@ -1631,10 +1768,7 @@ export const useApp = create<AppState>((set, get) => {
       set({
         boards: withActiveBoard(get(), (cur) => ({
           ...cur,
-          objects: cur.objects.map((o) => {
-            if (o.id !== id) return o;
-            return { ...o, ...patch, id: o.id, type: o.type } as FreeformObject;
-          }),
+          objects: cur.objects.map((o) => (o.id === id ? mergeObjectPatch(o, patch) : o)),
         })),
       });
       schedule();
@@ -1667,12 +1801,14 @@ export const useApp = create<AppState>((set, get) => {
       schedule();
     },
 
-    createBoard: (title) => {
+    createBoard: (title, seed) => {
       const s = get();
       const board = defaultFreeformBoard({
         id: nid(),
         title: title?.trim() || nextBoardTitle(s.boards),
       });
+      if (seed?.objects) board.objects = seed.objects;
+      if (seed?.connections) board.connections = seed.connections;
       set({
         boards: [...s.boards, board],
         view: { kind: "freeform", id: board.id },
@@ -1726,7 +1862,7 @@ export const useApp = create<AppState>((set, get) => {
       set({
         blobs: {
           ...get().blobs,
-          [path]: { mime: mime || file.type || "application/octet-stream", data },
+          [path]: { mime: displayMime(path, mime || file.type), data },
         },
       });
       schedule();
@@ -1747,6 +1883,24 @@ export const useApp = create<AppState>((set, get) => {
         }
       }
 
+      if (rec?.localPath && isImageAsset(key, rec.mime)) {
+        const loaded = await readAbsoluteFile(rec.localPath);
+        if (loaded?.data.byteLength) {
+          set({
+            blobs: {
+              ...get().blobs,
+              [key]: {
+                ...rec,
+                mime: displayMime(key, loaded.mime || rec.mime),
+                data: loaded.data,
+              },
+            },
+          });
+          schedule();
+          return;
+        }
+      }
+
       if (dirHandle) {
         const fromVault = await readBlobFromVault(dirHandle, key);
         if (fromVault) {
@@ -1755,6 +1909,7 @@ export const useApp = create<AppState>((set, get) => {
               ...get().blobs,
               [key]: {
                 ...fromVault,
+                mime: displayMime(key, fromVault.mime),
                 ...(rec?.external ? { external: true } : {}),
                 ...(rec?.localPath ? { localPath: rec.localPath } : {}),
               },
@@ -1767,6 +1922,13 @@ export const useApp = create<AppState>((set, get) => {
 
     storeFileFromDrop: async (file) => {
       const localPath = localPathFromFile(file);
+      const mime = displayMime(file.name, file.type);
+      const preview = await imageBytesForDisplay({
+        path: file.name,
+        mime,
+        file,
+        localPath,
+      });
       // Prefer linking the original path — never copy into assets/ when we know where it lives.
       if (localPath) {
         const vaultPath = `ext/${nid()}/${safeFileName(file.name)}`;
@@ -1774,8 +1936,8 @@ export const useApp = create<AppState>((set, get) => {
           blobs: {
             ...get().blobs,
             [vaultPath]: {
-              mime: file.type || mimeFromPath(file.name),
-              data: new ArrayBuffer(0),
+              mime: preview?.mime || mime,
+              data: preview?.data ?? new ArrayBuffer(0),
               external: true,
               localPath,
             },
@@ -1786,7 +1948,7 @@ export const useApp = create<AppState>((set, get) => {
       }
       // Browser / missing path — keep a vault copy so the attachment still works.
       const path = assetPathFor(file);
-      await get().putBlob(file, path, file.type || mimeFromPath(file.name));
+      await get().putBlob(file, path, mime);
       return path;
     },
 
@@ -1885,6 +2047,7 @@ export const useApp = create<AppState>((set, get) => {
         notes,
         openTabs,
         view: nextView,
+        split: sanitizeSplit(get().split, notes),
         folderIcons: omitFolderIcons(get().folderIcons, folder),
       });
       schedule();
@@ -1913,11 +2076,20 @@ export const useApp = create<AppState>((set, get) => {
 
       for (const item of picked) {
         const { file, handle, localPath } = item;
-        const mime = file.type || mimeFromPath(file.name);
+        const mime = displayMime(file.name, file.type);
+        const preview = await imageBytesForDisplay({
+          path: file.name,
+          mime,
+          file,
+          localPath,
+        });
 
         if (localPath) {
           const vaultPath = `ext/${nid()}/${safeFileName(file.name)}`;
-          nextBlobs[vaultPath] = externalFileBlob(file, { localPath });
+          nextBlobs[vaultPath] = {
+            ...externalFileBlob(file, { localPath, data: preview?.data }),
+            mime: preview?.mime || mime,
+          };
           paths.push(vaultPath);
           continue;
         }
@@ -1927,9 +2099,18 @@ export const useApp = create<AppState>((set, get) => {
             const rel = await dirHandle.resolve(handle);
             if (rel?.length) {
               const vaultPath = rel.join("/");
+              let data = preview?.data ?? new ArrayBuffer(0);
+              if (!data.byteLength && isImageAsset(vaultPath, mime, file.name)) {
+                try {
+                  const live = await handle.getFile();
+                  data = await live.arrayBuffer();
+                } catch {
+                  /* permission */
+                }
+              }
               nextBlobs[vaultPath] = {
-                mime: mime || mimeFromPath(vaultPath),
-                data: new ArrayBuffer(0),
+                mime: preview?.mime || displayMime(vaultPath, mime),
+                data,
                 handle,
               };
               paths.push(vaultPath);
@@ -1941,7 +2122,10 @@ export const useApp = create<AppState>((set, get) => {
         }
 
         const vaultPath = `ext/${nid()}/${safeFileName(file.name)}`;
-        nextBlobs[vaultPath] = externalFileBlob(file, { handle });
+        nextBlobs[vaultPath] = {
+          ...externalFileBlob(file, { handle, data: preview?.data }),
+          mime: preview?.mime || mime,
+        };
         paths.push(vaultPath);
       }
 

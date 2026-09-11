@@ -22,7 +22,7 @@ function VaultFileView({ node, updateAttributes, editor }: ReactNodeViewProps) {
   );
 }
 
-/** Local attachments as link or card — opens on disk, no in-app preview. */
+/** Local attachments as link or card — images render inline. */
 export const VaultFile = Node.create({
   name: "vaultFile",
   group: "block",

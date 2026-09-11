@@ -18,7 +18,6 @@ import {
   Copy,
   Database,
   Equal,
-  Eye,
   File,
   FilePlus,
   FileText,
@@ -43,6 +42,7 @@ import {
   Minus,
   Network,
   Paperclip,
+  Presentation,
   Quote,
   Sigma,
   Sparkles,
@@ -96,15 +96,13 @@ function LazyLucideIcon({
       return;
     }
     let alive = true;
-    void import("lucide-react/dynamicIconImports").then((mod) => {
-      const loaders = mod.default as Record<string, () => Promise<{ default: LucideIcon }>>;
-      const load = loaders[name];
-      if (!load) return;
-      return load().then((m) => {
+    // @vite-ignore: avoid Rollup crawling all ~1.8k lucide icon modules (OOM on 8GB).
+    void import(/* @vite-ignore */ `lucide-react/dist/esm/icons/${name}.js`)
+      .then((m: { default: LucideIcon }) => {
         extraLucide.set(name, m.default);
         if (alive) setIcon(() => m.default);
-      });
-    });
+      })
+      .catch(() => undefined);
     return () => {
       alive = false;
     };
@@ -218,9 +216,12 @@ export const VIEW_ICONS: Record<DbViewType, LucideIcon> = {
 
 export const MODE_ICONS: Record<EditorMode, LucideIcon> = {
   wysiwyg: AlignLeft,
-  markdown: CodeXml,
-  read: Eye,
 };
+
+export const PRESENT_MODE_ICONS = {
+  edit: AlignLeft,
+  present: Presentation,
+} as const;
 
 const COMMAND_ICONS: Record<string, LucideIcon> = {
   h1: Heading1,
@@ -234,6 +235,7 @@ const COMMAND_ICONS: Record<string, LucideIcon> = {
   code: CodeXml,
   divider: Minus,
   table: Table2,
+  mermaid: Network,
   wiki: Brackets,
   transclude: Brackets,
   embed: Globe,

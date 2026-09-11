@@ -6,6 +6,7 @@ import {
   forwardRef,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type ButtonHTMLAttributes,
@@ -16,6 +17,7 @@ import {
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from "react";
+import { createPortal } from "react-dom";
 
 const focusRing = "klever-focus";
 const focusRingSolid = "klever-focus-solid";
@@ -24,7 +26,7 @@ export function IconButton({
   className,
   active,
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean; "aria-label": string }) {
   return (
     <button
       type="button"
@@ -150,7 +152,7 @@ export function TextButton({
         "inline-flex items-center gap-2 rounded-md px-2 py-1 text-sm font-medium text-mute transition-colors duration-150 ease-out",
         "hover:bg-paper-2 hover:text-ink active:bg-line",
         focusRing,
-        "disabled:cursor-not-allowed disabled:opacity-40",
+        "disabled:cursor-not-allowed disabled:opacity-50",
         className,
       )}
       {...props}
@@ -193,36 +195,6 @@ export function GhostButton({
       )}
       {...props}
     />
-  );
-}
-
-export function MenuTrigger({
-  className,
-  open,
-  children,
-  ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { open?: boolean }) {
-  return (
-    <button
-      type="button"
-      aria-expanded={open}
-      className={cn(
-        "inline-flex h-9 items-center gap-2 rounded-md border border-line bg-paper px-3 text-sm font-medium text-ink transition-colors duration-150 ease-out",
-        "hover:bg-paper-2",
-        focusRing,
-        open && "bg-paper-2",
-        className,
-      )}
-      {...props}
-    >
-      {children}
-      <ChevronDown
-        size={14}
-        strokeWidth={1.4}
-        className={cn("text-mute transition-transform duration-150", open && "rotate-180")}
-        aria-hidden
-      />
-    </button>
   );
 }
 
@@ -308,19 +280,27 @@ export function Toggle({
   onChange,
   label,
   className,
+  disabled,
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
-  label?: string;
+  label: string;
   className?: string;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={cn("inline-flex items-center gap-2 text-sm text-ink", focusRing, className)}
+      className={cn(
+        "inline-flex items-center gap-2 text-sm text-ink",
+        focusRing,
+        "disabled:cursor-not-allowed disabled:opacity-50",
+        className,
+      )}
     >
       <span
         className={cn(
@@ -335,7 +315,7 @@ export function Toggle({
           )}
         />
       </span>
-      {label && <span className={checked ? "text-ink" : "text-mute"}>{label}</span>}
+      <span className={checked ? "text-ink" : "text-mute"}>{label}</span>
     </button>
   );
 }
@@ -387,7 +367,10 @@ export function Select({
   return (
     <span className={cn("relative inline-flex min-w-[7rem]", className)}>
       <select
-        className="h-9 w-full appearance-none rounded-md border border-line bg-paper py-1 pl-2 pr-7 text-sm text-ink transition-colors duration-150 ease-out klever-focus focus-visible:border-ring"
+        className={cn(
+          "h-9 w-full appearance-none rounded-md border border-line bg-paper py-1 pl-2 pr-7 text-sm text-ink transition-colors duration-150 ease-out klever-focus focus-visible:border-ring",
+          className,
+        )}
         {...props}
       />
       <ChevronDown
@@ -400,12 +383,13 @@ export function Select({
   );
 }
 
-export function Field({
-  className,
-  ...props
-}: InputHTMLAttributes<HTMLInputElement>) {
+export const Field = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function Field(
+  { className, ...props },
+  ref,
+) {
   return (
     <input
+      ref={ref}
       className={cn(
         "w-full rounded-md border border-line bg-paper px-3 py-2 text-sm text-ink placeholder:text-faint",
         "transition-colors duration-150 ease-out klever-focus aria-invalid:border-danger focus-visible:border-ring",
@@ -414,7 +398,7 @@ export function Field({
       {...props}
     />
   );
-}
+});
 
 export function Kbd({ children }: { children: ReactNode }) {
   return (
@@ -497,9 +481,9 @@ export function Overlay({
     };
   }, []);
 
-  return (
+  const tree = (
     <div
-      className="fixed inset-0 z-40 overflow-y-auto overscroll-contain bg-black/40 dark:bg-black/70 motion-safe:animate-blotter"
+      className="fixed inset-0 z-[60] overflow-y-auto overscroll-contain bg-ink/25 dark:bg-ink/40 motion-safe:animate-blotter"
       role="presentation"
     >
       <div className="flex min-h-full items-end justify-center px-0 pt-10 sm:items-start sm:px-4 sm:py-8">
@@ -536,6 +520,76 @@ export function Overlay({
         </div>
       </div>
     </div>
+  );
+
+  if (typeof document === "undefined") return tree;
+  return createPortal(tree, document.body);
+}
+
+export function AnchoredMenu({
+  open,
+  onClose,
+  anchorRef,
+  children,
+  className,
+  align = "start",
+  labelledBy,
+}: {
+  open: boolean;
+  onClose: () => void;
+  anchorRef: { readonly current: HTMLElement | null };
+  children: ReactNode;
+  className?: string;
+  align?: "start" | "end";
+  labelledBy?: string;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const anchor = anchorRef.current;
+    const menu = menuRef.current;
+    if (!anchor) return;
+    const r = anchor.getBoundingClientRect();
+    const mw = menu?.offsetWidth ?? 220;
+    const mh = menu?.offsetHeight ?? 240;
+    let left = align === "end" ? r.right - mw : r.left;
+    let top = r.bottom + 4;
+    left = Math.max(8, Math.min(left, window.innerWidth - mw - 8));
+    if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+    setPos({ top, left });
+  }, [open, align, anchorRef, children]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (menuRef.current?.contains(t) || anchorRef.current?.contains(t)) return;
+      onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open, onClose, anchorRef]);
+
+  if (!open || typeof document === "undefined") return null;
+  return createPortal(
+    <div ref={menuRef} className="fixed z-[50]" style={{ top: pos.top, left: pos.left }}>
+      <Panel role="menu" aria-labelledby={labelledBy} className={cn("min-w-[12rem] overflow-hidden py-1", className)}>
+        {children}
+      </Panel>
+    </div>,
+    document.body,
   );
 }
 
@@ -590,15 +644,18 @@ export const Alert = forwardRef<
   HTMLDivElement,
   HTMLAttributes<HTMLDivElement> & {
     onDismiss?: () => void;
+    tone?: "info" | "danger";
   }
->(function Alert({ className, children, onDismiss, ...props }, ref) {
+>(function Alert({ className, children, onDismiss, tone = "info", ...props }, ref) {
+  const t = useT();
   return (
     <div
       ref={ref}
       role="alert"
       tabIndex={-1}
       className={cn(
-        "flex items-start gap-3 rounded-lg border border-line bg-paper px-4 py-3 text-sm text-ink",
+        "flex items-start gap-3 rounded-lg border px-4 py-3 text-sm text-ink",
+        tone === "danger" ? "border-danger/35 bg-danger/[0.06]" : "border-line bg-paper",
         className,
       )}
       {...props}
@@ -606,7 +663,7 @@ export const Alert = forwardRef<
       <div className="min-w-0 flex-1">{children}</div>
       {onDismiss && (
         <TextButton className="shrink-0 px-1 py-0 text-xs" onClick={onDismiss}>
-          Dismiss
+          {t("common.dismiss")}
         </TextButton>
       )}
     </div>
@@ -626,7 +683,7 @@ export function EmptyState({
 }) {
   return (
     <div className={cn("flex flex-col items-start gap-3 px-4 py-16 md:px-8 md:py-20", className)}>
-      <p className="font-serif text-2xl font-semibold tracking-tight">{title}</p>
+      <p className="font-serif text-2xl tracking-tight">{title}</p>
       {description && <p className="max-w-md text-sm leading-relaxed text-mute">{description}</p>}
       {action}
     </div>
@@ -638,6 +695,7 @@ export function ConfirmDialog({
   description,
   confirmLabel,
   cancelLabel,
+  danger,
   onConfirm,
   onClose,
 }: {
@@ -645,6 +703,7 @@ export function ConfirmDialog({
   description: string;
   confirmLabel?: string;
   cancelLabel?: string;
+  danger?: boolean;
   onConfirm: () => void;
   onClose: () => void;
 }) {
@@ -661,7 +720,7 @@ export function ConfirmDialog({
     >
       <Panel className="p-6">
         <MonoLabel>{t("common.confirm")}</MonoLabel>
-        <h2 id={titleId} className="mt-2 font-serif text-2xl font-semibold tracking-tight">
+        <h2 id={titleId} className="mt-2 font-serif text-2xl tracking-tight">
           {title}
         </h2>
         <p id={descId} className="mt-3 text-sm leading-relaxed text-mute">
@@ -669,7 +728,12 @@ export function ConfirmDialog({
         </p>
         <div className="mt-6 flex flex-wrap gap-3">
           <GhostButton onClick={onClose}>{cancelLabel ?? t("common.cancel")}</GhostButton>
-          <SolidButton onClick={onConfirm}>{confirmLabel ?? t("common.confirm")}</SolidButton>
+          <SolidButton
+            className={danger ? "bg-danger text-paper hover:bg-danger/90 active:bg-danger/80" : undefined}
+            onClick={onConfirm}
+          >
+            {confirmLabel ?? t("common.confirm")}
+          </SolidButton>
         </div>
       </Panel>
     </Overlay>

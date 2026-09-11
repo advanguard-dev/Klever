@@ -6,18 +6,112 @@ const { execFile } = require("node:child_process");
 
 const isDev = !app.isPackaged;
 const DEV_URL = process.env.KLEVER_DEV_URL || "http://127.0.0.1:5173/";
+const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+const DEEPSEEK_DEFAULT_MODEL = "deepseek-flash";
+const AI_MAX_MESSAGE_CHARS = 200_000;
+const AI_RATE_WINDOW_MS = 60_000;
+const AI_RATE_MAX = 30;
 let vaultRoot = null;
+/** Absolute paths the user explicitly picked — allowed for preview reads. */
+const allowedAbsoluteReads = new Set();
+const MAX_ABSOLUTE_READ_BYTES = 32 * 1024 * 1024;
 let localApiServer = null;
 let localApiConfig = { enabled: false, port: 7431, token: "" };
+/** @type {Map<string, AbortController>} */
+const aiAbortByRequest = new Map();
+/** @type {number[]} */
+const aiRequestTimes = [];
+
+function loadDotEnv() {
+  const roots = [
+    path.join(__dirname, ".."),
+    process.cwd(),
+    app.isPackaged ? path.dirname(process.execPath) : null,
+  ].filter(Boolean);
+  for (const root of roots) {
+    const file = path.join(root, ".env");
+    if (!fs.existsSync(file)) continue;
+    let text = "";
+    try {
+      text = fs.readFileSync(file, "utf8");
+    } catch {
+      continue;
+    }
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const eq = line.indexOf("=");
+      if (eq <= 0) continue;
+      const key = line.slice(0, eq).trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+      let val = line.slice(eq + 1).trim();
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
+        val = val.slice(1, -1);
+      }
+      if (process.env[key] === undefined) process.env[key] = val;
+    }
+    break;
+  }
+}
+
+function deepseekApiKey() {
+  const key = (process.env.DEEPSEEK_API_KEY || "").trim();
+  return key || "";
+}
+
+function allowAiRequest() {
+  const now = Date.now();
+  while (aiRequestTimes.length && now - aiRequestTimes[0] > AI_RATE_WINDOW_MS) {
+    aiRequestTimes.shift();
+  }
+  if (aiRequestTimes.length >= AI_RATE_MAX) return false;
+  aiRequestTimes.push(now);
+  return true;
+}
+
+function sanitizeAiModel(raw) {
+  const model = typeof raw === "string" ? raw.trim() : "";
+  if (!model) return DEEPSEEK_DEFAULT_MODEL;
+  if (/^gemini/i.test(model) || /^llama/i.test(model)) return DEEPSEEK_DEFAULT_MODEL;
+  if (!/^[a-zA-Z0-9._:-]{1,64}$/.test(model)) return DEEPSEEK_DEFAULT_MODEL;
+  return model;
+}
+
+function isPathInside(root, candidate) {
+  const resolvedRoot = path.resolve(root);
+  const resolved = path.resolve(candidate);
+  return resolved === resolvedRoot || resolved.startsWith(resolvedRoot + path.sep);
+}
+
+function allowAbsoluteRead(absPath) {
+  if (!absPath || typeof absPath !== "string") return false;
+  const resolved = path.resolve(absPath);
+  if (vaultRoot && isPathInside(vaultRoot, resolved)) return true;
+  return allowedAbsoluteReads.has(resolved);
+}
 
 function mimeFromName(name) {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
   const map = {
     png: "image/png",
+    apng: "image/apng",
     jpg: "image/jpeg",
     jpeg: "image/jpeg",
+    jfif: "image/jpeg",
+    jpe: "image/jpeg",
     gif: "image/gif",
     webp: "image/webp",
+    svg: "image/svg+xml",
+    avif: "image/avif",
+    bmp: "image/bmp",
+    ico: "image/x-icon",
+    tif: "image/tiff",
+    tiff: "image/tiff",
+    heic: "image/heic",
+    heif: "image/heif",
     pdf: "application/pdf",
     mp3: "audio/mpeg",
     mp4: "video/mp4",
@@ -30,7 +124,29 @@ function mimeFromName(name) {
 function filtersForAccept(accept) {
   if (!accept || accept === "*/*") return [{ name: "All files", extensions: ["*"] }];
   if (accept === "image/*") {
-    return [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "svg", "heic"] }];
+    return [
+      {
+        name: "Images",
+        extensions: [
+          "png",
+          "jpg",
+          "jpeg",
+          "jfif",
+          "jpe",
+          "gif",
+          "webp",
+          "svg",
+          "avif",
+          "bmp",
+          "ico",
+          "tif",
+          "tiff",
+          "heic",
+          "heif",
+          "apng",
+        ],
+      },
+    ];
   }
   if (accept === "audio/*") {
     return [{ name: "Audio", extensions: ["mp3", "wav", "m4a", "aac", "flac", "ogg"] }];
@@ -146,11 +262,14 @@ function registerIpc() {
       filters: filters.length ? filters : [{ name: "All files", extensions: ["*"] }],
     });
     if (result.canceled || !result.filePaths.length) return null;
-    return result.filePaths.map((localPath) => ({
-      localPath,
-      name: path.basename(localPath),
-      mime: mimeFromName(localPath),
-    }));
+    return result.filePaths.map((localPath) => {
+      allowedAbsoluteReads.add(path.resolve(localPath));
+      return {
+        localPath,
+        name: path.basename(localPath),
+        mime: mimeFromName(localPath),
+      };
+    });
   });
 
   ipcMain.handle("klever:reveal-bytes", (_, payload) => {
@@ -164,6 +283,25 @@ function registerIpc() {
     fs.writeFileSync(full, Buffer.from(dataBase64, "base64"));
     shell.showItemInFolder(full);
     return { ok: true, path: full };
+  });
+
+  ipcMain.handle("klever:read-absolute", (_, absPath) => {
+    if (!absPath || typeof absPath !== "string") return { ok: false, error: "missing" };
+    if (!allowAbsoluteRead(absPath)) return { ok: false, error: "denied" };
+    if (!fs.existsSync(absPath)) return { ok: false, error: "missing" };
+    try {
+      const stat = fs.statSync(absPath);
+      if (!stat.isFile()) return { ok: false, error: "missing" };
+      if (stat.size > MAX_ABSOLUTE_READ_BYTES) return { ok: false, error: "too-large" };
+      const buf = fs.readFileSync(absPath);
+      return {
+        ok: true,
+        mime: mimeFromName(absPath),
+        dataBase64: buf.toString("base64"),
+      };
+    } catch {
+      return { ok: false, error: "read" };
+    }
   });
 
   ipcMain.handle("klever:open-bytes", (_, payload) => {
@@ -213,6 +351,19 @@ function registerIpc() {
   ipcMain.handle("klever:start-dictation", () => startSystemDictation());
   ipcMain.handle("klever:stop-dictation", () => stopSystemDictation());
 
+  ipcMain.handle("klever:ask-microphone", async () => {
+    if (process.platform === "darwin" && typeof systemPreferences.askForMediaAccess === "function") {
+      try {
+        const status = systemPreferences.getMediaAccessStatus?.("microphone");
+        if (status === "granted") return true;
+        return await systemPreferences.askForMediaAccess("microphone");
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  });
+
   ipcMain.handle("klever:fetch-text", async (_, url) => {
     if (typeof url !== "string" || !url.trim()) {
       return { ok: false, text: "", error: "Missing URL" };
@@ -238,6 +389,111 @@ function registerIpc() {
       return { ok: true, text, status: res.status };
     } catch (err) {
       return { ok: false, text: "", error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle("klever:ai-status", () => ({
+    configured: Boolean(deepseekApiKey()),
+    endpoint: DEEPSEEK_BASE_URL,
+    defaultModel: DEEPSEEK_DEFAULT_MODEL,
+  }));
+
+  ipcMain.handle("klever:ai-cancel", (_, requestId) => {
+    if (typeof requestId !== "string" || !requestId) return { ok: false };
+    const ac = aiAbortByRequest.get(requestId);
+    if (ac) {
+      ac.abort();
+      aiAbortByRequest.delete(requestId);
+    }
+    return { ok: true };
+  });
+
+  ipcMain.handle("klever:ai-chat", async (_, payload) => {
+    const key = deepseekApiKey();
+    if (!key) {
+      return {
+        ok: false,
+        error: "DeepSeek is not configured. Set DEEPSEEK_API_KEY in the app environment.",
+      };
+    }
+    if (!allowAiRequest()) {
+      return { ok: false, error: "Too many AI requests. Wait a moment and try again." };
+    }
+
+    const system = typeof payload?.system === "string" ? payload.system : "";
+    const user = typeof payload?.user === "string" ? payload.user : "";
+    if (!user.trim()) return { ok: false, error: "Missing prompt." };
+    if (system.length + user.length > AI_MAX_MESSAGE_CHARS) {
+      return { ok: false, error: "That prompt is too large." };
+    }
+
+    const model = sanitizeAiModel(payload?.model);
+    const temperature =
+      typeof payload?.temperature === "number" && Number.isFinite(payload.temperature)
+        ? Math.min(2, Math.max(0, payload.temperature))
+        : 0.4;
+    const requestId =
+      typeof payload?.requestId === "string" && payload.requestId.trim()
+        ? payload.requestId.trim()
+        : `ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const ac = new AbortController();
+    aiAbortByRequest.set(requestId, ac);
+
+    try {
+      const res = await net.fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${key}`,
+        },
+        signal: ac.signal,
+        body: JSON.stringify({
+          model,
+          temperature,
+          messages: [
+            ...(system.trim() ? [{ role: "system", content: system }] : []),
+            { role: "user", content: user },
+          ],
+          // Structured Klever tools expect JSON text, not a long reasoning trace.
+          thinking: { type: "disabled" },
+        }),
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        let detail = `DeepSeek request failed (${res.status})`;
+        try {
+          const errJson = JSON.parse(text);
+          if (errJson?.error?.message) detail = String(errJson.error.message);
+        } catch {
+          /* keep status text */
+        }
+        return { ok: false, status: res.status, error: detail };
+      }
+      let json;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        return { ok: false, error: "DeepSeek returned invalid JSON." };
+      }
+      const content = json?.choices?.[0]?.message?.content;
+      if (typeof content !== "string" || !content.trim()) {
+        return { ok: false, error: "DeepSeek returned nothing. Try again." };
+      }
+      return {
+        ok: true,
+        content: content.trim(),
+        model,
+        usage: json?.usage ?? null,
+        endpoint: DEEPSEEK_BASE_URL,
+      };
+    } catch (err) {
+      if (err?.name === "AbortError" || ac.signal.aborted) {
+        return { ok: false, aborted: true, error: "AI request cancelled." };
+      }
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      aiAbortByRequest.delete(requestId);
     }
   });
 
@@ -331,7 +587,7 @@ function gitStatusForVault() {
         files.push({
           path: filePath,
           code: code.trim() || "?",
-          label: codeLabel[c] ?? code.trim() || "changed",
+          label: codeLabel[c] ?? (code.trim() || "changed"),
         });
       }
       resolve({ ok: true, branch, files });
@@ -445,7 +701,7 @@ function stopSystemDictation() {
 
 const isolationHeaders = {
   "Cross-Origin-Opener-Policy": ["same-origin"],
-  "Cross-Origin-Embedder-Policy": ["require-corp"],
+  "Cross-Origin-Embedder-Policy": ["credentialless"],
   "Cross-Origin-Resource-Policy": ["same-origin"],
 };
 
@@ -474,14 +730,41 @@ function patchHeaders() {
     }
     callback({ responseHeaders });
   });
+
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    if (permission === "media" || permission === "microphone") {
+      callback(true);
+      return;
+    }
+    callback(false);
+  });
+
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => {
+    return permission === "media" || permission === "microphone";
+  });
 }
 
 function buildMenu() {
   const edit = {
     label: "Edit",
     submenu: [
-      { role: "undo" },
-      { role: "redo" },
+      {
+        label: "Undo",
+        accelerator: "CmdOrCtrl+Z",
+        // Let the renderer / TipTap / CodeMirror handle the key; menu click sends IPC.
+        registerAccelerator: false,
+        click: (_item, win) => {
+          win?.webContents.send("klever:edit", "undo");
+        },
+      },
+      {
+        label: "Redo",
+        accelerator: "Shift+CmdOrCtrl+Z",
+        registerAccelerator: false,
+        click: (_item, win) => {
+          win?.webContents.send("klever:edit", "redo");
+        },
+      },
       { type: "separator" },
       { role: "cut" },
       { role: "copy" },
@@ -604,6 +887,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(() => {
+    loadDotEnv();
     patchHeaders();
     registerIpc();
     buildMenu();

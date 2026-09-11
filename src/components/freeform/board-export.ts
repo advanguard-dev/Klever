@@ -6,6 +6,7 @@ import {
   isNonePaint,
   resolveShapeTextColor,
   resolveStickyTextColor,
+  resizeTableCells,
   shapeOutline,
   stickyBgHex,
   STICKY_COLORS,
@@ -13,6 +14,11 @@ import {
 } from "@/components/freeform/board-model";
 import { unionBoxes } from "@/components/freeform/board-ops";
 import { resolveAssetSrc } from "@/lib/assets";
+import {
+  evalSheet,
+  resolveCellStyle,
+  tableDefaultStyle,
+} from "@/lib/table-sheet";
 import type { BlobRecord, FreeformBoard, FreeformObject, FreeformShapeKind, FreeformStrokeDash, PageFont, TextAlign, TextVAlign } from "@/types";
 
 function cssToken(name: string, fallback: string) {
@@ -62,9 +68,10 @@ function fontFor(family: PageFont | undefined, size: number, bold?: boolean, ita
       ? '"Geist Variable", sans-serif'
       : family === "mono"
         ? '"Fira Code", monospace'
-        : '"Instrument Serif", serif';
-  const weight = bold ? "700" : "400";
-  const style = italic ? "italic" : "normal";
+        : '"Instrument Serif", Georgia, serif';
+  const serif = family !== "sans" && family !== "mono";
+  const weight = serif ? "400" : bold ? "700" : "400";
+  const style = italic || (serif && bold) ? "italic" : "normal";
   return `${style} ${weight} ${size}px ${stack}`;
 }
 
@@ -143,7 +150,7 @@ function strokeColor(id: string, ink: string) {
 function loadImage(src: string): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
     const img = new Image();
-    img.crossOrigin = "anonymous";
+    if (/^https?:/i.test(src)) img.crossOrigin = "anonymous";
     img.onload = () => resolve(img);
     img.onerror = () => resolve(null);
     img.src = src;
@@ -402,25 +409,69 @@ async function paintObject(
     ctx.stroke();
     const cols = Math.max(1, obj.cols);
     const rows = Math.max(1, obj.rows);
+    const cells = resizeTableCells(obj.cells, cols, rows);
+    const display = evalSheet(cells);
+    const defaults = tableDefaultStyle({
+      fontSize: obj.fontSize,
+      color: obj.color,
+      fontFamily: obj.fontFamily,
+      bold: obj.bold,
+      italic: obj.italic,
+      strike: obj.strike,
+      align: obj.align,
+      valign: obj.valign,
+    });
     const cw = w / cols;
     const rh = h / rows;
-    ctx.font = '400 11px "Fira Code", monospace';
-    ctx.textBaseline = "middle";
-    ctx.fillStyle = ink;
+    const smart = cssToken("--color-smart", "#3a5674");
+    const paper2 = cssToken("--color-paper-2", "#ebe8e0");
     for (let r = 0; r < rows; r++) {
-      if (obj.headerRow && r === 0) {
-        ctx.fillStyle = cssToken("--color-paper-2", "#ebe8e0");
-        ctx.fillRect(x, y + r * rh, w, rh);
-        ctx.fillStyle = ink;
-        ctx.font = '600 11px "Fira Code", monospace';
-      } else {
-        ctx.font = '400 11px "Fira Code", monospace';
-      }
       for (let c = 0; c < cols; c++) {
+        const style = resolveCellStyle(defaults, obj.cellStyle, r, c, !!obj.headerRow && r === 0);
+        const cellX = x + c * cw;
+        const cellY = y + r * rh;
+        if (obj.headerRow && r === 0) {
+          ctx.fillStyle = paper2;
+          ctx.fillRect(cellX, cellY, cw, rh);
+        }
         ctx.strokeStyle = line;
-        ctx.strokeRect(x + c * cw, y + r * rh, cw, rh);
-        const cell = obj.cells[r]?.[c] ?? "";
-        ctx.fillText(cell.slice(0, 24), x + c * cw + 6, y + r * rh + rh / 2, cw - 10);
+        ctx.strokeRect(cellX, cellY, cw, rh);
+        const shown = display[r]?.[c] ?? "";
+        if (!shown) continue;
+        const err = shown.startsWith("#") && shown.endsWith("!");
+        const size = style.fontSize ?? 13;
+        ctx.font = fontFor(style.fontFamily, size, style.bold, style.italic);
+        const origin = alignedTextOrigin(
+          cellX,
+          cellY,
+          cw,
+          rh,
+          6,
+          4,
+          style.align ?? "left",
+          style.valign ?? "middle",
+          1,
+          size * 1.35,
+        );
+        ctx.textAlign = origin.textAlign;
+        ctx.textBaseline = "top";
+        ctx.fillStyle = err ? smart : textColorHex(style.color);
+        ctx.fillText(shown, origin.tx, origin.ty, cw - 12);
+        if (style.strike && !err) {
+          const measured = Math.min(ctx.measureText(shown).width, cw - 12);
+          const sx =
+            origin.textAlign === "center"
+              ? origin.tx - measured / 2
+              : origin.textAlign === "right"
+                ? origin.tx - measured
+                : origin.tx;
+          ctx.beginPath();
+          ctx.moveTo(sx, origin.ty + size * 0.55);
+          ctx.lineTo(sx + measured, origin.ty + size * 0.55);
+          ctx.strokeStyle = ctx.fillStyle;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
       }
     }
     return;

@@ -14,6 +14,14 @@ const BLOCKS: InsertCommand[] = [
   { id: "code", label: "Code", section: "blocks", slash: true, action: "snippet", snippet: "```\n\n```\n" },
   { id: "divider", label: "Divider", section: "blocks", slash: true, action: "snippet", snippet: "\n---\n\n" },
   { id: "table", label: "Table", section: "blocks", slash: true, action: "snippet", snippet: "|   |   |\n| --- | --- |\n|   |   |\n" },
+  {
+    id: "mermaid",
+    label: "Mermaid diagram",
+    section: "blocks",
+    slash: true,
+    action: "snippet",
+    snippet: "```mermaid\nflowchart LR\n  A --> B\n```\n",
+  },
   { id: "wiki", label: "Wikilink", section: "blocks", slash: true, action: "snippet", snippet: "[[]]" },
   { id: "embed", label: "Embed URL", section: "blocks", slash: true, action: "embed" },
 ];
@@ -32,6 +40,7 @@ const AI: InsertCommand[] = [
 
 const PAGES: InsertCommand[] = [
   { id: "page", label: "New page", section: "pages", action: "page", hint: "⌘N" },
+  { id: "split-page", label: "Split page", section: "pages", slash: true, action: "split-page" },
   { id: "daily", label: "Today's note", section: "pages", action: "daily" },
   { id: "new-template", label: "Template page", section: "pages", action: "new-template" },
 ];

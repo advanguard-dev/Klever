@@ -1,4 +1,4 @@
-/** Lazy Shiki highlighter for fenced code blocks. */
+/** Lazy Shiki highlighter for fenced code blocks. Languages load on demand. */
 
 let highlighterPromise: Promise<import("shiki").Highlighter> | null = null;
 
@@ -54,8 +54,8 @@ async function getHighlighter() {
   if (!highlighterPromise) {
     highlighterPromise = import("shiki").then(({ createHighlighter }) =>
       createHighlighter({
-        themes: ["github-light", "github-dark"],
-        langs: [...CODE_LANGUAGES],
+        themes: ["css-variables"],
+        langs: ["text"],
       }),
     );
   }
@@ -64,14 +64,24 @@ async function getHighlighter() {
 
 export async function highlightCode(code: string, lang?: string | null): Promise<string> {
   const language = normalizeLang(lang);
+  if (language === "mermaid") {
+    return `<pre class="shiki"><code>${escapeHtml(code)}</code></pre>`;
+  }
   try {
     const highlighter = await getHighlighter();
+    let useLang = language;
     const loaded = highlighter.getLoadedLanguages();
-    const useLang = loaded.includes(language as never) ? language : "text";
+    if (!loaded.includes(useLang as never)) {
+      try {
+        await highlighter.loadLanguage(useLang as never);
+      } catch {
+        useLang = "text";
+      }
+    }
+    if (!highlighter.getLoadedLanguages().includes(useLang as never)) useLang = "text";
     return highlighter.codeToHtml(code, {
       lang: useLang,
-      themes: { light: "github-light", dark: "github-dark" },
-      defaultColor: false,
+      theme: "css-variables",
     });
   } catch {
     return `<pre class="shiki"><code>${escapeHtml(code)}</code></pre>`;

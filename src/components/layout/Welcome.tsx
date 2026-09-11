@@ -4,6 +4,7 @@ import { useApp } from "@/store";
 export function Welcome() {
   const openFolder = useApp((s) => s.openFolder);
   const startDemo = useApp((s) => s.startDemo);
+  const startGraphFixture = useApp((s) => s.startGraphFixture);
   const startEmpty = useApp((s) => s.startEmpty);
   const error = useApp((s) => s.error);
   const setError = useApp((s) => s.setError);
@@ -21,6 +22,7 @@ export function Welcome() {
         </p>
         <div className="mt-8 flex flex-wrap gap-2">
           <SolidButton onClick={() => void startDemo()}>Open sample vault</SolidButton>
+          <GhostButton onClick={() => void startGraphFixture()}>Open orchard</GhostButton>
           <GhostButton onClick={() => void openFolder()}>Open folder</GhostButton>
           <GhostButton onClick={() => startEmpty()}>Start empty</GhostButton>
         </div>
@@ -34,7 +36,7 @@ export function Welcome() {
             <Kbd>⌘K</Kbd> search
           </p>
           <p className="flex items-center gap-3">
-            <Kbd>⌘E</Kbd> block / source / read
+            <Kbd>⌘E</Kbd> block / present
           </p>
           <p className="flex items-center gap-3">
             <Kbd>⌘⇧T</Kbd> today’s note

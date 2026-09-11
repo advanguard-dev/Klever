@@ -9,7 +9,7 @@
 |---------|-------|
 | Primary Color | #151716 (Ink) |
 | Secondary Color | #3a5674 (Ring) |
-| Primary Font | Instrument Serif (display), Geist (body) |
+| Primary Font | Instrument Serif (display / reading), Geist (body) |
 | Voice | Quiet, specific, file-honest |
 
 Klever is a local-first markdown vault. The brand is a stationery desk: paper, ink, blotter, folio. Quiet chrome. The page is the product.
@@ -40,8 +40,9 @@ Klever is a local-first markdown vault. The brand is a stationery desk: paper, i
 | Blotter | #e3e5e0 | rgb(227,229,224) | Page hinterland, shell |
 | Paper 2 | #e9ebe6 | rgb(233,235,230) | Recessed paper, kbd fill |
 | Mute | #585c59 | rgb(88,92,89) | Secondary text (≥4.5:1 on paper) |
-| Faint | #868b86 | rgb(134,139,134) | Captions only |
+| Faint | #6a6f6a | rgb(106,111,106) | Captions (AA on paper). Do not use for body. |
 | Line | #d5d8d2 | rgb(213,216,210) | Hairlines between sheets |
+| Rule | #d5d8d2 | rgb(213,216,210) | Alias of Line (`border-rule`) |
 
 ### Semantic Colors
 
@@ -54,7 +55,7 @@ Klever is a local-first markdown vault. The brand is a stationery desk: paper, i
 
 ### Dark (prefers-color-scheme)
 
-Paper `#121413` · Blotter `#0c0d0c` · Ink `#eceeea` · Ring `#8fa6c4` · Tag `#8fa892` · Mute `#9aa09b` · Line `#2a2d2a`
+Paper `#121413` · Blotter `#0c0d0c` · Ink `#eceeea` · Ring `#8fa6c4` · Tag `#8fa892` · Mute `#9aa09b` · Faint `#8a8f8a` · Line `#2a2d2a`
 
 ### Accessibility
 
@@ -77,13 +78,16 @@ Paper `#121413` · Blotter `#0c0d0c` · Ink `#eceeea` · Ring `#8fa6c4` · Tag `
 
 ### Type Scale
 
-| Element | Font | Weight | Size (Desktop/Mobile) | Line Height |
-|---------|------|--------|----------------------|-------------|
-| H1 | Instrument Serif | 400 | 60px / 40px | 0.95 |
-| H2 | Instrument Serif | 400 | 32px / 26px | 1.15 |
-| Body | Geist | 400 | 16px / 16px | 1.65 |
-| Caption | Geist | 400 | 14px / 14px | 1.5 |
-| Mono label | Fira Code | 400 | 10px / 10px | 1.4 |
+Instrument Serif ships a single weight (400) plus italic. Titles use size and tracking, not bold.
+
+| Element | Font | Weight | Size (Desktop/Mobile) | Line Height | Tracking |
+|---------|------|--------|----------------------|-------------|----------|
+| H1 | Instrument Serif | 400 | clamp 30–49px | 1.08 | optical, tighter at display |
+| H2 | Instrument Serif | 400 | 22–26px | 1.2 | slight negative |
+| Body (serif page) | Instrument Serif | 400 | 19px | 1.68 | +0.004em |
+| Body (chrome / sans page) | Geist | 400 | 16–17px | 1.6–1.65 | 0 |
+| Caption | Geist | 400 | 14px | 1.5 | 0 |
+| Mono label | Fira Code | 400 | 10px | 1.4 | 0.16em uppercase |
 
 Eyebrows: Fira Code, 10px, uppercase, tracking `0.16em`. Keyboard chips and filenames also use Fira Code.
 

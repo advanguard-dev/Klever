@@ -24,7 +24,7 @@ export function HighlightedCode({ code, language }: { code: string; language?: s
 
   if (!html) {
     return (
-      <pre className="overflow-x-auto rounded-lg border border-rule bg-paper-2 p-3 font-mono text-[13px]">
+      <pre className="overflow-x-auto rounded-lg border border-line bg-paper-2 p-3 font-mono text-[13px]">
         <code>{code}</code>
       </pre>
     );
@@ -32,7 +32,7 @@ export function HighlightedCode({ code, language }: { code: string; language?: s
 
   return (
     <div
-      className="klever-shiki my-3 overflow-x-auto rounded-lg border border-rule text-[13px] [&_pre]:m-0 [&_pre]:bg-transparent [&_pre]:p-3"
+      className="klever-shiki my-3 overflow-x-auto rounded-lg border border-line text-[13px] [&_pre]:m-0 [&_pre]:bg-transparent [&_pre]:p-3"
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

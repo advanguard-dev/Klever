@@ -1,31 +1,38 @@
 import { schemaTarget } from "@/components/db/PropertyManager";
+import { readOpenNoteSelection } from "@/lib/editor-bridge";
 import { GhostButton, MonoLabel, Overlay, Panel, SolidButton, TextArea, TextButton } from "@/components/ui";
 import {
   DEFAULT_WRITING_SYSTEM_PROMPT,
   rewrite,
   WRITING_TOOLS,
   writingInstruction,
-  writingPagePatch,
+  type WritingRewriteResult,
 } from "@/lib/ai";
 import { writingToolLabel } from "@/lib/i18n";
 import { MEETING_INTERNAL_KEYS } from "@/lib/meetings";
 import { useLocale, useT } from "@/lib/use-t";
 import { useApp } from "@/store";
 import type { AiSettings, Note, SchemaProp } from "@/types";
-import type { EditorView } from "@codemirror/view";
 import { ChevronDown, ChevronRight, Loader2, Settings2, Sparkles } from "lucide-react";
 import { useId, useState } from "react";
+
+export type PendingWritingEdit = {
+  label: string;
+  result: WritingRewriteResult;
+  fromText: string;
+  selection?: boolean;
+};
 
 type Props = {
   note: Note;
   body: string;
   busy: string | null;
   setBusy: (v: string | null) => void;
-  setBody: (v: string) => void;
   setError: (v: string | null) => void;
-  viewRef: React.RefObject<EditorView | null>;
-  /** Called after a successful rewrite so the page can flash the changed text. */
-  onApplied?: () => void;
+  /** Called when DeepSeek returns a draft — parent reveals it, then V / X confirm. */
+  onPropose: (pending: PendingWritingEdit) => void;
+  /** True while a proposal is waiting for V / X so another run cannot stack. */
+  locked?: boolean;
 };
 
 function writableSchema(note: Note, notes: Note[]): SchemaProp[] {
@@ -43,13 +50,21 @@ function toolDrafts(ai: AiSettings): Record<string, string> {
   return out;
 }
 
-export function WritingToolsBar({ note, body, busy, setBusy, setBody, setError, viewRef, onApplied }: Props) {
+export function WritingToolsBar({
+  note,
+  body,
+  busy,
+  setBusy,
+  setError,
+  onPropose,
+  locked,
+}: Props) {
   const t = useT();
   const locale = useLocale();
   const ai = useApp((s) => s.ai);
+  const aiConfigured = useApp((s) => s.aiConfigured);
   const setAi = useApp((s) => s.setAi);
   const notes = useApp((s) => s.notes);
-  const patchNote = useApp((s) => s.patchNote);
   const [editOpen, setEditOpen] = useState(false);
   const [customOpen, setCustomOpen] = useState(false);
   const [customPrompt, setCustomPrompt] = useState(ai.lastCustomPrompt ?? "");
@@ -64,72 +79,34 @@ export function WritingToolsBar({ note, body, busy, setBusy, setBody, setError, 
     setEditOpen(true);
   };
 
-  const sourceText = () => {
-    const view = viewRef.current;
-    const selected = view
-      ? view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to)
-      : "";
-    return selected || body;
-  };
-
-  const applyResult = (next: string) => {
-    const view = viewRef.current;
-    const selected = view
-      ? view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to)
-      : "";
-    if (selected && view) {
-      const { from, to } = view.state.selection.main;
-      view.dispatch({ changes: { from, to, insert: next } });
-      setBody(view.state.doc.toString());
-    } else {
-      setBody(next);
-    }
-    onApplied?.();
-  };
+  const blocked = Boolean(busy) || Boolean(locked);
 
   const run = async (label: string, instruction: string, persistCustom?: string) => {
-    if (busy) return;
-    const source = sourceText();
+    if (blocked) return;
+    const selected = readOpenNoteSelection().trim();
+    const source = selected || body;
     if (!source.trim()) {
       setError(t("writing.needText"));
       return;
     }
-    if (!ai.apiKey.trim()) {
+    if (!aiConfigured) {
       setError(t("writing.needKey"));
       return;
     }
     setBusy(label);
     setError(null);
     try {
-      const view = viewRef.current;
-      const selected = view
-        ? view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to)
-        : "";
       const schema = writableSchema(note, notes);
       const next = await rewrite(ai, source, instruction, {
         title: note.title,
         schema: schema.map((s) => ({ key: s.key, name: s.name, type: s.type, options: s.options })),
-        selected: Boolean(selected.trim()),
       });
-      applyResult(next.body);
-      const liveNotes = useApp.getState().notes;
-      const live = liveNotes.find((n) => n.id === note.id) ?? note;
-      const target = schemaTarget(live, liveNotes);
-      const fullSchema = target.schema ?? [];
-      const result = writingPagePatch(live, next, fullSchema, liveNotes);
-      if (result) {
-        const nextSchema = result.schemaAdds.length
-          ? [...fullSchema, ...result.schemaAdds]
-          : undefined;
-        if (target.id === live.id) {
-          if (Object.keys(result.patch).length || nextSchema) {
-            patchNote(live.id, { ...result.patch, ...(nextSchema ? { schema: nextSchema } : {}) });
-          }
-        } else {
-          if (nextSchema) patchNote(target.id, { schema: nextSchema });
-          if (Object.keys(result.patch).length) patchNote(live.id, result.patch);
-        }
-      }
+      onPropose({
+        label,
+        result: next,
+        fromText: source,
+        selection: Boolean(selected),
+      });
       if (persistCustom !== undefined) setAi({ lastCustomPrompt: persistCustom });
     } catch (e) {
       setError(e instanceof Error ? e.message : t("writing.failed"));
@@ -186,7 +163,7 @@ export function WritingToolsBar({ note, body, busy, setBusy, setBody, setError, 
             <GhostButton
               key={tool.id}
               className="border-0 px-2 py-1 text-[12px] text-mute"
-              disabled={Boolean(busy)}
+              disabled={blocked}
               aria-pressed={busy === label}
               onClick={() => applyTool(tool.id)}
             >
@@ -196,7 +173,7 @@ export function WritingToolsBar({ note, body, busy, setBusy, setBody, setError, 
         })}
         <GhostButton
           className="border-0 px-2 py-1 text-[12px] text-mute"
-          disabled={Boolean(busy)}
+          disabled={blocked}
           onClick={() => setCustomOpen((o) => !o)}
         >
           {t("writing.custom")}
@@ -205,6 +182,7 @@ export function WritingToolsBar({ note, body, busy, setBusy, setBody, setError, 
         <TextButton
           className="ml-auto h-7 text-[11px] text-faint"
           onClick={openEditor}
+          disabled={blocked}
           aria-expanded={editOpen}
           aria-haspopup="dialog"
         >
@@ -223,7 +201,7 @@ export function WritingToolsBar({ note, body, busy, setBusy, setBody, setError, 
             onChange={(e) => setCustomPrompt(e.target.value)}
           />
           <SolidButton
-            disabled={Boolean(busy) || !customPrompt.trim()}
+            disabled={blocked || !customPrompt.trim()}
             onClick={() => void run(t("writing.custom"), customPrompt.trim(), customPrompt.trim())}
           >
             {t("writing.runCustom")}

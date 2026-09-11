@@ -14,6 +14,8 @@ export function searchSnippet(body: string, q: string, radius = 72) {
   return `${from > 0 ? "…" : ""}${slice}${to < body.length ? "…" : ""}`;
 }
 
+let cached: { notes: Note[]; fuse: Fuse<Note> } | null = null;
+
 export function searchNotes(notes: Note[], q: string, opts?: { semantic?: boolean }) {
   const query = q.trim();
   if (!query) return notes;
@@ -30,14 +32,19 @@ export function searchNotes(notes: Note[], q: string, opts?: { semantic?: boolea
     }
   }
 
-  const fuse = new Fuse(notes, {
-    keys: [
-      { name: "title", weight: 0.5 },
-      { name: "tags", weight: 0.2 },
-      { name: "body", weight: 0.3 },
-    ],
-    threshold: 0.38,
-    ignoreLocation: true,
-  });
-  return fuse.search(query).map((r) => r.item);
+  if (!cached || cached.notes !== notes) {
+    cached = {
+      notes,
+      fuse: new Fuse(notes, {
+        keys: [
+          { name: "title", weight: 0.5 },
+          { name: "tags", weight: 0.2 },
+          { name: "body", weight: 0.3 },
+        ],
+        threshold: 0.38,
+        ignoreLocation: true,
+      }),
+    };
+  }
+  return cached.fuse.search(query).map((r) => r.item);
 }

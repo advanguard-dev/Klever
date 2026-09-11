@@ -246,7 +246,7 @@ export function WorkspaceSetup() {
                   {
                     id: "remote" as const,
                     title: "Remote",
-                    body: "Gemini for Brain Dump, Meeting, and writing tools. The key stays in Settings.",
+                    body: "DeepSeek for Brain Dump, Meeting, and writing tools. The key stays in the desktop process.",
                   },
                   {
                     id: "local" as const,
@@ -283,7 +283,7 @@ export function WorkspaceSetup() {
                   setSettingsOpen(true);
                 }}
               >
-                Open Gemini settings
+                Open AI settings
               </button>
             )}
           </div>

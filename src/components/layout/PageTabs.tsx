@@ -2,6 +2,7 @@ import { NoteIcon, noteKindIcon } from "@/lib/chrome-icons";
 import { cn } from "@/lib/cn";
 import { noteMenuItems } from "@/lib/context-menus";
 import { contextMenuFromKey, useContextMenu } from "@/components/ContextMenu";
+import { endNoteDrag, writeNoteDrag } from "@/lib/dnd";
 import { useApp } from "@/store";
 import { X } from "lucide-react";
 
@@ -9,10 +10,13 @@ export function PageTabs() {
   const openTabs = useApp((s) => s.openTabs);
   const notes = useApp((s) => s.notes);
   const view = useApp((s) => s.view);
+  const split = useApp((s) => s.split);
   const setView = useApp((s) => s.setView);
   const closeOpenTab = useApp((s) => s.closeOpenTab);
   const { open } = useContextMenu();
   const activeId = view.kind === "note" || view.kind === "database" ? view.id : null;
+  const mateId =
+    split && activeId ? (split.leftId === activeId ? split.rightId : split.rightId === activeId ? split.leftId : null) : null;
 
   const items = openTabs
     .map((id) => notes.find((n) => n.id === id))
@@ -46,6 +50,7 @@ export function PageTabs() {
     >
       {items.map((n) => {
         const on = n.id === activeId;
+        const mate = n.id === mateId;
         const menu = (ev: { preventDefault: () => void; stopPropagation: () => void; clientX: number; clientY: number }) =>
           open(ev, noteMenuItems(n, { closeTab: true }));
         return (
@@ -60,14 +65,23 @@ export function PageTabs() {
             <button
               type="button"
               role="tab"
+              draggable
               aria-selected={on}
               tabIndex={on ? 0 : -1}
               title={n.title || "Untitled"}
               className={cn(
-                "klever-focus flex min-w-0 items-center gap-1.5 px-2.5 pb-2 pt-2 text-sm transition-colors duration-150",
+                "klever-focus flex min-w-0 cursor-grab items-center gap-1.5 px-2.5 pb-2 pt-2 text-sm transition-colors duration-150 active:cursor-grabbing",
                 "hover:text-ink",
                 on && "font-medium",
               )}
+              onDragStart={(e) => {
+                e.stopPropagation();
+                writeNoteDrag(e.dataTransfer, n.id);
+              }}
+              onDragEnd={(e) => {
+                e.stopPropagation();
+                endNoteDrag();
+              }}
               onClick={() => activate(items.indexOf(n))}
               onKeyDown={(e) => contextMenuFromKey(e, menu)}
             >
@@ -81,8 +95,9 @@ export function PageTabs() {
             </button>
             <button
               type="button"
+              draggable={false}
               aria-label={`Close ${n.title || "Untitled"}`}
-              className="klever-focus mb-1.5 mr-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-mute opacity-0 transition-opacity hover:bg-ink/[0.06] hover:text-ink group-hover/tab:opacity-100 group-focus-within/tab:opacity-100"
+              className="klever-reveal klever-focus mb-1.5 mr-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-mute hover:bg-ink/[0.06] hover:text-ink"
               onClick={(e) => {
                 e.stopPropagation();
                 closeOpenTab(n.id);
@@ -93,7 +108,7 @@ export function PageTabs() {
             <span
               className={cn(
                 "pointer-events-none absolute inset-x-2 bottom-0 h-px",
-                on ? "bg-ink" : "bg-transparent",
+                on ? "bg-ink" : mate ? "bg-ink/35" : "bg-transparent",
               )}
               aria-hidden
             />

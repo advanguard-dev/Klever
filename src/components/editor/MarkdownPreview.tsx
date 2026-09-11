@@ -4,7 +4,7 @@ import { WikiPeek, openNote } from "@/components/editor/WikiPeek";
 import { useContextMenu } from "@/components/ContextMenu";
 import { NoteLabel } from "@/lib/chrome-icons";
 import { tagMenuItems, wikiMenuItems } from "@/lib/context-menus";
-import { parseAlt, replaceImageSrc, setImageWidth } from "@/lib/assets";
+import { parseAlt, replaceImageSrc, setImageWidth, isImageAsset, assetKindFromPath } from "@/lib/assets";
 import { isAttachedFileHref, isLocalAssetHref, setFileDisplay } from "@/lib/file-display";
 import { HighlightedCode } from "@/lib/highlighted-code";
 import { headingSlug, plainSnippet, resolveLink, wikifyForPreview } from "@/lib/parse";
@@ -98,7 +98,7 @@ export function MarkdownPreview({
       }
       if (href?.startsWith("wiki:")) {
         const target = decodeURIComponent(href.slice(5));
-        return <WikiPeek target={target} notes={notes}>{children}</WikiPeek>;
+        return <WikiPeek target={target} notes={notes} display={title}>{children}</WikiPeek>;
       }
       if (href?.startsWith("#")) {
         const tag = href.slice(1);
@@ -115,6 +115,25 @@ export function MarkdownPreview({
       }
       const path = href?.replace(/^\.\//, "") ?? "";
       if (href && isAttachedFileHref(path)) {
+        if (assetKindFromPath(path, nodeText(children)) === "image") {
+          const parsed = parseAlt(nodeText(children));
+          return (
+            <ImageBlock
+              src={path}
+              caption={parsed.caption}
+              width={parsed.width}
+              readOnly={reading}
+              onWidth={
+                reading ? undefined : (w) => patchNote(note.id, { body: setImageWidth(note.body, path, w) })
+              }
+              onReplaceSrc={
+                reading
+                  ? undefined
+                  : (next) => patchNote(note.id, { body: replaceImageSrc(note.body, path, next) })
+              }
+            />
+          );
+        }
         return (
           <FileAttachment
             src={path}
@@ -136,8 +155,13 @@ export function MarkdownPreview({
     img({ src, alt, title }) {
       if (!src) return null;
       const parsed = parseAlt(alt ?? "");
-      if (isLocalAssetHref(src) || isAttachedFileHref(src.replace(/^\.\//, ""))) {
-        const path = src.replace(/^\.\//, "");
+      const path = src.replace(/^\.\//, "");
+      const asImage =
+        isImageAsset(path, undefined, alt) ||
+        /^https?:/i.test(src) ||
+        src.startsWith("blob:") ||
+        src.startsWith("data:");
+      if (!asImage && (isLocalAssetHref(src) || isAttachedFileHref(path))) {
         return (
           <FileAttachment
             src={path}
@@ -176,7 +200,7 @@ export function MarkdownPreview({
       className={[
         "prose-klever",
         reading && "prose-klever-read",
-        small && !reading && "text-[15px] leading-7",
+        small && !reading && "text-[15px] leading-[1.65]",
         reading && small && "prose-klever-read--small",
       ]
         .filter(Boolean)

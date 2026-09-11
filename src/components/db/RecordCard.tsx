@@ -32,7 +32,8 @@ export function RecordCard({
     <div
       role="button"
       tabIndex={0}
-      className="klever-focus block w-full cursor-pointer rounded-2xl border border-line text-left transition-colors duration-150 hover:bg-paper-2"
+      className="klever-focus block w-full cursor-pointer rounded-lg border border-line text-left transition-colors duration-150 hover:bg-paper-2"
+      aria-label={row.title || "Untitled"}
       onClick={onOpen}
       onContextMenu={onContextMenu}
       onKeyDown={(e) => {

@@ -1,5 +1,6 @@
 import katex from "katex";
 import "katex/dist/katex.min.css";
+import { applyOutsideCode } from "@/lib/parse";
 
 export function renderKatex(tex: string, displayMode: boolean): string {
   try {
@@ -7,7 +8,7 @@ export function renderKatex(tex: string, displayMode: boolean): string {
       displayMode,
       throwOnError: false,
       strict: "ignore",
-      output: "html",
+      output: "htmlAndMathml",
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "KaTeX error";
@@ -17,15 +18,17 @@ export function renderKatex(tex: string, displayMode: boolean): string {
 
 /** Convert `$...$` / `$$...$$` in markdown to HTML before marked (preview-friendly). */
 export function mathSyntaxToHtml(md: string): string {
-  // Block math first
-  let out = md.replace(/\$\$([\s\S]+?)\$\$/g, (_m, tex: string) => {
-    return `\n<div class="klever-math-block" data-math="block">${renderKatex(tex.trim(), true)}</div>\n`;
+  return applyOutsideCode(md, (chunk) => {
+    let out = chunk.replace(/\$\$([\s\S]+?)\$\$/g, (_m, tex: string) => {
+      const t = tex.trim();
+      return `\n<div class="klever-math-block" data-math="block" data-tex="${escapeAttr(t)}">${renderKatex(t, true)}</div>\n`;
+    });
+    out = out.replace(/(?<!\$)\$(?!\$)([^$\n]+?)\$(?!\$)/g, (_m, tex: string) => {
+      const t = tex.trim();
+      return `<span class="klever-math-inline" data-math="inline" data-tex="${escapeAttr(t)}">${renderKatex(t, false)}</span>`;
+    });
+    return out;
   });
-  // Inline math (avoid $$ leftovers)
-  out = out.replace(/(?<!\$)\$(?!\$)([^$\n]+?)\$(?!\$)/g, (_m, tex: string) => {
-    return `<span class="klever-math-inline" data-math="inline">${renderKatex(tex.trim(), false)}</span>`;
-  });
-  return out;
 }
 
 function escapeHtml(s: string) {
@@ -40,6 +43,8 @@ export function KatexInline({ tex }: { tex: string }) {
   return (
     <span
       className="klever-math-inline"
+      data-math="inline"
+      data-tex={tex}
       dangerouslySetInnerHTML={{ __html: renderKatex(tex, false) }}
     />
   );
@@ -49,6 +54,8 @@ export function KatexBlock({ tex }: { tex: string }) {
   return (
     <div
       className="klever-math-block my-3 overflow-x-auto text-center"
+      data-math="block"
+      data-tex={tex}
       dangerouslySetInnerHTML={{ __html: renderKatex(tex, true) }}
     />
   );
